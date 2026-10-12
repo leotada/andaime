@@ -1,0 +1,4 @@
+name "hello"
+description "Exemplo de ergonomia do vela"
+targetType "executable"
+dependency "vela" path="../.."

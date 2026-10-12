@@ -1,0 +1,35 @@
+# DUB
+.dub/
+dub.selections.json
+docs.json
+__dummy.html
+*.lst
+
+# Objetos e bibliotecas
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+
+# Binários dos exemplos e dos testes
+examples/*/hello
+examples/*/api
+/vela-test-*
+*-test-library
+
+# Fuzzing
+tests/fuzz/crashes/
+crash-*
+leak-*
+timeout-*
+*.profraw
+
+# Editores e sistema
+.vscode/
+.idea/
+*.swp
+.DS_Store

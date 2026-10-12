@@ -1,0 +1,4 @@
+name "engine"
+description "Transporte: event loop, buffers e conexões. Não conhece rotas nem DTOs."
+targetType "library"
+dependency "vela:http" version="*"

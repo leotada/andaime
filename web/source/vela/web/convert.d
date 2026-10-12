@@ -1,0 +1,187 @@
+/// Conversões texto -> escalar sem std.conv (compila rápido, não aloca).
+module vela.web.convert;
+
+import vela.web.params : isCharType;
+
+@safe:
+
+bool parseInteger(T)(scope const(char)[] s, out T v) pure nothrow @nogc
+    if (__traits(isIntegral, T) && !is(T == bool))
+{
+    if (s.length == 0)
+        return false;
+    immutable bool neg = s[0] == '-';
+    size_t i = neg ? 1 : 0;
+    if (i == s.length)
+        return false;
+    static if (__traits(isUnsigned, T))
+    {
+        if (neg)
+            return false;
+        immutable ulong lim = T.max;
+    }
+    else
+        immutable ulong lim = neg ? cast(ulong) T.max + 1 : cast(ulong) T.max;
+    ulong acc = 0;
+    for (; i < s.length; i++)
+    {
+        immutable char c = s[i];
+        if (c < '0' || c > '9')
+            return false;
+        immutable uint d = c - '0';
+        if (acc > (lim - d) / 10)
+            return false; // overflow
+        acc = acc * 10 + d;
+    }
+    v = neg ? cast(T) cast(long)(0UL - acc) : cast(T) acc;
+    return true;
+}
+
+bool parseFloat(T)(scope const(char)[] s, out T v) nothrow @nogc @trusted
+    if (__traits(isFloating, T))
+{
+    import core.stdc.stdlib : strtod;
+
+    char[64] tmp = void;
+    if (s.length == 0 || s.length >= tmp.length)
+        return false;
+    foreach (char c; s) // strtod aceita "inf", "0x1p3"...; JSON e query não
+        if (!((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E'))
+            return false;
+    tmp[0 .. s.length] = s[];
+    tmp[s.length] = 0;
+    char* end;
+    immutable double d = strtod(tmp.ptr, &end);
+    if (end != tmp.ptr + s.length)
+        return false;
+    v = cast(T) d;
+    return true;
+}
+
+bool parseBool(scope const(char)[] s, out bool v) pure nothrow @nogc
+{
+    switch (s)
+    {
+        case "true", "1": v = true; return true;
+        case "false", "0": v = false; return true;
+        default: return false;
+    }
+}
+
+/// Decodifica %XX (e '+' como espaço, na query). Sem nada a decodificar,
+/// devolve a própria fatia: zero-copy no caso comum.
+bool percentDecode(const(char)[] raw, bool plusIsSpace, out const(char)[] result) pure nothrow
+{
+    bool needs = false;
+    foreach (char c; raw)
+        if (c == '%' || (plusIsSpace && c == '+'))
+        {
+            needs = true;
+            break;
+        }
+    if (!needs)
+    {
+        result = raw;
+        return true;
+    }
+    static int hex(char c) pure nothrow @nogc
+    {
+        if (c >= '0' && c <= '9') return c - '0';
+        if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+        if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+        return -1;
+    }
+
+    auto o = new char[raw.length];
+    size_t n = 0;
+    for (size_t i = 0; i < raw.length; i++)
+    {
+        char c = raw[i];
+        if (c == '%')
+        {
+            if (i + 2 >= raw.length)
+                return false;
+            int h = hex(raw[i + 1]), l = hex(raw[i + 2]);
+            if (h < 0 || l < 0)
+                return false;
+            o[n++] = cast(char)(h * 16 + l);
+            i += 2;
+        }
+        else
+            o[n++] = (plusIsSpace && c == '+') ? ' ' : c;
+    }
+    result = o[0 .. n];
+    return true;
+}
+
+/// Texto já decodificado -> T. `string` é copiado (o buffer de rede será
+/// reutilizado); `const(char)[]` é devolvido como fatia (zero-copy).
+bool parseScalarText(T)(const(char)[] s, out T v)
+{
+    static if (is(T == bool))
+        return parseBool(s, v);
+    else static if (is(T == enum))
+    {
+        static foreach (m; __traits(allMembers, T))
+            if (s == m)
+            {
+                v = __traits(getMember, T, m);
+                return true;
+            }
+        return false;
+    }
+    else static if (__traits(isIntegral, T) && !isCharType!T)
+        return parseInteger(s, v);
+    else static if (__traits(isFloating, T))
+        return parseFloat(s, v);
+    else static if (is(T == string))
+    {
+        v = s.idup;
+        return true;
+    }
+    else static if (is(T == const(char)[]))
+    {
+        v = s;
+        return true;
+    }
+    else
+        static assert(0, "vela: '" ~ T.stringof ~ "' não é um escalar suportado");
+}
+
+/// Mensagem curta de erro de tipo, montada em compilação.
+template typeHint(T)
+{
+    static if (is(T == bool))
+        enum typeHint = "esperado booleano (true/false)";
+    else static if (is(T == enum))
+        enum typeHint = "valor fora do enum " ~ T.stringof;
+    else static if (__traits(isIntegral, T))
+        enum typeHint = "esperado inteiro (" ~ T.stringof ~ ")";
+    else static if (__traits(isFloating, T))
+        enum typeHint = "esperado número";
+    else
+        enum typeHint = "valor inválido";
+}
+
+unittest
+{
+    int i;
+    assert(parseInteger("-2147483648", i) && i == int.min);
+    assert(!parseInteger("2147483648", i));
+    ubyte b;
+    assert(parseInteger("255", b) && b == 255);
+    assert(!parseInteger("256", b) && !parseInteger("-1", b));
+    long l;
+    assert(parseInteger("-9223372036854775808", l) && l == long.min);
+    double d;
+    assert(parseFloat("1.5e3", d) && d == 1500);
+    assert(!parseFloat("inf", d) && !parseFloat("1.5x", d));
+    const(char)[] r;
+    assert(percentDecode("ana+maria%20s", true, r) && r == "ana maria s");
+    string plain = "abc";
+    assert(percentDecode(plain, true, r) && r.ptr == plain.ptr); // zero-copy
+    assert(!percentDecode("%4", true, r) && !percentDecode("%zz", true, r));
+    enum Color { red, green }
+    Color c;
+    assert(parseScalarText("green", c) && c == Color.green);
+}

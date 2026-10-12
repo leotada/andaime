@@ -1,0 +1,4 @@
+name "web"
+description "Roteamento, introspecção de handlers, JSON e middleware. Não conhece sockets."
+targetType "library"
+dependency "vela:http" version="*"

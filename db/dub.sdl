@@ -1,0 +1,4 @@
+name "db"
+description "Drivers cooperativos (fibers) para bancos de dados. Hoje: PostgreSQL sobre libpq assíncrono."
+targetType "library"
+dependency "vela:engine" version="*"

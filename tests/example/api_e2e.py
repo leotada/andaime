@@ -89,7 +89,7 @@ s, b, h2 = call("GET", "/assets/index.html", auth=False, headers={"If-None-Match
 check("estático: 304 com ETag", s == 304)
 for bad in ["/assets/../dub.sdl", "/assets/%2e%2e/dub.sdl", "/assets/..%2fdub.sdl"]:
     s, b, h = call("GET", bad, auth=False)
-    check("traversal bloqueado " + bad, s == 404 and "vela:db" not in b, b[:60])
+    check("traversal bloqueado " + bad, s == 404 and "vela-pg" not in b, b[:60])
 
 # OpenAPI
 s, b, h = call("GET", "/openapi.json", auth=False)

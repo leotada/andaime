@@ -4,7 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DC="${DC:-dmd}"
-I="-Isource -Ihttp/source -Iweb/source -Iengine/source -Idb/source"
+I="-Isource -Ihttp/source -Iweb/source -Iengine/source -Idrivers/pg/source"
 if [ -z "${VELA_PG:-}" ] || [ -z "${VELA_UP_PLAIN:-}" ] || ! command -v python3 >/dev/null; then
     echo "(pulado: precisa de PostgreSQL, upstream de teste e python3)"; exit 0
 fi

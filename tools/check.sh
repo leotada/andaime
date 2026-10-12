@@ -3,13 +3,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DC="${DC:-dmd}"
-I="-Isource -Ihttp/source -Iweb/source -Iengine/source -Idb/source"
+I="-Isource -Ihttp/source -Iweb/source -Iengine/source -Idrivers/pg/source"
 fail=0
 
 echo "== unittests dos módulos"
 $DC -unittest -main $I -i -run engine/source/vela/engine/package.d
 $DC -unittest -main $I -i -run web/source/vela/web/package.d
-$DC -unittest -main $I -i -run db/source/vela/db/package.d
+$DC -unittest -main $I -i -run drivers/pg/source/vela/db/package.d
 
 echo "== recursos da camada web (grupos, locals, onError, CORS, estáticos, OpenAPI, middlewares)"
 for t in tests/web/*.d; do

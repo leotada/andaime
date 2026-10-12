@@ -32,7 +32,7 @@ parada graciosa. Faltam o kqueue (M5) e o io_uring (M6). Fora do Linux, `serve` 
 de desenvolvimento bloqueante.
 
 O M3 também está pronto no Linux: pool de threads limitado (`offload`), driver PostgreSQL sobre
-libpq assíncrona (`vela:db`) e cliente HTTP/HTTPS cooperativo (`httpClient()`). Os três suspendem
+libpq assíncrona (pacote separado `vela-pg`, em `drivers/pg`) e cliente HTTP/HTTPS cooperativo (`httpClient()`). Os três suspendem
 só o fiber da requisição.
 
 Dentro de um handler, esperar sem bloquear o worker:
@@ -45,7 +45,7 @@ string slow() { sleep(500.msecs); return "ok"; }   // o worker atende outras con
 ### Banco, APIs externas e trabalho pesado (M3)
 
 ```d
-import vela.db;                       // dependency "vela:db"; precisa de libpq5 instalada
+import vela.db;                       // dependency "vela-pg" path="drivers/pg"; precisa de libpq5 instalada
 
 struct User { int id; string name; Maybe!string email; }
 
@@ -116,7 +116,7 @@ curl -X POST localhost:8080/users -d '{"name":"Ana","age":31}'
 
 Testado com DMD 2.113 e LDC 1.43 (Linux x86_64).
 
-Requisitos: um compilador D (DMD ou LDC) e DUB. Para o driver Postgres, `libpq5` instalada em tempo de execução; para HTTPS de saída, OpenSSL 3 (ambas carregadas por dlopen).
+Requisitos: um compilador D (DMD ou LDC) e DUB. O núcleo (`vela`) não precisa de banco algum. Só quem usa o driver opcional `vela-pg` precisa de `libpq5` em tempo de execução; para HTTPS de saída do cliente HTTP, OpenSSL 3 (ambas carregadas por dlopen).
 
 ## Pacotes
 
@@ -125,7 +125,7 @@ Requisitos: um compilador D (DMD ou LDC) e DUB. Para o driver Postgres, `libpq5`
 | `vela:http`   | tipos, parser HTTP/1.1 zero-copy, writer. Sem I/O.          | —          |
 | `vela:web`    | App, router, introspecção de handlers, JSON, middleware     | http       |
 | `vela:engine` | event loop, buffers, conexões, `offload`, cliente HTTP/TLS. Não conhece rotas. | http |
-| `vela:db`     | driver PostgreSQL cooperativo (libpq assíncrona)            | engine     |
+| `vela-pg` (`drivers/pg`) | driver PostgreSQL cooperativo (libpq assíncrona). **Pacote DUB independente**: o núcleo não depende dele nem do libpq | vela:engine |
 | `vela`        | `import vela;` e `vela.server` (cola entre web e engine)    | todos      |
 
 ## Regras que os testes garantem

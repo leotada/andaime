@@ -3,4 +3,4 @@ description "Exemplo de API real: Postgres, API externa, auth, CORS, estáticos 
 targetType "executable"
 sourcePaths "source"
 dependency "vela" path="../.."
-dependency "vela:db" path="../.."
+dependency "vela-pg" path="../../drivers/pg"

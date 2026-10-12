@@ -1,18 +1,18 @@
-/// Introspecção de handlers em tempo de compilação.
+/// Compile-time handler introspection.
 ///
-/// Para cada rota registrada, `dispatch` gera (via `static foreach` raso,
-/// sem recursão de templates) o código que extrai cada argumento do
-/// request e chama o handler. `handlerError` valida a assinatura e devolve
-/// UMA linha explicando o que corrigir, ou "" se está tudo certo.
+/// For each registered route, `dispatch` generates (via shallow `static foreach`,
+/// with no template recursion) the code that extracts each argument from the
+/// request and calls the handler. `handlerError` validates the signature and returns
+/// ONE line explaining what to fix, or "" if everything is fine.
 ///
-/// Regras de binding, pela ordem:
-///   1. nome do parâmetro aparece como {nome} na rota  -> path (escalar)
-///   2. Context                                        -> o próprio contexto
-///      Local!T                                        -> valor de ctx.locals (definido por middleware)
-///   3. JsonBody!T                                     -> corpo JSON decodificado
-///   4. Header!"Nome"                                  -> header obrigatório
-///   5. Optional!X (X = escalar, Header, JsonBody)     -> opcional
-///   6. escalar fora da rota                           -> query (default => opcional)
+/// Binding rules, in order:
+///   1. parameter name appears as {name} in the route  -> path (scalar)
+///   2. Context                                        -> the context itself
+///      Local!T                                        -> value from ctx.locals (set by middleware)
+///   3. JsonBody!T                                     -> decoded JSON body
+///   4. Header!"Name"                                  -> required header
+///   5. Optional!X (X = escalar, Header, JsonBody)     -> optional
+///   6. scalar outside the route                       -> query (default => optional)
 module vela.web.handler_traits;
 
 import vela.http.types;
@@ -23,14 +23,14 @@ import vela.web.convert;
 import vela.web.json;
 
 // =====================================================================
-// Padrão da rota (CTFE)
+// Route pattern (CTFE)
 // =====================================================================
 
 struct RouteInfo
 {
-    string[] params;  /// nomes dos {params}, em ordem
-    bool[] catchAll;  /// true para {*resto}
-    string error;     /// erro de sintaxe, se houver
+    string[] params;  /// names of the {params}, in order
+    bool[] catchAll;  /// true for {*rest}
+    string error;     /// syntax error, if any
 }
 
 RouteInfo parseRoute(string path) pure @safe
@@ -38,7 +38,7 @@ RouteInfo parseRoute(string path) pure @safe
     RouteInfo info;
     if (path.length == 0 || path[0] != '/')
     {
-        info.error = "a rota \"" ~ path ~ "\" deve começar com '/'";
+        info.error = "route \"" ~ path ~ "\" must start with '/'";
         return info;
     }
     size_t i = 0;
@@ -51,7 +51,7 @@ RouteInfo parseRoute(string path) pure @safe
                 j++;
             if (j == path.length || path[j] != '}')
             {
-                info.error = "chave '{' sem '}' na rota \"" ~ path ~ "\"";
+                info.error = "unclosed '{' in route \"" ~ path ~ "\"";
                 return info;
             }
             string name = path[i + 1 .. j];
@@ -60,13 +60,13 @@ RouteInfo parseRoute(string path) pure @safe
                 name = name[1 .. $];
             if (name.length == 0)
             {
-                info.error = "parâmetro sem nome na rota \"" ~ path ~ "\"";
+                info.error = "unnamed parameter in route \"" ~ path ~ "\"";
                 return info;
             }
             foreach (p; info.params)
                 if (p == name)
                 {
-                    info.error = "parâmetro {" ~ name ~ "} repetido na rota \"" ~ path ~ "\"";
+                    info.error = "repeated parameter {" ~ name ~ "} in route \"" ~ path ~ "\"";
                     return info;
                 }
             info.params ~= name;
@@ -77,7 +77,7 @@ RouteInfo parseRoute(string path) pure @safe
             i++;
     }
     if (info.params.length > PathParams.max)
-        info.error = "a rota \"" ~ path ~ "\" tem mais de " ~ ctNum(PathParams.max) ~ " parâmetros";
+        info.error = "route \"" ~ path ~ "\" has more than " ~ ctNum(PathParams.max) ~ " parameters";
     return info;
 }
 
@@ -90,21 +90,21 @@ ptrdiff_t indexOfName(const string[] names, string name) pure nothrow @nogc @saf
 }
 
 // =====================================================================
-// Validação da assinatura: uma linha de erro, ou ""
+// Signature validation: one error line, or ""
 // =====================================================================
 
-/// Tipos de retorno aceitos.
+/// Accepted return types.
 enum isSupportedReturn(R) = is(R == void) || is(R : const(char)[]) || is(R == Response)
     || isWithStatus!R || is(R == struct) || is(R == U[], U) || isScalar!R;
 
 template handlerError(Method method, string path, alias fn, string file, size_t line)
 {
     enum string head = file ~ "(" ~ ctNum(line) ~ "): vela: handler '"
-        ~ __traits(identifier, fn) ~ "' em " ~ methodName(method) ~ " " ~ path ~ ": ";
+        ~ __traits(identifier, fn) ~ "' in " ~ methodName(method) ~ " " ~ path ~ ": ";
 
     static if (__traits(isTemplate, fn) || !is(typeof(fn)))
-        enum handlerError = head ~ "o handler não tem tipo concreto. Se for um lambda, "
-            ~ "declare os tipos dos parâmetros: (int id) => ...";
+        enum handlerError = head ~ "the handler has no concrete type. If it is a lambda, "
+            ~ "declare the parameter types: (int id) => ...";
     else static if (is(typeof(fn) P == __parameters))
     {
         enum handlerError = () {
@@ -119,20 +119,20 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
                 alias T = P[i];
                 enum pname = __traits(identifier, P[i .. i + 1]);
                 enum stc = __traits(getParameterStorageClasses, fn, i);
-                enum bad = "o parâmetro '" ~ pname ~ "' ";
+                enum bad = "parameter '" ~ pname ~ "' ";
                 foreach (s; stc)
                     if (s == "ref" || s == "out" || s == "lazy")
-                        return head ~ bad ~ "não pode ser '" ~ s ~ "'; receba por valor";
+                        return head ~ bad ~ "cannot be '" ~ s ~ "'; take it by value";
 
                 immutable ri = indexOfName(info.params, pname);
                 if (ri >= 0)
                 {
                     used[ri] = true;
                     if (!isScalar!T)
-                        return head ~ bad ~ "vem da rota ({" ~ pname ~ "}) e precisa ser escalar "
-                            ~ "(int, long, string, bool, enum...), mas é '" ~ T.stringof ~ "'";
+                        return head ~ bad ~ "comes from the route ({" ~ pname ~ "}) and must be a scalar "
+                            ~ "(int, long, string, bool, enum...), but it is '" ~ T.stringof ~ "'";
                     if (info.catchAll[ri] && !is(T == string) && !is(T == const(char)[]))
-                        return head ~ bad ~ "captura {*" ~ pname ~ "} e precisa ser string ou const(char)[]";
+                        return head ~ bad ~ "captures {*" ~ pname ~ "} and must be string or const(char)[]";
                 }
                 else
                 {
@@ -140,45 +140,45 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
                     {
                         bodies++;
                         if (method == Method.GET || method == Method.HEAD)
-                            return head ~ bad ~ "é JsonBody, mas " ~ methodName(method)
-                                ~ " não tem corpo; use POST, PUT ou PATCH";
+                            return head ~ bad ~ "is JsonBody, but " ~ methodName(method)
+                                ~ " has no body; use POST, PUT or PATCH";
                     }
                     else static if (is(T == Optional!U, U))
                     {
                         static if (!(isScalar!U || isHeader!U))
-                            return head ~ bad ~ "é Optional!(" ~ U.stringof ~ "); Optional aceita "
-                                ~ "escalar, Header!\"Nome\" ou JsonBody!T";
+                            return head ~ bad ~ "is Optional!(" ~ U.stringof ~ "); Optional accepts "
+                                ~ "a scalar, Header!\"Name\" or JsonBody!T";
                     }
                     else static if (!(is(T == Context) || isLocal!T || isHeader!T || isScalar!T))
-                        return head ~ bad ~ "tem tipo '" ~ T.stringof ~ "', que o vela não sabe extrair. "
-                            ~ "Use escalar (int, string, enum...), JsonBody!T, Header!\"Nome\", Local!T, Optional!T ou Context";
+                        return head ~ bad ~ "has type '" ~ T.stringof ~ "', which vela cannot extract. "
+                            ~ "Use a scalar (int, string, enum...), JsonBody!T, Header!\"Name\", Local!T, Optional!T or Context";
                 }
             }}
 
             foreach (k, u; used)
                 if (!u)
-                    return head ~ "a rota declara {" ~ info.params[k] ~ "}, mas a função não tem "
-                        ~ "parâmetro chamado '" ~ info.params[k] ~ "'";
+                    return head ~ "the route declares {" ~ info.params[k] ~ "}, but the function has no "
+                        ~ "parameter named '" ~ info.params[k] ~ "'";
             if (bodies > 1)
-                return head ~ "há mais de um JsonBody; junte os campos num único DTO";
+                return head ~ "more than one JsonBody; merge the fields into a single DTO";
 
             static if (is(typeof(fn) R == return))
                 static if (!isSupportedReturn!R)
-                    return head ~ "o retorno '" ~ R.stringof ~ "' não é suportado. Retorne void, "
-                        ~ "string, um struct/array (JSON), WithStatus!T ou Response";
+                    return head ~ "the return type '" ~ R.stringof ~ "' is not supported. Return void, "
+                        ~ "string, a struct/array (JSON), WithStatus!T or Response";
             return "";
         }();
     }
     else
-        enum handlerError = head ~ "não é uma função";
+        enum handlerError = head ~ "is not a function";
 }
 
 // =====================================================================
-// Dispatch gerado
+// Generated dispatch
 // =====================================================================
 
-/// Extrai os argumentos de `ctx`, chama o handler e escreve a resposta.
-/// `self` (opcional) é a instância do controller para métodos.
+/// Extracts the arguments from `ctx`, calls the handler and writes the response.
+/// `self` (optional) is the controller instance for methods.
 void dispatch(Method method, string path, alias fn, Self...)(Context ctx, Self self)
     if (Self.length <= 1)
 {
@@ -201,7 +201,7 @@ void dispatch(Method method, string path, alias fn, Self...)(Context ctx, Self s
             {
                 auto lp = ctx.locals.find!U();
                 if (lp is null)
-                    throw new Exception("Local!" ~ U.stringof ~ " ausente: nenhum middleware chamou ctx.locals.set(" ~ U.stringof ~ ")");
+                    throw new Exception("Local!" ~ U.stringof ~ " missing: no middleware called ctx.locals.set(" ~ U.stringof ~ ")");
                 args[i].value = *lp;
             }
             else static if (is(T == JsonBody!U, U))
@@ -210,7 +210,7 @@ void dispatch(Method method, string path, alias fn, Self...)(Context ctx, Self s
             {
                 auto hv = ctx.request.header(n);
                 if (hv is null)
-                    ctx.errors.add("header", n, "header obrigatório ausente");
+                    ctx.errors.add("header", n, "required header missing");
                 else
                     args[i].value = hv;
             }
@@ -242,18 +242,18 @@ void dispatch(Method method, string path, alias fn, Self...)(Context ctx, Self s
                     }
                 }
             }
-            else // escalar fora da rota => query
+            else // scalar outside the route => query
             {
                 const(char)[] raw;
                 if (ctx.request.rawQueryParam(pname, raw))
                     bindText(ctx, raw, true, "query", pname, args[i]);
                 else
                 {
-                    // valor default declarado na assinatura (`int limit = 20`)
+                    // default value declared in the signature (`int limit = 20`)
                     static if (is(typeof(((P[i .. i + 1] __a) => __a[0])())))
                         args[i] = ((P[i .. i + 1] __a) => __a[0])();
                     else
-                        ctx.errors.add("query", pname, "parâmetro obrigatório ausente");
+                        ctx.errors.add("query", pname, "required parameter missing");
                 }
             }
         }}
@@ -278,7 +278,7 @@ void dispatch(Method method, string path, alias fn, Self...)(Context ctx, Self s
         }
     }
     else
-        static assert(0, "vela: dispatch sem handlerError antes (bug interno)");
+        static assert(0, "vela: dispatch without a prior handlerError (internal bug)");
 }
 
 private bool bindText(T)(Context ctx, const(char)[] raw, bool plusIsSpace, string loc,
@@ -287,7 +287,7 @@ private bool bindText(T)(Context ctx, const(char)[] raw, bool plusIsSpace, strin
     const(char)[] text;
     if (!percentDecode(raw, plusIsSpace, text))
     {
-        ctx.errors.add(loc, name, "codificação % inválida");
+        ctx.errors.add(loc, name, "invalid % encoding");
         return false;
     }
     if (!parseScalarText(text, dest))
@@ -302,13 +302,13 @@ private bool bindBody(T)(Context ctx, ref T dest)
 {
     if (ctx.request.body.length == 0)
     {
-        ctx.errors.add("body", "", "corpo JSON obrigatório");
+        ctx.errors.add("body", "", "JSON body required");
         return false;
     }
     return decodeJson(cast(const(char)[]) ctx.request.body, dest, ctx.errors);
 }
 
-/// 422 no formato do FastAPI: {"detail":[{"loc":["query","limit"],"msg":"..."}]}
+/// 422 in FastAPI format: {"detail":[{"loc":["query","limit"],"msg":"..."}]}
 void writeValidationErrors(Context ctx)
 {
     auto o = &ctx.response.body;
@@ -334,7 +334,7 @@ void writeValidationErrors(Context ctx)
     o.put("]}");
 }
 
-/// Escreve o valor retornado pelo handler.
+/// Writes the value returned by the handler.
 void writeResult(R)(Context ctx, ref R r)
 {
     static if (is(R == Response))

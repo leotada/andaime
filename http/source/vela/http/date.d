@@ -1,11 +1,11 @@
-/// Header `Date` (IMF-fixdate, RFC 9110 §5.6.7) com cache de um segundo.
-/// Formatar uma vez por segundo por thread é mais barato que por resposta.
+/// `Date` header (IMF-fixdate, RFC 9110 §5.6.7) with a one-second cache.
+/// Formatting once per second per thread is cheaper than once per response.
 module vela.http.date;
 
 import core.stdc.time : time_t, time, tm;
 import core.sys.posix.time : gmtime_r;
 
-/// Escreve "Mon, 12 Oct 2026 21:10:00 GMT" (29 bytes) para o instante `t`.
+/// Writes "Mon, 12 Oct 2026 21:10:00 GMT" (29 bytes) for instant `t`.
 void formatHttpDate(time_t t, ref char[29] buf) nothrow @nogc @trusted
 {
     static immutable string[7] days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -38,11 +38,11 @@ void formatHttpDate(time_t t, ref char[29] buf) nothrow @nogc @trusted
     buf[25 .. 29] = " GMT";
 }
 
-private char[29] cached;       // variáveis de módulo são thread-local: um cache por worker
+private char[29] cached;       // module variables are thread-local: one cache per worker
 private time_t cachedAt = -1;
 
-/// O `Date` de agora. A fatia vale até a próxima chamada nesta thread: use-a
-/// já (o `setHeader` e o `writeResponseHead` acontecem sem suspender o fiber).
+/// The `Date` for now. The slice is valid until the next call on this thread: use it
+/// right away (`setHeader` and `writeResponseHead` happen without suspending the fiber).
 const(char)[] httpDate() nothrow @nogc @trusted
 {
     immutable now = time(null);

@@ -1,24 +1,24 @@
-/// Driver PostgreSQL cooperativo sobre a libpq assíncrona.
+/// Cooperative PostgreSQL driver over asynchronous libpq.
 ///
-/// Dentro de uma requisição, toda espera (conexão, envio, resposta) passa por
-/// `awaitFd`: o fiber suspende e o worker atende outras conexões. Nenhuma
-/// chamada bloqueia o loop, qualquer que seja a latência do banco (RDS remoto,
-/// por exemplo). O DNS do host é resolvido numa thread do pool (`offload`).
+/// Inside a request, every wait (connect, send, response) goes through
+/// `awaitFd`: the fiber suspends and the worker serves other connections. No
+/// call blocks the loop, whatever the database latency (a remote RDS,
+/// for example). The host's DNS is resolved on a pool thread (`offload`).
 ///
 /// ```d
-/// auto db = pgPool("host=meu-rds.exemplo.rds.amazonaws.com dbname=app user=app");
+/// auto db = pgPool("host=my-rds.example.rds.amazonaws.com dbname=app user=app");
 /// auto res = db.query("select id, name from users where id = $1", id);
-/// auto users = res.rowsAs!User;          // User tem campos id e name
+/// auto users = res.rowsAs!User;          // User has fields id and name
 /// ```
 ///
-/// Regras:
-///  - cada worker tem seu próprio pool de conexões (thread-local): use `pgPool`;
-///  - uma conexão atende uma consulta por vez; o pool dá uma por fiber;
-///  - se a requisição é cancelada ou a consulta estoura o prazo no meio, o
-///    driver pede ao servidor para cancelar e DESCARTA a conexão (nunca a
-///    devolve ao pool com resposta pendente);
-///  - parâmetros vão em formato texto ($1, $2...), então não há SQL injection
-///    por concatenação: nunca monte SQL com valores do usuário.
+/// Rules:
+///  - each worker has its own connection pool (thread-local): use `pgPool`;
+///  - a connection serves one query at a time; the pool gives one per fiber;
+///  - if the request is cancelled or the query hits its deadline midway, the
+///    driver asks the server to cancel and DISCARDS the connection (it never
+///    returns it to the pool with a response pending);
+///  - parameters go in text format ($1, $2...), so there is no SQL injection
+///    by concatenation: never build SQL with user-supplied values.
 module vela.db.pg;
 
 import core.stdc.stdio : snprintf;
@@ -32,10 +32,10 @@ import vela.engine.fiberio : awaitFd, currentScheduler, IoEvent, RequestCancelle
 import vela.engine.offload : offload, offloadPool;
 import vela.db.libpq;
 
-// ============================================================ erros
+// ============================================================ errors
 
-/// Erro do banco ou do driver. `sqlState` é o código de 5 caracteres do
-/// PostgreSQL (ex.: "23505" = violação de unicidade); vazio para erros do driver.
+/// Database or driver error. `sqlState` is PostgreSQL's 5-character
+/// code (e.g. "23505" = unique violation); empty for driver errors.
 class PgError : Exception
 {
     string sqlState;
@@ -50,18 +50,18 @@ class PgError : Exception
     bool isForeignKeyViolation() const pure nothrow @safe @nogc => sqlState == "23503";
 }
 
-/// A consulta passou do prazo (`PgConfig.queryTimeout`); o servidor foi avisado.
+/// The query went past its deadline (`PgConfig.queryTimeout`); the server was notified.
 final class PgTimeout : PgError
 {
-    this(string msg = "vela.db: consulta passou do prazo", string file = __FILE__, size_t line = __LINE__) pure nothrow @safe
+    this(string msg = "vela.db: query timed out", string file = __FILE__, size_t line = __LINE__) pure nothrow @safe
     {
         super(msg, "57014", file, line);
     }
 }
 
-// ============================================================ valores
+// ============================================================ values
 
-/// Coluna/parâmetro que pode ser NULL.
+/// Column/parameter that may be NULL.
 struct Maybe(T)
 {
     T value;
@@ -71,17 +71,17 @@ struct Maybe(T)
     static Maybe none() { return Maybe.init; }
 }
 
-// ============================================================ resultado
+// ============================================================ result
 
-/// Resultado de uma consulta. As fatias de `text` apontam para memória da
-/// libpq e valem até `close()` (ou até o objeto ser coletado): copie com
-/// `.idup` o que precisar guardar. `rowsAs` e `get` já copiam.
+/// Result of a query. The `text` slices point to libpq's memory
+/// and are valid until `close()` (or until the object is collected): copy with
+/// `.idup` whatever you need to keep. `rowsAs` and `get` already copy.
 final class PgResult
 {
     private PGresult* res;
     private string tag;
 
-    /// Número de linhas e de colunas.
+    /// Number of rows and columns.
     int rows, cols;
 
     private this(PGresult* r)
@@ -102,7 +102,7 @@ final class PgResult
         }
     }
 
-    /// Linhas afetadas por INSERT/UPDATE/DELETE ("" para SELECT).
+    /// Rows affected by INSERT/UPDATE/DELETE ("" for SELECT).
     const(char)[] affected() const nothrow
     {
         auto p = pq.PQcmdTuples(res);
@@ -111,14 +111,14 @@ final class PgResult
 
     bool isNull(int row, int col) const nothrow => pq.PQgetisnull(res, row, col) != 0;
 
-    /// O valor em texto (zero-copy). Vazio para NULL: use `isNull` para distinguir.
+    /// The value as text (zero-copy). Empty for NULL: use `isNull` to tell them apart.
     const(char)[] text(int row, int col) const nothrow
     {
         checkIdx(row, col);
         return pq.PQgetvalue(res, row, col)[0 .. pq.PQgetlength(res, row, col)];
     }
 
-    /// Índice da coluna chamada `name`, ou -1.
+    /// Index of the column called `name`, or -1.
     int column(const(char)[] name) const nothrow
     {
         foreach (c; 0 .. cols)
@@ -127,7 +127,7 @@ final class PgResult
         return -1;
     }
 
-    /// Converte uma célula para `T` (inteiros, bool, double, string, Maybe!X).
+    /// Converts a cell to `T` (integers, bool, double, string, Maybe!X).
     T get(T)(int row, int col) const
     {
         checkIdx(row, col);
@@ -141,12 +141,12 @@ final class PgResult
         {
             if (isNull(row, col))
                 throw new PgError("vela.db: coluna '" ~ cstr(pq.PQfname(res, col)).idup
-                        ~ "' é NULL; use Maybe!" ~ T.stringof ~ " no campo");
+                        ~ "' is NULL; use Maybe!" ~ T.stringof ~ " in the field");
             return parseCell!T(text(row, col), cstr(pq.PQfname(res, col)));
         }
     }
 
-    /// Mapeia todas as linhas para uma struct, casando campos e colunas pelo nome.
+    /// Maps all rows to a struct, matching fields and columns by name.
     T[] rowsAs(T)() const if (is(T == struct))
     {
         int[T.tupleof.length] idx;
@@ -154,8 +154,8 @@ final class PgResult
         {
             idx[i] = column(__traits(identifier, f));
             if (idx[i] < 0)
-                throw new PgError("vela.db: a consulta não devolveu a coluna '"
-                        ~ __traits(identifier, f) ~ "' esperada por " ~ T.stringof);
+                throw new PgError("vela.db: the query did not return the column '"
+                        ~ __traits(identifier, f) ~ "' expected by " ~ T.stringof);
         }
         auto out_ = new T[rows];
         foreach (r; 0 .. rows)
@@ -166,18 +166,18 @@ final class PgResult
         return out_;
     }
 
-    /// Primeira linha como struct; lança se não houver.
+    /// First row as a struct; throws if there is none.
     T one(T)() const if (is(T == struct))
     {
         auto all = rowsAs!T;
         if (all.length == 0)
-            throw new PgError("vela.db: a consulta não devolveu linhas");
+            throw new PgError("vela.db: the query returned no rows");
         return all[0];
     }
 
     private void checkIdx(int row, int col) const nothrow
     {
-        assert(row >= 0 && row < rows && col >= 0 && col < cols, "vela.db: linha/coluna fora do resultado");
+        assert(row >= 0 && row < rows && col >= 0 && col < cols, "vela.db: row/column outside the result");
     }
 }
 
@@ -235,7 +235,7 @@ private T parseCell(T)(const(char)[] s, const(char)[] col)
     }
     else static if (isFloatingPoint!T)
     {
-        // os valores da libpq são terminados em zero
+        // libpq values are zero-terminated
         const(char)* end;
         auto v = strtod(s.ptr, &end);
         if (end != s.ptr + s.length || s.length == 0)
@@ -245,18 +245,18 @@ private T parseCell(T)(const(char)[] s, const(char)[] col)
     else static if (isSomeString!T)
         return s.idup;
     else
-        static assert(0, "vela.db: tipo de campo não suportado em rowsAs/get: " ~ T.stringof
-                ~ " (use inteiros, bool, double, string ou Maybe!X)");
+        static assert(0, "vela.db: unsupported field type in rowsAs/get: " ~ T.stringof
+                ~ " (use integers, bool, double, string or Maybe!X)");
 }
 
 private PgError badCell(const(char)[] col, string type, const(char)[] val)
 {
-    return new PgError("vela.db: coluna '" ~ col.idup ~ "' tem o valor '" ~ val.idup ~ "', que não é " ~ type);
+    return new PgError("vela.db: column '" ~ col.idup ~ "' has the value '" ~ val.idup ~ "', which is not " ~ type);
 }
 
-// ============================================================ parâmetros
+// ============================================================ parameters
 
-/// Codifica os parâmetros em texto para PQsendQueryParams.
+/// Encodes the parameters as text for PQsendQueryParams.
 private struct Encoded(size_t N)
 {
     char[] buf;
@@ -307,8 +307,8 @@ private struct Encoded(size_t N)
         else static if (isSomeString!U || is(U : const(char)[]))
             return append(a);
         else
-            static assert(0, "vela.db: parâmetro de tipo não suportado: " ~ A.stringof
-                    ~ " (use inteiros, bool, double, string, null ou Maybe!X)");
+            static assert(0, "vela.db: unsupported parameter type: " ~ A.stringof
+                    ~ " (use integers, bool, double, string, null or Maybe!X)");
     }
 
     private ptrdiff_t append(const(char)[] s)
@@ -320,31 +320,31 @@ private struct Encoded(size_t N)
     }
 }
 
-// ============================================================ configuração
+// ============================================================ configuration
 
 struct PgConfig
 {
-    string conninfo;                      /// "host=... dbname=... user=..." ou URI postgresql://
-    uint maxConns = 8;                    /// conexões por worker
+    string conninfo;                      /// "host=... dbname=... user=..." or postgresql:// URI
+    uint maxConns = 8;                    /// connections per worker
     Duration connectTimeout = 10.seconds;
-    Duration acquireTimeout = 5.seconds;  /// espera por uma conexão livre
-    Duration queryTimeout = 30.seconds;   /// prazo de cada consulta
-    Duration idleTimeout = 5.minutes;     /// conexão ociosa por mais que isso é descartada
-    /// Prepara cada SQL na primeira vez e reaproveita o plano nas próximas (até 128 por
-    /// conexão). Desligado por padrão: PgBouncer em modo transaction e alguns proxies
-    /// não aceitam statements nomeados. Ligue quando falar direto com o Postgres/RDS.
+    Duration acquireTimeout = 5.seconds;  /// wait for a free connection
+    Duration queryTimeout = 30.seconds;   /// deadline of each query
+    Duration idleTimeout = 5.minutes;     /// connection idle longer than this is discarded
+    /// Prepares each SQL the first time and reuses the plan afterwards (up to 128 per
+    /// connection). Off by default: PgBouncer in transaction mode and some proxies
+    /// do not accept named statements. Turn it on when talking straight to Postgres/RDS.
     bool cacheStatements = false;
 }
 
-// ============================================================ conexão
+// ============================================================ connection
 
-/// Uma conexão. Use pelo pool (`PgPool.acquire`/`query`); uma consulta por vez.
+/// A connection. Use it through the pool (`PgPool.acquire`/`query`); one query at a time.
 final class PgConn
 {
     private PGconn* c;
     private Duration queryTimeout;
     private bool cacheStatements;
-    private uint[string] stmts;      // SQL -> número do statement preparado nesta conexão
+    private uint[string] stmts;      // SQL -> prepared statement number on this connection
     private enum maxStatements = 128;
     private MonoTime lastUsed;
     package bool broken;
@@ -359,7 +359,7 @@ final class PgConn
 
     ~this() { shutdown(); }
 
-    /// Fecha a conexão (idempotente).
+    /// Closes the connection (idempotent).
     void shutdown() nothrow @nogc
     {
         if (c !is null)
@@ -372,17 +372,17 @@ final class PgConn
 
     bool usable() const nothrow => c !is null && !broken && pq.PQstatus(c) == CONNECTION_OK;
 
-    /// Abre uma conexão sem bloquear o worker.
+    /// Opens a connection without blocking the worker.
     static PgConn connect(string conninfo, Duration connectTimeout, Duration queryTimeout, bool cacheStatements = false)
     {
         if (auto err = loadLibpq())
             throw new PgError(err);
 
-        // PQconnectStart resolve DNS de forma síncrona: numa thread do pool.
+        // PQconnectStart resolves DNS synchronously: on a pool thread.
         auto zinfo = (conninfo ~ '\0');
         PGconn* c = offload(() => pq.PQconnectStart(zinfo.ptr));
         if (c is null)
-            throw new PgError("vela.db: PQconnectStart falhou (sem memória)");
+            throw new PgError("vela.db: PQconnectStart failed (out of memory)");
         auto conn = new PgConn(c, queryTimeout, cacheStatements);
         pq.PQsetNoticeProcessor(c, &silentNotice, null);
 
@@ -399,19 +399,19 @@ final class PgConn
         {
             immutable left = deadline - MonoTime.currTime;
             if (left <= Duration.zero)
-                throw new PgError("vela.db: tempo esgotado ao conectar");
+                throw new PgError("vela.db: timed out while connecting");
             immutable fd = pq.PQsocket(c);
             if (fd < 0)
                 throw new PgError("vela.db: " ~ conn.lastError());
             if (state == PGRES_POLLING_READING)
             {
                 if (awaitFd(fd, IoEvent.readable, left) == 0)
-                    throw new PgError("vela.db: tempo esgotado ao conectar");
+                    throw new PgError("vela.db: timed out while connecting");
             }
             else if (state == PGRES_POLLING_WRITING)
             {
                 if (awaitFd(fd, IoEvent.writable, left) == 0)
-                    throw new PgError("vela.db: tempo esgotado ao conectar");
+                    throw new PgError("vela.db: timed out while connecting");
             }
             state = pq.PQconnectPoll(c);
             if (state == PGRES_POLLING_OK)
@@ -422,7 +422,7 @@ final class PgConn
         return conn;
     }
 
-    /// Executa `sql` com parâmetros $1..$n e devolve o resultado.
+    /// Runs `sql` with parameters $1..$n and returns the result.
     PgResult query(Args...)(const(char)[] sql, Args args)
     {
         auto enc = Encoded!(Args.length)(args);
@@ -432,13 +432,13 @@ final class PgConn
     private void exec_(const(char)[] sql)
     {
         immutable old = cacheStatements;
-        cacheStatements = false; // utilitários como DEALLOCATE não passam pelo cache
+        cacheStatements = false; // utilities such as DEALLOCATE do not go through the cache
         scope (exit)
             cacheStatements = old;
         run(sql, null, true).close();
     }
 
-    /// Executa um comando sem interesse no resultado (BEGIN, UPDATE...).
+    /// Runs a command without caring about the result (BEGIN, UPDATE...).
     void exec(Args...)(const(char)[] sql, Args args)
     {
         query(sql, args).close();
@@ -447,14 +447,14 @@ final class PgConn
     private PgResult run(const(char)[] sql, const(char)*[] vals, bool retried = false)
     {
         if (!usable)
-            throw new PgError("vela.db: conexão fechada");
+            throw new PgError("vela.db: connection closed");
         auto zsql = sql ~ '\0';
 
         bool clean;
         scope (exit)
         {
             lastUsed = MonoTime.currTime;
-            if (!clean) // cancelamento, prazo ou erro de rede no meio: a conexão não volta ao pool
+            if (!clean) // cancellation, deadline or network error midway: the connection does not go back to the pool
                 abort();
         }
 
@@ -516,7 +516,7 @@ final class PgConn
             {
                 if (kept !is null)
                     pq.PQclear(kept);
-                kept = r; // vale o último resultado do comando
+                kept = r; // the last result of the command counts
             }
             else
                 pq.PQclear(r);
@@ -524,7 +524,7 @@ final class PgConn
         clean = true;
 
         if (kept is null)
-            throw new PgError("vela.db: o servidor não devolveu resultado");
+            throw new PgError("vela.db: the server returned no result");
         if (keptIsError)
         {
             auto state = cstr(pq.PQresultErrorField(kept, PG_DIAG_SQLSTATE)).idup;
@@ -533,8 +533,8 @@ final class PgConn
             kept = null;
             if (cached && state == "0A000" && !retried)
             {
-                // "cached plan must not change result type" (ALTER TABLE depois de preparar):
-                // esquece o statement e repete uma vez
+                // "cached plan must not change result type" (ALTER TABLE after preparing):
+                // forget the statement and repeat once
                 stmts.remove(cast(string) sql);
                 exec_("DEALLOCATE ALL");
                 stmts = null;
@@ -545,7 +545,7 @@ final class PgConn
         return new PgResult(kept);
     }
 
-    /// Prepara `sql` como statement `no` e espera a confirmação do servidor.
+    /// Prepares `sql` as statement `no` and waits for the server's confirmation.
     private void prepare(const(char)[] sql, const(char)[] zsql, uint no, size_t nparams, MonoTime deadline)
     {
         char[16] name = stmtName(no);
@@ -592,7 +592,7 @@ final class PgConn
         return n;
     }
 
-    /// Termina de enviar a consulta (o buffer de saída pode não caber de uma vez).
+    /// Finishes sending the query (the output buffer may not fit all at once).
     private void flush(MonoTime deadline)
     {
         for (;;)
@@ -611,7 +611,7 @@ final class PgConn
         }
     }
 
-    /// Espera até `PQgetResult` poder devolver sem bloquear.
+    /// Waits until `PQgetResult` can return without blocking.
     private void waitResult(MonoTime deadline)
     {
         while (pq.PQisBusy(c))
@@ -631,9 +631,9 @@ final class PgConn
         return d <= Duration.zero ? Duration.zero : d;
     }
 
-    /// Pede ao servidor para cancelar o que está rodando e fecha a conexão.
-    /// O cancelamento abre outra conexão TCP; vai para o pool de threads para
-    /// não segurar o worker (se o pool estiver cheio, faz na hora).
+    /// Asks the server to cancel what is running and closes the connection.
+    /// The cancellation opens another TCP connection; it goes to the thread pool so
+    /// it does not hold the worker (if the pool is full, it does it right away).
     private void abort() nothrow
     {
         if (c is null)
@@ -681,12 +681,12 @@ private string trimEol(string s) pure nothrow @safe
 private final class Waiter
 {
     int efd = -1;
-    PgConn conn;     /// entregue direto por release()
+    PgConn conn;     /// handed over directly by release()
     bool signaled;
 }
 
-/// Pool de conexões de UM worker (não é thread-safe de propósito: cada worker
-/// tem o seu, veja `pgPool`).
+/// Connection pool of ONE worker (not thread-safe on purpose: each worker
+/// has its own, see `pgPool`).
 final class PgPool
 {
     private PgConfig cfg;
@@ -696,16 +696,16 @@ final class PgPool
 
     this(PgConfig cfg)
     {
-        assert(cfg.maxConns > 0, "vela.db: maxConns precisa ser > 0");
+        assert(cfg.maxConns > 0, "vela.db: maxConns must be > 0");
         this.cfg = cfg;
     }
 
-    /// Conexões abertas (ociosas + emprestadas) e ociosas.
+    /// Open connections (idle + lent out) and idle ones.
     uint openCount() const nothrow => open;
     size_t idleCount() const nothrow => idle.length;
 
-    /// Pega uma conexão, abrindo outra se couber ou esperando uma livre.
-    /// Devolva com `release` (ou use `lease`/`query`).
+    /// Takes a connection, opening another if there is room or waiting for a free one.
+    /// Give it back with `release` (or use `lease`/`query`).
     PgConn acquire()
     {
         immutable deadline = MonoTime.currTime + cfg.acquireTimeout;
@@ -728,16 +728,16 @@ final class PgPool
                 catch (Throwable t)
                 {
                     open--;
-                    wakeOne(null); // alguém esperando pode tentar abrir a sua
+                    wakeOne(null); // someone waiting may try to open theirs
                     throw t;
                 }
             }
 
-            // pool cheio: entra na fila e espera uma devolução
+            // pool full: join the queue and wait for a return
             auto w = new Waiter;
             w.efd = eventfd(0, 0x800 | 0x80000);
             if (w.efd < 0)
-                throw new PgError("vela.db: eventfd falhou");
+                throw new PgError("vela.db: eventfd failed");
             waiters ~= w;
             bool served;
             scope (exit)
@@ -746,8 +746,8 @@ final class PgPool
                 close(w.efd);
                 if (!served && w.signaled)
                 {
-                    // fomos acordados mas saímos antes de usar (prazo/cancelamento):
-                    // repassa a conexão (ou a vaga) ao próximo da fila
+                    // we were woken but left before using it (deadline/cancellation):
+                    // pass the connection (or the slot) on to the next in the queue
                     if (w.conn !is null)
                         release(w.conn);
                     else
@@ -756,16 +756,16 @@ final class PgPool
             }
             immutable left = deadline - MonoTime.currTime;
             if (left <= Duration.zero || awaitFd(w.efd, IoEvent.readable, left) == 0)
-                throw new PgError("vela.db: pool de conexões esgotado (todas em uso por mais de "
+                throw new PgError("vela.db: connection pool exhausted (all in use for more than "
                         ~ "acquireTimeout)");
             served = true;
             if (w.conn !is null)
                 return w.conn;
-            // acordado sem conexão: uma foi descartada; tenta de novo
+            // woken without a connection: one was discarded; try again
         }
     }
 
-    /// Devolve a conexão. Quebrada/fechada: é descartada e libera a vaga.
+    /// Gives the connection back. Broken/closed: it is discarded and frees the slot.
     void release(PgConn c) nothrow
     {
         if (c is null)
@@ -782,7 +782,7 @@ final class PgPool
         idle ~= c;
     }
 
-    /// Acorda o primeiro da fila, entregando `c` (pode ser null = "vaga livre").
+    /// Wakes the first in the queue, handing over `c` (may be null = "free slot").
     private bool wakeOne(PgConn c) nothrow
     {
         foreach (i, w; waiters)
@@ -808,10 +808,10 @@ final class PgPool
             }
     }
 
-    /// Empresta uma conexão por escopo: devolvida sozinha ao sair.
+    /// Lends a connection for a scope: returned by itself on exit.
     Lease lease() => Lease(this, acquire());
 
-    /// Atalho: pega uma conexão, executa e devolve.
+    /// Shortcut: takes a connection, runs and gives it back.
     PgResult query(Args...)(const(char)[] sql, Args args)
     {
         auto l = lease();
@@ -823,7 +823,7 @@ final class PgPool
         query(sql, args).close();
     }
 
-    /// Roda `body` dentro de BEGIN/COMMIT na mesma conexão; ROLLBACK se lançar.
+    /// Runs `body` inside BEGIN/COMMIT on the same connection; ROLLBACK if it throws.
     T transaction(T)(T delegate(PgConn) body_)
     {
         auto l = lease();
@@ -855,7 +855,7 @@ final class PgPool
         }
     }
 
-    /// Fecha todas as conexões ociosas.
+    /// Closes all idle connections.
     void closeAll() nothrow
     {
         foreach (c; idle)
@@ -867,7 +867,7 @@ final class PgPool
     }
 }
 
-/// Conexão emprestada; devolve ao pool no destrutor.
+/// Connection lent out; returns to the pool in the destructor.
 struct Lease
 {
     private PgPool pool;
@@ -884,10 +884,10 @@ struct Lease
     }
 }
 
-private PgPool[string] tlsPools; // thread-local: um pool por worker
+private PgPool[string] tlsPools; // thread-local: one pool per worker
 
-/// O pool deste worker para `conninfo` (criado no primeiro uso). Chame de
-/// dentro dos handlers: cada thread/worker ganha o seu, sem locks.
+/// This worker's pool for `conninfo` (created on first use). Call it from
+/// inside the handlers: each thread/worker gets its own, with no locks.
 PgPool pgPool(string conninfo, uint maxConns = 8)
 {
     if (auto p = conninfo in tlsPools)
@@ -898,7 +898,7 @@ PgPool pgPool(string conninfo, uint maxConns = 8)
     return tlsPools[conninfo] = new PgPool(cfg);
 }
 
-/// Idem, com configuração completa.
+/// Same, with the full configuration.
 PgPool pgPool(PgConfig cfg)
 {
     if (auto p = cfg.conninfo in tlsPools)

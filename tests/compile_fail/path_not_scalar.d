@@ -1,4 +1,4 @@
-// EXPECT: o parâmetro 'id' vem da rota ({id}) e precisa ser escalar (int, long, string, bool, enum...), mas é 'Dto'
+// EXPECT: parameter 'id' comes from the route ({id}) and must be a scalar (int, long, string, bool, enum...), but it is 'Dto'
 import vela;
 struct Dto { long v; }
 string getUser(Dto id) => "x";

@@ -1,18 +1,18 @@
-/// `openapi.json` gerado a partir das assinaturas dos handlers.
+/// `openapi.json` generated from the handler signatures.
 ///
-/// A mesma introspecção que gera o dispatch (nomes e tipos dos parâmetros,
-/// DTOs, tipo de retorno) descreve a API: o contrato HTTP não é escrito duas vezes.
+/// The same introspection that generates the dispatch (parameter names and types,
+/// DTOs, return type) describes the API: the HTTP contract is not written twice.
 ///
-///     app.serveOpenApi(OpenApiInfo("Minha API", "1.0.0"));   // GET /openapi.json e /docs
+///     app.serveOpenApi(OpenApiInfo("My API", "1.0.0"));   // GET /openapi.json and /docs
 ///
 /// Detalhes:
-///  - `{param}` na rota -> parâmetro de path; escalar fora da rota -> query
-///    (obrigatório, a menos que tenha valor default ou seja Optional);
-///  - `Header!"X"` -> header; `JsonBody!T` -> requestBody com o schema de T;
-///  - `Context` e `Local!T` não aparecem (não vêm do cliente);
-///  - structs viram `components/schemas`; `@minLength`, `@maxLength`, `@inRange`,
-///    `@jsonKey`, `@optional` e `@jsonIgnore` são respeitados;
-///  - `@summary("texto")` no handler preenche o resumo da operação.
+///  - `{param}` in the route -> path parameter; scalar outside the route -> query
+///    (required, unless it has a default value or is Optional);
+///  - `Header!"X"` -> header; `JsonBody!T` -> requestBody with T's schema;
+///  - `Context` and `Local!T` do not appear (they do not come from the client);
+///  - structs become `components/schemas`; `@minLength`, `@maxLength`, `@inRange`,
+///    `@jsonKey`, `@optional` and `@jsonIgnore` are honored;
+///  - `@summary("text")` on the handler fills in the operation summary.
 module vela.web.openapi;
 
 import vela.http.types : Method, methodName;
@@ -21,7 +21,7 @@ import vela.web.context : Context;
 import vela.web.dto : jsonKey, optional, jsonIgnore, minLength, maxLength, inRange, hasUda;
 import vela.web.handler_traits : parseRoute, indexOfName;
 
-/// Texto de uma linha da operação: `@summary("Busca um usuário") UserResponse getUser(long id)`.
+/// One-line operation text: `@summary("Fetch a user") UserResponse getUser(long id)`.
 struct summary { string text; }
 
 struct OpenApiInfo
@@ -29,22 +29,22 @@ struct OpenApiInfo
     string title = "API";
     string version_ = "0.1.0";
     string description;
-    /// Caminho do JSON; "" = não serve.
+    /// JSON path; "" = not served.
     string jsonPath = "/openapi.json";
-    /// Caminho da página interativa (Swagger UI via CDN); "" = não serve.
+    /// Interactive page path (Swagger UI via CDN); "" = not served.
     string docsPath = "/docs";
 }
 
-/// Schemas nomeados (`components/schemas`) acumulados durante a geração.
+/// Named schemas (`components/schemas`) accumulated during generation.
 struct Components
 {
-    string[string] schemas;      // nome -> JSON
-    bool[string] building;       // evita recursão infinita em tipos que se referenciam
+    string[string] schemas;      // name -> JSON
+    bool[string] building;       // avoids infinite recursion on self-referencing types
 }
 
 alias OpDescribe = string delegate(ref Components comps, string pattern) @safe;
 
-// ------------------------------------------------------------ JSON mínimo
+// ------------------------------------------------------------ minimal JSON
 
 string q(scope const(char)[] s) pure @safe
 {
@@ -74,7 +74,7 @@ string q(scope const(char)[] s) pure @safe
 
 private string num(double v) @safe
 {
-    // inteiros exatos sem notação científica (@inRange costuma ter limites inteiros)
+    // exact integers without scientific notation (@inRange usually has integer bounds)
     if (v == cast(long) v && v > -1e15 && v < 1e15)
         return itoa(cast(long) v);
     import core.stdc.stdio : snprintf;
@@ -99,9 +99,9 @@ private string itoa(long v) pure @safe
     return neg ? "-" ~ r : r;
 }
 
-// ------------------------------------------------------------ schemas de tipos
+// ------------------------------------------------------------ type schemas
 
-/// Schema JSON (inline ou `$ref`) do tipo T.
+/// JSON schema (inline or `$ref`) of type T.
 string schemaOf(T)(ref Components comps) @safe
 {
     static if (is(T == bool))
@@ -177,7 +177,7 @@ private string structSchema(T)(ref Components comps) @safe
                 extra ~= `,"nullable":true`;
             if (extra.length)
             {
-                // injeta as restrições no objeto do schema (se for $ref, embrulha em allOf)
+                // injects the constraints into the schema object (if it is a $ref, wraps it in allOf)
                 if (sch.length > 8 && sch[0 .. 7] == `{"$ref"`)
                     sch = `{"allOf":[` ~ sch ~ `]` ~ extra ~ `}`;
                 else
@@ -202,9 +202,9 @@ private template jsonKeyOfField(T, size_t i)
     }();
 }
 
-// ------------------------------------------------------------ descrição de uma operação
+// ------------------------------------------------------------ description of an operation
 
-/// Gera o objeto de operação OpenAPI para o handler `fn` registrado em `method path`.
+/// Generates the OpenAPI operation object for handler `fn` registered at `method path`.
 string describeOperation(Method method, string path, alias fn)(ref Components comps, string pattern) @safe
 {
     static if (is(typeof(fn) P == __parameters))
@@ -257,7 +257,7 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
                     canFail = true;
                 }
             }
-            else // escalar fora da rota => query
+            else // scalar outside the route => query
             {
                 enum hasDefault = is(typeof(((P[i .. i + 1] __a) => __a[0])()));
                 params ~= (params.length ? "," : "") ~ `{"name":` ~ q(pname) ~ `,"in":"query","required":`
@@ -276,12 +276,12 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
             o ~= `,"requestBody":{"required":` ~ (bodyRequired ? "true" : "false")
                 ~ `,"content":{"application/json":{"schema":` ~ bodySchema ~ `}}}`;
 
-        // respostas
+        // responses
         string resp;
         static if (is(typeof(fn) R == return))
         {
             static if (is(R == void))
-                resp = `"204":{"description":"Sem conteúdo"}`;
+                resp = `"204":{"description":"No content"}`;
             else static if (is(R : const(char)[]))
                 resp = `"200":{"description":"OK","content":{"text/plain":{"schema":{"type":"string"}}}}`;
             else static if (is(R == Response))
@@ -292,7 +292,7 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
         if (canFail)
         {
             ensureValidationError(comps);
-            resp ~= (resp.length ? "," : "") ~ `"422":{"description":"Erro de validação","content":{"application/json":`
+            resp ~= (resp.length ? "," : "") ~ `"422":{"description":"Validation error","content":{"application/json":`
                 ~ `{"schema":{"$ref":"#/components/schemas/HTTPValidationError"}}}}`;
         }
         o ~= `,"responses":{` ~ resp ~ `}}`;
@@ -318,16 +318,16 @@ private void ensureValidationError(ref Components comps) @safe
             ~ `"required":["loc","msg"]}}}}`;
 }
 
-// ------------------------------------------------------------ documento
+// ------------------------------------------------------------ document
 
 struct OpRecord
 {
     Method method;
-    string pattern;     // como foi registrado (inclui o prefixo do grupo)
-    OpDescribe describe; // null para rotas sem introspecção (estáticos...)
+    string pattern;     // as registered (includes the group prefix)
+    OpDescribe describe; // null for routes without introspection (static files...)
 }
 
-/// `{*resto}` -> `{resto}` (OpenAPI não conhece o asterisco).
+/// `{*rest}` -> `{rest}` (OpenAPI does not know the asterisk).
 private string openApiPath(string pattern) pure @safe
 {
     string o;
@@ -340,7 +340,7 @@ private string openApiPath(string pattern) pure @safe
 string buildOpenApi(const(OpRecord)[] ops, OpenApiInfo info) @safe
 {
     Components comps;
-    // agrupa por path preservando a ordem de registro
+    // group by path preserving registration order
     string[] order;
     string[string] byPath;
     foreach (ref op; ops)
@@ -387,7 +387,7 @@ string buildOpenApi(const(OpRecord)[] ops, OpenApiInfo info) @safe
 private string[] sortedKeys(string[string] aa) @safe
 {
     string[] k = aa.keys;
-    // insertion sort: poucos schemas e sem importar std.algorithm
+    // insertion sort: few schemas and avoids importing std.algorithm
     foreach (i; 1 .. k.length)
         for (size_t j = i; j > 0 && k[j - 1] > k[j]; j--)
         {
@@ -398,7 +398,7 @@ private string[] sortedKeys(string[string] aa) @safe
     return k;
 }
 
-/// Página interativa (Swagger UI carregado de CDN pelo navegador do usuário).
+/// Interactive page (Swagger UI loaded from a CDN by the user's browser).
 string docsHtml(string jsonPath, string title) @safe
 {
     return `<!doctype html><html><head><meta charset="utf-8"><title>` ~ title

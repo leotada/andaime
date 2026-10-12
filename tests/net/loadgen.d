@@ -1,7 +1,7 @@
-/// Gerador de carga do teste de memória (tools/check.sh) e dos spikes.
-/// Abre N conexões em `rampaMs`, manda `GET /slow` em cada uma e mede a latência.
-/// Uso: loadgen <porta> <conexoes> <rampaMs> <espera esperada em ms>
-/// Sai com código 1 se alguma conexão falhar.
+/// Load generator for the memory test (tools/check.sh) and the spikes.
+/// Opens N connections over `rampMs`, sends `GET /slow` on each and measures latency.
+/// Usage: loadgen <port> <connections> <rampMs> <expected wait in ms>
+/// Exits with code 1 if any connection fails.
 module loadgen;
 
 import core.thread, core.time;
@@ -39,7 +39,7 @@ size_t procKb(const(char)* key)
     return v;
 }
 
-// ======================================================================= cliente
+// ======================================================================= client
 
 int client(ushort port, size_t total, long rampMs, long expectedMs)
 {
@@ -47,7 +47,7 @@ int client(ushort port, size_t total, long rampMs, long expectedMs)
     auto a = addr(port);
     long[] start = new long[total];
     long[] lat;
-    int[int] byFd; // fd -> índice
+    int[int] byFd; // fd -> index
     size_t opened, done, failed;
     immutable t0 = MonoTime.currTime;
     static immutable req = "GET /slow HTTP/1.1\r\nHost: x\r\n\r\n";
@@ -105,9 +105,9 @@ int client(ushort port, size_t total, long rampMs, long expectedMs)
     }
     sort(lat);
     auto ms(long ns) { return ns / 1e6; }
-    printf("cliente: %zu ok, %zu falhas de %zu\n", done, failed, total);
+    printf("client: %zu ok, %zu failures out of %zu\n", done, failed, total);
     if (lat.length)
-        printf("latência total (ms): p50=%.1f p99=%.1f max=%.1f | sobrecusto sobre os %ld ms: p50=%.1f p99=%.1f max=%.1f\n",
+        printf("total latency (ms): p50=%.1f p99=%.1f max=%.1f | overhead over the %ld ms: p50=%.1f p99=%.1f max=%.1f\n",
             ms(lat[$ / 2]), ms(lat[cast(size_t)(lat.length * 0.99)]), ms(lat[$ - 1]), expectedMs,
             ms(lat[$ / 2]) - expectedMs, ms(lat[cast(size_t)(lat.length * 0.99)]) - expectedMs, ms(lat[$ - 1]) - expectedMs);
     return failed == 0 && done == total ? 0 : 1;
@@ -117,7 +117,7 @@ int main(string[] args)
 {
     if (args.length < 5)
     {
-        fprintf(stderr, "uso: loadgen <porta> <conexoes> <rampaMs> <esperaMs>\n");
+        fprintf(stderr, "uso: loadgen <porta> <connections> <rampMs> <esperaMs>\n");
         return 2;
     }
     return client(args[1].to!ushort, args[2].to!size_t, args[3].to!long, args[4].to!long);

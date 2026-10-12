@@ -1,20 +1,20 @@
-/// UDAs de DTO e acumulador de erros de validação (formato FastAPI).
+/// DTO UDAs and the validation error accumulator (FastAPI format).
 module vela.web.dto;
 
-/// Nome do campo no JSON quando difere do nome em D: `@jsonKey("user_name") string userName;`
+/// Field name in the JSON when it differs from the D name: `@jsonKey("user_name") string userName;`
 struct jsonKey { string name; }
-/// Campo opcional no JSON (ausente => mantém o valor inicial).
+/// Optional field in the JSON (absent => keeps the initial value).
 enum optional;
-/// Campo nunca lido nem escrito em JSON.
+/// Field never read from or written to JSON.
 enum jsonIgnore;
-/// Comprimento mínimo de string/array.
+/// Minimum string/array length.
 struct minLength { size_t value; }
-/// Comprimento máximo de string/array.
+/// Maximum string/array length.
 struct maxLength { size_t value; }
-/// Faixa fechada para números: `@inRange(0, 150) int age;`
+/// Closed range for numbers: `@inRange(0, 150) int age;`
 struct inRange { double min; double max; }
 
-/// Um erro de validação. `location` é "path", "query", "header" ou "body".
+/// A validation error. `location` is "path", "query", "header" or "body".
 struct FieldError
 {
     string location;
@@ -22,7 +22,7 @@ struct FieldError
     string message;
 }
 
-/// Capacidade fixa: coletar erros nunca aloca. Excedentes só são contados.
+/// Fixed capacity: collecting errors never allocates. Extras are only counted.
 struct FieldErrors
 {
     enum size_t capacity = 16;
@@ -49,8 +49,8 @@ struct FieldErrors
     const(FieldError)[] list() const nothrow @nogc @safe return => items[0 .. count];
 }
 
-/// Caminho do campo atual ("endereco.cep") num buffer fixo: só vira
-/// string (alocando) quando um erro precisa ser reportado.
+/// Path of the current field ("address.zip") in a fixed buffer: only becomes a
+/// string (allocating) when an error needs to be reported.
 struct FieldPath
 {
     private char[192] buf;
@@ -75,7 +75,7 @@ struct FieldPath
     const(char)[] current() const nothrow @nogc @safe return => buf[0 .. len];
 }
 
-/// true se o membro `i` de T carrega a UDA `A` (tipo ou enum).
+/// true if member `i` of T carries the UDA `A` (type or enum).
 template hasUda(T, size_t i, alias A)
 {
     enum hasUda = () {
@@ -87,7 +87,7 @@ template hasUda(T, size_t i, alias A)
     }();
 }
 
-/// Chave JSON do campo `i` de T.
+/// JSON key of field `i` of T.
 template jsonKeyOf(T, size_t i)
 {
     enum jsonKeyOf = () {
@@ -99,7 +99,7 @@ template jsonKeyOf(T, size_t i)
     }();
 }
 
-/// Número -> texto em CTFE (evita std.conv no núcleo).
+/// Number -> text at CTFE (avoids std.conv in the core).
 string ctNum(ulong v) pure nothrow @safe
 {
     if (v == 0)
@@ -113,10 +113,10 @@ string ctNum(ulong v) pure nothrow @safe
     return r;
 }
 
-private enum string minLenMsg(size_t n) = "abaixo do comprimento mínimo de " ~ ctNum(n);
-private enum string maxLenMsg(size_t n) = "acima do comprimento máximo de " ~ ctNum(n);
+private enum string minLenMsg(size_t n) = "below the minimum length of " ~ ctNum(n);
+private enum string maxLenMsg(size_t n) = "above the maximum length of " ~ ctNum(n);
 
-/// Aplica as UDAs de validação do campo `i` ao valor já decodificado.
+/// Applies the validation UDAs of field `i` to the already-decoded value.
 void validateField(T, size_t i, V)(ref const V value, ref FieldErrors errs, ref const FieldPath path)
 {
     static foreach (attr; __traits(getAttributes, T.tupleof[i]))
@@ -124,23 +124,23 @@ void validateField(T, size_t i, V)(ref const V value, ref FieldErrors errs, ref 
         static if (is(typeof(attr) == minLength))
         {
             static assert(__traits(compiles, value.length),
-                "vela: @minLength só vale para string ou array (campo '" ~ __traits(identifier, T.tupleof[i]) ~ "')");
+                "vela: @minLength only applies to string or array (field '" ~ __traits(identifier, T.tupleof[i]) ~ "')");
             if (value.length < attr.value)
                 errs.add("body", path.current.idup, minLenMsg!(attr.value));
         }
         else static if (is(typeof(attr) == maxLength))
         {
             static assert(__traits(compiles, value.length),
-                "vela: @maxLength só vale para string ou array (campo '" ~ __traits(identifier, T.tupleof[i]) ~ "')");
+                "vela: @maxLength only applies to string or array (field '" ~ __traits(identifier, T.tupleof[i]) ~ "')");
             if (value.length > attr.value)
                 errs.add("body", path.current.idup, maxLenMsg!(attr.value));
         }
         else static if (is(typeof(attr) == inRange))
         {
             static assert(__traits(isArithmetic, V),
-                "vela: @inRange só vale para números (campo '" ~ __traits(identifier, T.tupleof[i]) ~ "')");
+                "vela: @inRange only applies to numbers (field '" ~ __traits(identifier, T.tupleof[i]) ~ "')");
             if (value < attr.min || value > attr.max)
-                errs.add("body", path.current.idup, "fora da faixa permitida");
+                errs.add("body", path.current.idup, "outside the allowed range");
         }
     }
 }

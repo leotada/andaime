@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Sobe um PostgreSQL descartável, exporta VELA_PG e roda o comando dado.
-# Uso: tools/with_postgres.sh comando args...
-# - VELA_PG já definido: usa o banco indicado e não sobe nada.
-# - sem PostgreSQL instalado (initdb): roda o comando sem VELA_PG (o teste se declara pulado).
+# Starts a throwaway PostgreSQL, exports VELA_PG and runs the given command.
+# Usage: tools/with_postgres.sh command args...
+# - VELA_PG already set: uses that database and starts nothing.
+# - no PostgreSQL installed (initdb): runs the command without VELA_PG (the test declares itself skipped).
 set -euo pipefail
 if [ -n "${VELA_PG:-}" ]; then exec "$@"; fi
 
 bin=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)
 if [ -z "$bin" ] || [ ! -x "$bin/initdb" ]; then
-    echo "(PostgreSQL não instalado: teste do driver será pulado)" >&2
+    echo "(PostgreSQL not installed: the driver test will be skipped)" >&2
     exec "$@"
 fi
 

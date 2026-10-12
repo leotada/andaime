@@ -1,5 +1,5 @@
-/// Buffer de bytes crescente alocado fora do heap do GC.
-/// Não contém ponteiros para o GC, então o coletor nunca o escaneia.
+/// Growable byte buffer allocated outside the GC heap.
+/// It holds no pointers into the GC, so the collector never scans it.
 module vela.http.buffer;
 
 import core.stdc.stdlib : malloc, realloc, free;
@@ -11,7 +11,7 @@ struct ByteBuffer
     private size_t len;
     private size_t cap;
 
-    @disable this(this); // dono único: evita double free
+    @disable this(this); // single owner: avoids double free
 
     ~this() @trusted nothrow @nogc
     {
@@ -21,7 +21,7 @@ struct ByteBuffer
     size_t length() const pure nothrow @nogc @safe => len;
     size_t capacity() const pure nothrow @nogc @safe => cap;
 
-    /// Fatia válida até a próxima escrita ou `clear`.
+    /// Slice valid until the next write or `clear`.
     const(char)[] data() const pure nothrow @nogc @trusted return
     {
         return ptr[0 .. len];
@@ -53,8 +53,8 @@ struct ByteBuffer
         len += s.length;
     }
 
-    /// Espaço livre de `n` bytes no fim do buffer, para escrever direto (read(2), pread...).
-    /// Depois chame `commit(k)` com quantos bytes foram escritos de fato.
+    /// `n` bytes of free space at the end of the buffer, to write into directly (read(2), pread...).
+    /// Then call `commit(k)` with how many bytes were actually written.
     char[] writable(size_t n) nothrow @nogc @trusted
     {
         reserve(n);
@@ -63,7 +63,7 @@ struct ByteBuffer
 
     void commit(size_t n) nothrow @nogc @safe
     {
-        assert(len + n <= cap, "vela: commit além do espaço reservado");
+        assert(len + n <= cap, "vela: commit beyond the reserved space");
         len += n;
     }
 
@@ -73,7 +73,7 @@ struct ByteBuffer
         ptr[len++] = c;
     }
 
-    /// Inteiro decimal sem std.conv e sem alocar.
+    /// Decimal integer without std.conv and without allocating.
     void putInt(long v) nothrow @nogc @safe
     {
         char[20] tmp = void;
@@ -103,7 +103,7 @@ struct ByteBuffer
         put(tmp[i .. $]);
     }
 
-    /// Formato curto que faz round-trip (%.17g). NaN/Inf viram `null` (JSON).
+    /// Short round-trip format (%.17g). NaN/Inf become `null` (JSON).
     void putFloat(double d) nothrow @nogc @trusted
     {
         import core.stdc.stdio : snprintf;
@@ -118,8 +118,8 @@ struct ByteBuffer
         put(tmp[0 .. n]);
     }
 
-    /// Devolve memória se o buffer cresceu além de `maxKeep` (ex.: depois de
-    /// uma resposta grande), para o RSS não ficar preso ao pico.
+    /// Returns memory if the buffer grew beyond `maxKeep` (e.g. after
+    /// a large response), so RSS does not stay pinned to the peak.
     void shrinkTo(size_t maxKeep) nothrow @nogc @trusted
     {
         if (cap <= maxKeep)

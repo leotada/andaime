@@ -1,9 +1,9 @@
-/// Pool de buffers por worker, fora do heap do GC.
+/// Per-worker buffer pool, outside the GC heap.
 ///
-/// Classes de tamanho fixas (4, 16, 64 KiB). Conexões ociosas devolvem o
-/// buffer ao pool: 10 mil conexões keep-alive paradas não seguram 160 MiB.
-/// O pool guarda no máximo `maxCachedBytes`; o excedente volta ao SO.
-/// Single-thread por design (um pool por worker), por isso sem locks.
+/// Fixed size classes (4, 16, 64 KiB). Idle connections return their
+/// buffer to the pool: 10 thousand idle keep-alive connections do not hold 160 MiB.
+/// The pool keeps at most `maxCachedBytes`; the excess goes back to the OS.
+/// Single-threaded by design (one pool per worker), hence no locks.
 module vela.engine.bufferpool;
 
 import core.stdc.stdlib : malloc, free;
@@ -11,16 +11,16 @@ import core.exception : onOutOfMemoryError;
 
 struct Buffer
 {
-    ubyte[] mem; /// capacidade total
-    size_t len;  /// bytes válidos
-    ubyte cls;   /// classe de tamanho (para devolver ao pool certo)
+    ubyte[] mem; /// total capacity
+    size_t len;  /// valid bytes
+    ubyte cls;   /// size class (to return it to the right pool)
 
     bool isNull() const nothrow @nogc @safe => mem.length == 0;
     ubyte[] data() nothrow @nogc @safe return => mem[0 .. len];
     ubyte[] free_() nothrow @nogc @safe return => mem[len .. $];
 
-    /// Move os bytes ainda não consumidos para o início (após o parse de
-    /// uma requisição em pipelining). Mantém o head contíguo para o parser.
+    /// Moves the not-yet-consumed bytes to the start (after parsing
+    /// a pipelined request). Keeps the head contiguous for the parser.
     void compact(size_t consumed) nothrow @nogc @trusted
     {
         import core.stdc.string : memmove;
@@ -38,8 +38,8 @@ struct BufferPool
 
     private ubyte[][][3] free_;
     private size_t cachedBytes;
-    size_t maxCachedBytes = 2 << 20; /// teto do cache por worker (2 MiB)
-    size_t outstanding;              /// buffers emprestados agora (métrica)
+    size_t maxCachedBytes = 2 << 20; /// per-worker cache ceiling (2 MiB)
+    size_t outstanding;              /// buffers currently lent out (metric)
 
     @disable this(this);
 
@@ -50,14 +50,14 @@ struct BufferPool
                 free(b.ptr);
     }
 
-    /// Empresta um buffer com pelo menos `minSize` bytes.
+    /// Lends a buffer with at least `minSize` bytes.
     Buffer acquire(size_t minSize) @trusted nothrow
     {
         ubyte c = 0;
         while (c < classSize.length && classSize[c] < minSize)
             c++;
         if (c == classSize.length)
-            assert(0, "vela: buffer maior que a maior classe; checar Limits antes");
+            assert(0, "vela: buffer larger than the largest class; check Limits first");
         outstanding++;
         if (free_[c].length)
         {
@@ -72,7 +72,7 @@ struct BufferPool
         return Buffer(p[0 .. classSize[c]], 0, c);
     }
 
-    /// Devolve. Acima do teto, libera direto para o SO.
+    /// Gives it back. Above the ceiling, frees it straight to the OS.
     void release(ref Buffer b) @trusted nothrow
     {
         if (b.isNull)
@@ -80,7 +80,7 @@ struct BufferPool
         outstanding--;
         if (cachedBytes + b.mem.length <= maxCachedBytes)
         {
-            free_[b.cls] ~= b.mem; // a lista em si é pequena e estável após o aquecimento
+            free_[b.cls] ~= b.mem; // the list itself is small and stable after warm-up
             cachedBytes += b.mem.length;
         }
         else
@@ -88,7 +88,7 @@ struct BufferPool
         b = Buffer.init;
     }
 
-    /// Promove para a próxima classe preservando os dados (corpo grande).
+    /// Promotes to the next class preserving the data (large body).
     bool grow(ref Buffer b, size_t minSize) @trusted nothrow
     {
         if (minSize > classSize[$ - 1])
@@ -114,6 +114,6 @@ unittest
     pool.release(a);
     assert(a.isNull && pool.outstanding == 0);
     auto b = pool.acquire(5000);
-    assert(b.mem.ptr is p); // reaproveitado, sem malloc
+    assert(b.mem.ptr is p); // reused, no malloc
     pool.release(b);
 }

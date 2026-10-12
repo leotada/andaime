@@ -1,7 +1,7 @@
-/// Spike do M2: epoll edge-triggered + um fiber por requisição.
-/// O handler "espera uma API externa" (sleep cooperativo) e responde.
-///   spike server <porta> <sleepMs> <maxInflight>
-///   spike client <porta> <conexoes> <rampaMs> <sleepMsEsperado>
+/// M2 spike: edge-triggered epoll + one fiber per request.
+/// The handler "waits for an external API" (cooperative sleep) and responds.
+///   spike server <port> <sleepMs> <maxInflight>
+///   spike client <port> <connections> <rampMs> <expectedSleepMs>
 module spike;
 
 import core.thread, core.time;
@@ -39,7 +39,7 @@ size_t procKb(const(char)* key)
     return v;
 }
 
-// ======================================================================= servidor
+// ======================================================================= server
 
 enum bufSize = 4096;
 
@@ -72,7 +72,7 @@ final class Worker : Fiber
         {
             handle(c);
             inflight--;
-            freeList ~= this; // volta ao pool; o loop pode reusar já
+            freeList ~= this; // back to the pool; the loop can reuse it right away
             Fiber.yield();
         }
     }
@@ -80,7 +80,7 @@ final class Worker : Fiber
 
 __gshared Worker[] freeList;
 
-/// suspende o fiber atual até `d` passar; o loop acorda pela fila de timers
+/// suspends the current fiber until `d` passes; the loop wakes it from the timer queue
 void awaitSleep(Duration d)
 {
     ring[qTail++ & (ring.length - 1)] = Timer(MonoTime.currTime + d, Fiber.getThis());
@@ -99,7 +99,7 @@ static immutable resp503 = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 
 
 void handle(Conn* c)
 {
-    awaitSleep(sleepFor); // "banco/API externa": nenhuma thread bloqueada
+    awaitSleep(sleepFor); // "database/external API": no thread blocked
     send(c.fd, resp200.ptr, resp200.length, 0x4000 /*MSG_NOSIGNAL*/);
     served++;
     closeConn(c);
@@ -170,7 +170,7 @@ void server(ushort port, int sleepMs, size_t cap)
     ev.data.fd = ls;
     epoll_ctl(ep, EPOLL_CTL_ADD, ls, &ev);
 
-    printf("servidor :%d sleep=%dms maxInflight=%zu RSS inicial=%zu KiB\n", port, sleepMs, cap, procKb("VmRSS:"));
+    printf("server :%d sleep=%dms maxInflight=%zu initial RSS=%zu KiB\n", port, sleepMs, cap, procKb("VmRSS:"));
     fflush(stdout);
 
     epoll_event[512] evs;
@@ -210,7 +210,7 @@ void server(ushort port, int sleepMs, size_t cap)
                     e.events = EPOLLIN | EPOLLET;
                     e.data.fd = cfd;
                     epoll_ctl(ep, EPOLL_CTL_ADD, cfd, &e);
-                    onReadable(c); // dados podem ter chegado antes do ADD (borda perdida)
+                    onReadable(c); // data may have arrived before the ADD (missed edge)
                 }
             }
             else if (conns[fd].fd == fd)
@@ -220,14 +220,14 @@ void server(ushort port, int sleepMs, size_t cap)
         if (now >= nextStat)
         {
             nextStat = now + seconds(1);
-            printf("em voo=%zu pico=%zu fibers=%zu servidas=%zu 503=%zu RSS=%zu KiB pico=%zu KiB\n",
+            printf("in flight=%zu peak=%zu fibers=%zu served=%zu 503=%zu RSS=%zu KiB peak=%zu KiB\n",
                 inflight, peakInflight, fibersCreated, served, rejected, procKb("VmRSS:"), procKb("VmHWM:"));
             fflush(stdout);
         }
     }
 }
 
-// ======================================================================= cliente
+// ======================================================================= client
 
 void client(ushort port, size_t total, long rampMs, long expectedMs)
 {
@@ -235,7 +235,7 @@ void client(ushort port, size_t total, long rampMs, long expectedMs)
     auto a = addr(port);
     long[] start = new long[total];
     long[] lat;
-    int[int] byFd; // fd -> índice
+    int[int] byFd; // fd -> index
     size_t opened, done, failed;
     immutable t0 = MonoTime.currTime;
     static immutable req = "GET /slow HTTP/1.1\r\nHost: x\r\n\r\n";
@@ -293,9 +293,9 @@ void client(ushort port, size_t total, long rampMs, long expectedMs)
     }
     sort(lat);
     auto ms(long ns) { return ns / 1e6; }
-    printf("cliente: %zu ok, %zu falhas de %zu\n", done, failed, total);
+    printf("client: %zu ok, %zu failures out of %zu\n", done, failed, total);
     if (lat.length)
-        printf("latência total (ms): p50=%.1f p99=%.1f max=%.1f | sobrecusto sobre os %ld ms: p50=%.1f p99=%.1f max=%.1f\n",
+        printf("total latency (ms): p50=%.1f p99=%.1f max=%.1f | overhead over the %ld ms: p50=%.1f p99=%.1f max=%.1f\n",
             ms(lat[$ / 2]), ms(lat[cast(size_t)(lat.length * 0.99)]), ms(lat[$ - 1]), expectedMs,
             ms(lat[$ / 2]) - expectedMs, ms(lat[cast(size_t)(lat.length * 0.99)]) - expectedMs, ms(lat[$ - 1]) - expectedMs);
 }
@@ -308,7 +308,7 @@ int main(string[] args)
         client(args[2].to!ushort, args[3].to!size_t, args[4].to!long, args[5].to!long);
     else
     {
-        fprintf(stderr, "uso: spike server <porta> <sleepMs> <maxInflight> | client <porta> <n> <rampaMs> <sleepMs>\n");
+        fprintf(stderr, "usage: spike server <port> <sleepMs> <maxInflight> | client <port> <n> <rampMs> <sleepMs>\n");
         return 2;
     }
     return 0;

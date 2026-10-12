@@ -1,6 +1,6 @@
-/// TLS cliente sobre OpenSSL carregado em tempo de execução (dlopen), em modo
-/// não bloqueante. Sem cabeçalhos nem `-lssl` na compilação: só quem faz
-/// HTTPS precisa de libssl.so.3 instalada (`libssl3` / `openssl`).
+/// TLS client over OpenSSL loaded at run time (dlopen), in
+/// non-blocking mode. No headers and no `-lssl` at build time: only whoever does
+/// HTTPS needs libssl.so.3 installed (`libssl3` / `openssl`).
 module vela.engine.tls;
 
 version (linux):
@@ -28,8 +28,8 @@ enum : int
     TLSEXT_NAMETYPE_host_name = 0,
 }
 
-/// Tabela de funções numa struct: variáveis `extern (C)` soltas virariam símbolos globais
-/// com o nome das funções da OpenSSL e a própria libssl acabaria chamando os nossos ponteiros.
+/// Function table in a struct: loose `extern (C)` variables would become global symbols
+/// named like OpenSSL's functions and libssl itself would end up calling our pointers.
 struct Api
 {
     extern (C) nothrow @nogc:
@@ -68,7 +68,7 @@ shared static this()
     gLock = new Object;
 }
 
-/// Carrega libssl/libcrypto. Devolve null se deu certo, ou a mensagem de erro.
+/// Loads libssl/libcrypto. Returns null on success, or the error message.
 string loadOpenSsl() @trusted
 {
     synchronized (gLock)
@@ -78,7 +78,7 @@ string loadOpenSsl() @trusted
         if (loadError !is null)
             return loadError;
 
-        // libcrypto primeiro e GLOBAL: libssl depende dela e ERR_* vêm dela
+        // libcrypto first and GLOBAL: libssl depends on it and ERR_* come from it
         void* crypto, ssl;
         foreach (n; ["libcrypto.so.3\0", "libcrypto.so\0"])
             if ((crypto = dlopen(n.ptr, RTLD_NOW | RTLD_GLOBAL)) !is null)
@@ -87,7 +87,7 @@ string loadOpenSsl() @trusted
             if ((ssl = dlopen(n.ptr, RTLD_NOW | RTLD_GLOBAL)) !is null)
                 break;
         if (ssl is null || crypto is null)
-            return loadError = "vela.http: OpenSSL 3 não encontrada (instale libssl3 / openssl)";
+            return loadError = "vela.http: OpenSSL 3 not found (install libssl3 / openssl)";
 
         static foreach (m; __traits(allMembers, Api))
         {
@@ -97,7 +97,7 @@ string loadOpenSsl() @trusted
                 if (p is null)
                     p = dlsym(crypto, zname);
                 if (p is null)
-                    return loadError = "vela.http: símbolo ausente na OpenSSL: " ~ m;
+                    return loadError = "vela.http: missing symbol in OpenSSL: " ~ m;
                 __traits(getMember, tls, m) = cast(typeof(__traits(getMember, tls, m))) p;
             }
         }

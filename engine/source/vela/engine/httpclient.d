@@ -1,18 +1,18 @@
-/// Cliente HTTP/1.1 de saída, cooperativo: dentro de uma requisição toda
-/// espera (DNS, conexão, TLS, envio, resposta) suspende só o fiber.
+/// Outgoing, cooperative HTTP/1.1 client: inside a request, every
+/// wait (DNS, connect, TLS, send, response) suspends only the fiber.
 ///
 /// ```d
-/// auto r = httpClient().get("https://api.exemplo.com/v1/cotacao?moeda=USD");
+/// auto r = httpClient().get("https://api.example.com/v1/quote?currency=USD");
 /// if (r.ok) use(r.body);
 /// ```
 ///
-/// - HTTP e HTTPS (OpenSSL carregada em tempo de execução, verificação do
-///   certificado e do nome do host ligadas por padrão);
-/// - conexões keep-alive reaproveitadas por host (um pool por worker);
-/// - Content-Length, chunked e corpo até o fechamento; limite de tamanho;
-/// - prazo total por requisição (`timeout`); cancelamento da requisição de
-///   entrada fecha a conexão de saída;
-/// - não segue redirecionamentos (3xx volta como resposta; leia `Location`).
+/// - HTTP and HTTPS (OpenSSL loaded at run time, certificate and
+///   host name verification on by default);
+/// - keep-alive connections reused per host (one pool per worker);
+/// - Content-Length, chunked and until-close bodies; size limit;
+/// - total deadline per request (`timeout`); cancelling the incoming request
+///   closes the outgoing connection;
+/// - does not follow redirects (3xx comes back as a response; read `Location`).
 module vela.engine.httpclient;
 
 version (linux):
@@ -31,9 +31,9 @@ import vela.engine.fiberio : awaitFd, IoEvent;
 import vela.engine.offload : offload;
 import vela.engine.tls;
 
-// ============================================================ tipos públicos
+// ============================================================ public types
 
-/// Falha de rede, protocolo ou prazo.
+/// Network, protocol or deadline failure.
 class HttpClientError : Exception
 {
     this(string msg, string file = __FILE__, size_t line = __LINE__) pure nothrow @safe
@@ -42,7 +42,7 @@ class HttpClientError : Exception
     }
 }
 
-/// O prazo da requisição terminou.
+/// The request deadline ended.
 final class HttpClientTimeout : HttpClientError
 {
     this(string what = "tempo esgotado", string file = __FILE__, size_t line = __LINE__) pure nothrow @safe
@@ -64,7 +64,7 @@ struct ClientResponse
 
     bool ok() const pure nothrow @safe @nogc => status >= 200 && status < 300;
 
-    /// Valor do primeiro header `name` (sem diferenciar maiúsculas), ou null.
+    /// Value of the first header `name` (case-insensitive), or null.
     string header(const(char)[] name) const pure nothrow @safe
     {
         foreach (h; headers)
@@ -76,14 +76,14 @@ struct ClientResponse
 
 struct HttpClientConfig
 {
-    Duration timeout = 30.seconds;        /// prazo total de cada requisição
+    Duration timeout = 30.seconds;        /// total deadline of each request
     Duration connectTimeout = 5.seconds;  /// DNS + TCP + TLS
-    size_t maxBody = 8 << 20;             /// corpo maior que isto → erro
+    size_t maxBody = 8 << 20;             /// body larger than this → error
     size_t maxHead = 64 << 10;
     uint maxIdlePerHost = 8;
-    Duration idleTimeout = 30.seconds;    /// conexão ociosa descartada depois disto
-    bool verifyTls = true;                /// desligue só em testes
-    string caFile;                        /// CA extra (PEM); vazio = CAs do sistema
+    Duration idleTimeout = 30.seconds;    /// idle connection discarded after this
+    bool verifyTls = true;                /// turn off only in tests
+    string caFile;                        /// extra CA (PEM); empty = system CAs
     string userAgent = "vela";
 }
 
@@ -94,7 +94,7 @@ struct ParsedUrl
     bool tls;
     string host;
     ushort port;
-    string target; /// caminho + query, começa com '/'
+    string target; /// path + query, starts with '/'
 }
 
 ParsedUrl parseUrl(string url)
@@ -113,7 +113,7 @@ ParsedUrl parseUrl(string url)
         rest = url[7 .. $];
     }
     else
-        throw new HttpClientError("vela.http: URL precisa começar com http:// ou https://: " ~ url);
+        throw new HttpClientError("vela.http: URL must start with http:// or https://: " ~ url);
 
     size_t slash = rest.length;
     foreach (i, ch; rest)
@@ -142,13 +142,13 @@ ParsedUrl parseUrl(string url)
                 break;
             }
         if (close_ == 0)
-            throw new HttpClientError("vela.http: URL com IPv6 mal formado: " ~ url);
+            throw new HttpClientError("vela.http: malformed IPv6 URL: " ~ url);
         u.host = hostport[1 .. close_];
         hostport = hostport[close_ + 1 .. $];
         if (hostport.length)
         {
             if (hostport[0] != ':')
-                throw new HttpClientError("vela.http: URL mal formada: " ~ url);
+                throw new HttpClientError("vela.http: malformed URL: " ~ url);
             u.port = parsePort(hostport[1 .. $], url);
         }
     }
@@ -166,23 +166,23 @@ ParsedUrl parseUrl(string url)
             u.port = parsePort(hostport[colon + 1 .. $], url);
     }
     if (u.host.length == 0)
-        throw new HttpClientError("vela.http: URL sem host: " ~ url);
+        throw new HttpClientError("vela.http: URL without host: " ~ url);
     return u;
 }
 
 private ushort parsePort(string s, string url)
 {
     if (s.length == 0 || s.length > 5)
-        throw new HttpClientError("vela.http: porta inválida na URL: " ~ url);
+        throw new HttpClientError("vela.http: invalid port in URL: " ~ url);
     uint v;
     foreach (ch; s)
     {
         if (ch < '0' || ch > '9')
-            throw new HttpClientError("vela.http: porta inválida na URL: " ~ url);
+            throw new HttpClientError("vela.http: invalid port in URL: " ~ url);
         v = v * 10 + (ch - '0');
     }
     if (v == 0 || v > 65535)
-        throw new HttpClientError("vela.http: porta inválida na URL: " ~ url);
+        throw new HttpClientError("vela.http: invalid port in URL: " ~ url);
     return cast(ushort) v;
 }
 
@@ -225,7 +225,7 @@ private Addr[] resolveBlocking(string host, ushort port) nothrow
     return out_;
 }
 
-// ============================================================ conexão
+// ============================================================ connection
 
 private final class Conn
 {
@@ -264,13 +264,13 @@ private Duration left(MonoTime deadline)
     return d;
 }
 
-/// Erro de transporte ANTES de qualquer byte da resposta: pode valer repetir em conexão nova.
+/// Transport error BEFORE any byte of the response: may be worth retrying on a new connection.
 private final class StaleConn : HttpClientError
 {
-    this() pure nothrow @safe { super("vela.http: conexão reaproveitada já estava fechada"); }
+    this() pure nothrow @safe { super("vela.http: reused connection was already closed"); }
 }
 
-// ============================================================ cliente
+// ============================================================ client
 
 final class HttpClient
 {
@@ -282,7 +282,7 @@ final class HttpClient
 
     this(HttpClientConfig cfg = HttpClientConfig.init) { this.cfg = cfg; }
 
-    /// Fecha tudo e libera o contexto TLS. (Sem destrutor: o cliente de um worker vive até o fim.)
+    /// Closes everything and releases the TLS context. (No destructor: a worker's client lives until the end.)
     void shutdown()
     {
         closeIdle();
@@ -293,7 +293,7 @@ final class HttpClient
         }
     }
 
-    /// Fecha as conexões ociosas.
+    /// Closes the idle connections.
     void closeIdle() nothrow
     {
         foreach (k, list; idle)
@@ -322,7 +322,7 @@ final class HttpClient
     ClientResponse del(string url, const(HeaderPair)[] headers = null)
         => request("DELETE", url, headers, null);
 
-    /// POST de JSON já serializado.
+    /// POST of already-serialized JSON.
     ClientResponse postJson(string url, const(char)[] json, const(HeaderPair)[] headers = null)
         => request("POST", url, headers ~ HeaderPair("Content-Type", "application/json"), json);
 
@@ -354,7 +354,7 @@ final class HttpClient
             catch (StaleConn e)
             {
                 if (attempt == 0 && c.reused && idempotent)
-                    continue; // uma conexão velha do pool: tenta de novo, numa nova
+                    continue; // a stale pooled connection: try again, on a new one
                 throw new HttpClientError("vela.http: " ~ e.msg);
             }
         }
@@ -404,7 +404,7 @@ final class HttpClient
         idle[c.key] ~= c;
     }
 
-    // ------------------------------------------------------------ conectar
+    // ------------------------------------------------------------ connect
 
     private Conn openConn(ref const ParsedUrl u, MonoTime requestDeadline)
     {
@@ -415,7 +415,7 @@ final class HttpClient
         auto c = new Conn;
         c.key = keyOf(u);
 
-        string lastErr = "sem endereços";
+        string lastErr = "no addresses";
         foreach (ref a; addrs)
         {
             try
@@ -436,7 +436,7 @@ final class HttpClient
                 c.closeNow();
             }
         }
-        throw new HttpClientError("vela.http: não conectou a " ~ u.host ~ ": " ~ lastErr);
+        throw new HttpClientError("vela.http: could not connect to " ~ u.host ~ ": " ~ lastErr);
     }
 
     private Addr[] resolve(string host, ushort port, MonoTime deadline)
@@ -452,7 +452,7 @@ final class HttpClient
         left(deadline);
         auto res = offload(() => resolveBlocking(host, port));
         if (res.length == 0)
-            throw new HttpClientError("vela.http: não resolveu o host " ~ host);
+            throw new HttpClientError("vela.http: could not resolve host " ~ host);
         dnsCache[k] = res;
         dnsExpiry[k] = MonoTime.currTime + 30.seconds;
         return res;
@@ -462,23 +462,23 @@ final class HttpClient
     {
         int fd = socket(a.family, SOCK_STREAM | 0x80000 /*SOCK_CLOEXEC*/ | O_NONBLOCK, 0);
         if (fd < 0)
-            throw new HttpClientError("vela.http: socket falhou");
+            throw new HttpClientError("vela.http: socket failed");
         c.fd = fd;
         int one = 1;
         setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, one.sizeof);
 
         auto r = connect(fd, cast(sockaddr*)&a.ss, a.len);
         if (r < 0 && errno != EINPROGRESS)
-            throw new HttpClientError("vela.http: connect falhou");
+            throw new HttpClientError("vela.http: connect failed");
         if (r < 0)
         {
             if (awaitFd(fd, IoEvent.writable, left(deadline)) == 0)
-                throw new HttpClientTimeout("tempo esgotado ao conectar");
+                throw new HttpClientTimeout("timed out while connecting");
             int err;
             socklen_t len = err.sizeof;
             getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
             if (err != 0)
-                throw new HttpClientError("vela.http: conexão recusada ou inalcançável");
+                throw new HttpClientError("vela.http: connection refused or unreachable");
         }
     }
 
@@ -491,7 +491,7 @@ final class HttpClient
 
         c.ssl = tls.SSL_new(ctx);
         if (c.ssl is null)
-            throw new HttpClientError("vela.http: SSL_new falhou");
+            throw new HttpClientError("vela.http: SSL_new failed");
         tls.SSL_set_fd(c.ssl, c.fd);
         auto zhost = host ~ '\0';
         tls.SSL_ctrl(c.ssl, SSL_CTRL_SET_TLSEXT_HOSTNAME, TLSEXT_NAMETYPE_host_name, cast(void*) zhost.ptr);
@@ -510,10 +510,10 @@ final class HttpClient
             {
                 immutable ev = e == SSL_ERROR_WANT_READ ? IoEvent.readable : IoEvent.writable;
                 if (awaitFd(c.fd, ev, left(deadline)) == 0)
-                    throw new HttpClientTimeout("tempo esgotado no handshake TLS");
+                    throw new HttpClientTimeout("timed out in the TLS handshake");
                 continue;
             }
-            throw new HttpClientError("vela.http: falha no handshake TLS: " ~ tlsError());
+            throw new HttpClientError("vela.http: TLS handshake failed: " ~ tlsError());
         }
     }
 
@@ -521,7 +521,7 @@ final class HttpClient
     {
         auto x = tls.SSL_CTX_new(tls.TLS_client_method());
         if (x is null)
-            throw new HttpClientError("vela.http: SSL_CTX_new falhou");
+            throw new HttpClientError("vela.http: SSL_CTX_new failed");
         tls.SSL_CTX_ctrl(x, SSL_CTRL_SET_MIN_PROTO_VERSION, TLS1_2_VERSION, null);
         if (cfg.verifyTls)
         {
@@ -532,7 +532,7 @@ final class HttpClient
                 if (tls.SSL_CTX_load_verify_locations(x, z.ptr, null) != 1)
                 {
                     tls.SSL_CTX_free(x);
-                    throw new HttpClientError("vela.http: não consegui ler caFile: " ~ cfg.caFile);
+                    throw new HttpClientError("vela.http: could not read caFile: " ~ cfg.caFile);
                 }
             }
             else
@@ -547,15 +547,15 @@ final class HttpClient
     {
         auto e = tls.ERR_get_error();
         if (e == 0)
-            return "erro desconhecido";
+            return "unknown error";
         char[256] buf;
         tls.ERR_error_string_n(e, buf.ptr, buf.length);
         return buf[0 .. strlen(buf.ptr)].idup;
     }
 
-    // ------------------------------------------------------------ E/S
+    // ------------------------------------------------------------ I/O
 
-    /// Lê o que houver; devolve 0 em EOF. Espera cooperativamente.
+    /// Reads what is available; returns 0 on EOF. Waits cooperatively.
     private size_t recvSome(Conn c, void[] buf, MonoTime deadline)
     {
         for (;;)
@@ -577,8 +577,8 @@ final class HttpClient
                     continue;
                 }
                 if (e == SSL_ERROR_SYSCALL && n == 0)
-                    return 0; // EOF sem close_notify
-                throw new HttpClientError("vela.http: erro TLS ao ler: " ~ tlsError());
+                    return 0; // EOF without close_notify
+                throw new HttpClientError("vela.http: TLS error while reading: " ~ tlsError());
             }
             immutable n = read(c.fd, buf.ptr, buf.length);
             if (n > 0)
@@ -595,7 +595,7 @@ final class HttpClient
             }
             if (errno == ECONNRESET)
                 return 0;
-            throw new HttpClientError("vela.http: erro de leitura");
+            throw new HttpClientError("vela.http: read error");
         }
     }
 
@@ -620,7 +620,7 @@ final class HttpClient
                         throw new HttpClientTimeout;
                     continue;
                 }
-                throw staleOr(c, "erro TLS ao escrever: " ~ tlsError());
+                throw staleOr(c, "TLS error while writing: " ~ tlsError());
             }
             immutable n = send(c.fd, data.ptr, data.length, 0x4000 /*MSG_NOSIGNAL*/);
             if (n >= 0)
@@ -636,11 +636,11 @@ final class HttpClient
                     throw new HttpClientTimeout;
                 continue;
             }
-            throw staleOr(c, "erro de escrita");
+            throw staleOr(c, "write error");
         }
     }
 
-    /// Conexão reaproveitada que falha ao escrever = provavelmente velha.
+    /// A reused connection that fails to write = probably stale.
     private static HttpClientError staleOr(Conn c, string msg)
     {
         if (c.reused)
@@ -648,7 +648,7 @@ final class HttpClient
         return new HttpClientError("vela.http: " ~ msg);
     }
 
-    /// Garante pelo menos um byte novo no buffer; false se o servidor fechou.
+    /// Ensures at least one new byte in the buffer; false if the server closed.
     private bool fill(Conn c, MonoTime deadline)
     {
         if (c.rpos == c.rend)
@@ -671,12 +671,12 @@ final class HttpClient
         return true;
     }
 
-    // ------------------------------------------------------------ requisição/resposta
+    // ------------------------------------------------------------ request/response
 
     private ClientResponse exchange(Conn c, ref const ParsedUrl u, string method, const(HeaderPair)[] headers,
         const(char)[] body_, MonoTime deadline, ref bool reusable)
     {
-        // ---- monta e envia
+        // ---- build and send
         char[] req;
         req.reserve(256 + body_.length);
         req ~= method;
@@ -719,7 +719,7 @@ final class HttpClient
         req ~= body_;
         sendAll(c, req, deadline);
 
-        // ---- cabeçalho
+        // ---- head
         size_t headEnd;
         for (;;)
         {
@@ -727,12 +727,12 @@ final class HttpClient
             if (headEnd != size_t.max)
                 break;
             if (c.rend - c.rpos > cfg.maxHead)
-                throw new HttpClientError("vela.http: cabeçalho da resposta grande demais");
+                throw new HttpClientError("vela.http: response head too large");
             if (!fill(c, deadline))
             {
                 if (c.rend == c.rpos && c.reused)
                     throw new StaleConn;
-                throw new HttpClientError("vela.http: servidor fechou antes de responder");
+                throw new HttpClientError("vela.http: server closed before responding");
             }
         }
         auto head = c.rbuf[c.rpos .. c.rpos + headEnd];
@@ -767,7 +767,7 @@ final class HttpClient
         else if (hasLen)
         {
             if (length > cfg.maxBody)
-                throw new HttpClientError("vela.http: corpo da resposta maior que maxBody");
+                throw new HttpClientError("vela.http: response body larger than maxBody");
             r.body = readExact(c, length, deadline);
         }
         else
@@ -792,7 +792,7 @@ final class HttpClient
         {
             immutable m = recvSome(c, out_[got .. $], deadline);
             if (m == 0)
-                throw new HttpClientError("vela.http: servidor fechou no meio do corpo");
+                throw new HttpClientError("vela.http: server closed in the middle of the body");
             got += m;
         }
         return cast(string) out_;
@@ -810,7 +810,7 @@ final class HttpClient
             if (m == 0)
                 break;
             if (out_.length + m > cfg.maxBody)
-                throw new HttpClientError("vela.http: corpo da resposta maior que maxBody");
+                throw new HttpClientError("vela.http: response body larger than maxBody");
             out_ ~= tmp[0 .. m];
         }
         return cast(string) out_;
@@ -832,18 +832,18 @@ final class HttpClient
             immutable size = parseHex(line[0 .. semi]);
             if (size == 0)
             {
-                // trailers até a linha vazia
+                // trailers up to the empty line
                 for (;;)
                     if (readLine(c, deadline).length == 0)
                         break;
                 return cast(string) out_;
             }
             if (out_.length + size > cfg.maxBody)
-                throw new HttpClientError("vela.http: corpo da resposta maior que maxBody");
+                throw new HttpClientError("vela.http: response body larger than maxBody");
             auto chunk = readExact(c, size, deadline);
             out_ ~= chunk;
             if (readLine(c, deadline).length != 0)
-                throw new HttpClientError("vela.http: chunk mal formado");
+                throw new HttpClientError("vela.http: malformed chunk");
         }
     }
 
@@ -851,7 +851,7 @@ final class HttpClient
     {
         for (;;)
         {
-            // linhas são curtas: varrer de novo a partir de rpos é barato e imune à compactação do buffer
+            // lines are short: scanning again from rpos is cheap and immune to buffer compaction
             for (size_t i = c.rpos; i + 1 < c.rend; i++)
                 if (c.rbuf[i] == '\r' && c.rbuf[i + 1] == '\n')
                 {
@@ -860,14 +860,14 @@ final class HttpClient
                     return line;
                 }
             if (c.rend - c.rpos > cfg.maxHead)
-                throw new HttpClientError("vela.http: linha grande demais na resposta");
+                throw new HttpClientError("vela.http: line too large in the response");
             if (!fill(c, deadline))
-                throw new HttpClientError("vela.http: servidor fechou no meio do corpo");
+                throw new HttpClientError("vela.http: server closed in the middle of the body");
         }
     }
 }
 
-// ============================================================ auxiliares
+// ============================================================ helpers
 
 private size_t findHeadEnd(const(char)[] b) pure nothrow @safe @nogc
 {
@@ -883,18 +883,18 @@ private void parseHead(const(char)[] head, ref ClientResponse r)
 {
     // "HTTP/1.1 200 OK"
     if (head.length < 12 || head[0 .. 5] != "HTTP/")
-        throw new HttpClientError("vela.http: resposta HTTP inválida");
+        throw new HttpClientError("vela.http: invalid HTTP response");
     size_t sp = 0;
     while (sp < head.length && head[sp] != ' ')
         sp++;
     if (sp + 4 > head.length)
-        throw new HttpClientError("vela.http: linha de status inválida");
+        throw new HttpClientError("vela.http: invalid status line");
     int st;
     foreach (i; 0 .. 3)
     {
         immutable ch = head[sp + 1 + i];
         if (ch < '0' || ch > '9')
-            throw new HttpClientError("vela.http: status inválido");
+            throw new HttpClientError("vela.http: invalid status");
         st = st * 10 + (ch - '0');
     }
     r.status = st;
@@ -931,10 +931,10 @@ private void checkHeader(ref const HeaderPair h)
 {
     foreach (ch; h.name)
         if (ch <= ' ' || ch == ':' || ch >= 0x7f)
-            throw new HttpClientError("vela.http: nome de header inválido: " ~ h.name);
+            throw new HttpClientError("vela.http: invalid header name: " ~ h.name);
     foreach (ch; h.value)
         if (ch == '\r' || ch == '\n')
-            throw new HttpClientError("vela.http: valor de header com quebra de linha (" ~ h.name ~ ")");
+            throw new HttpClientError("vela.http: header value with line break (" ~ h.name ~ ")");
 }
 
 private string utoa(size_t v) pure nothrow @safe
@@ -953,12 +953,12 @@ private string utoa(size_t v) pure nothrow @safe
 private size_t parseSize(string s)
 {
     if (s.length == 0 || s.length > 18)
-        throw new HttpClientError("vela.http: Content-Length inválido");
+        throw new HttpClientError("vela.http: invalid Content-Length");
     size_t v;
     foreach (ch; s)
     {
         if (ch < '0' || ch > '9')
-            throw new HttpClientError("vela.http: Content-Length inválido");
+            throw new HttpClientError("vela.http: invalid Content-Length");
         v = v * 10 + (ch - '0');
     }
     return v;
@@ -967,7 +967,7 @@ private size_t parseSize(string s)
 private size_t parseHex(const(char)[] s)
 {
     if (s.length == 0 || s.length > 12)
-        throw new HttpClientError("vela.http: tamanho de chunk inválido");
+        throw new HttpClientError("vela.http: invalid chunk size");
     size_t v;
     foreach (ch; s)
     {
@@ -975,7 +975,7 @@ private size_t parseHex(const(char)[] s)
         if (ch >= '0' && ch <= '9') d = ch - '0';
         else if (ch >= 'a' && ch <= 'f') d = ch - 'a' + 10;
         else if (ch >= 'A' && ch <= 'F') d = ch - 'A' + 10;
-        else throw new HttpClientError("vela.http: tamanho de chunk inválido");
+        else throw new HttpClientError("vela.http: invalid chunk size");
         v = v * 16 + d;
     }
     return v;
@@ -1006,12 +1006,12 @@ private bool containsFold(const(char)[] hay, const(char)[] needle) pure nothrow 
     return false;
 }
 
-// ============================================================ cliente do worker
+// ============================================================ worker client
 
-private HttpClient tlsClient; // thread-local: um por worker
+private HttpClient tlsClient; // thread-local: one per worker
 
-/// O cliente deste worker (criado no primeiro uso). Para outra configuração,
-/// use `httpClient(cfg)` uma vez na inicialização do worker.
+/// This worker's client (created on first use). For a different configuration,
+/// call `httpClient(cfg)` once when the worker starts.
 HttpClient httpClient()
 {
     if (tlsClient is null)
@@ -1026,8 +1026,8 @@ HttpClient httpClient(HttpClientConfig cfg)
 
 unittest
 {
-    auto u = parseUrl("https://api.exemplo.com/v1/x?a=1#frag");
-    assert(u.tls && u.host == "api.exemplo.com" && u.port == 443 && u.target == "/v1/x?a=1");
+    auto u = parseUrl("https://api.example.com/v1/x?a=1#frag");
+    assert(u.tls && u.host == "api.example.com" && u.port == 443 && u.target == "/v1/x?a=1");
     u = parseUrl("http://localhost:8080");
     assert(!u.tls && u.host == "localhost" && u.port == 8080 && u.target == "/");
     u = parseUrl("http://[::1]:9000/p");

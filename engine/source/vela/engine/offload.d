@@ -1,16 +1,16 @@
-/// Pool de threads limitado para o que NÃO dá para fazer cooperativamente:
-/// DNS (`getaddrinfo`), CPU pesada, bibliotecas C síncronas.
+/// Bounded thread pool for what can NOT be done cooperatively:
+/// DNS (`getaddrinfo`), heavy CPU, synchronous C libraries.
 ///
-/// `offload(() => trabalhoPesado())` roda o delegate numa thread do pool e
-/// suspende só o fiber que chamou: o worker segue atendendo outras conexões.
-/// O resultado volta por um eventfd que o fiber espera com `awaitFd`.
+/// `offload(() => heavyWork())` runs the delegate on a pool thread and
+/// suspends only the calling fiber: the worker keeps serving other connections.
+/// The result comes back through an eventfd that the fiber waits on with `awaitFd`.
 ///
-/// Limites (nada cresce sem teto): `threads` fixas e fila de `queueMax`
-/// tarefas; cheia, `offload` lança `PoolSaturated` na hora (o handler decide
-/// se vira 503). Se a requisição é cancelada enquanto o trabalho roda, o
-/// trabalho termina sozinho e o resultado é descartado.
+/// Limits (nothing grows without a ceiling): fixed `threads` and a queue of `queueMax`
+/// tasks; when full, `offload` throws `PoolSaturated` right away (the handler decides
+/// whether it becomes a 503). If the request is cancelled while the work runs, the
+/// work finishes by itself and the result is discarded.
 ///
-/// Fora de um fiber do vela (testes, dev server) o delegate roda inline.
+/// Outside a vela fiber (tests, dev server) the delegate runs inline.
 module vela.engine.offload;
 
 import core.atomic : atomicFetchSub, atomicStore, atomicLoad;
@@ -22,15 +22,15 @@ import core.thread : Thread;
 
 import vela.engine.fiberio : awaitFd, currentScheduler, IoEvent;
 
-/// A fila do pool está cheia: há trabalho demais pendente.
+/// The pool queue is full: too much pending work.
 final class PoolSaturated : Exception
 {
-    this() @safe pure nothrow { super("vela: pool de threads saturado (fila cheia)"); }
+    this() @safe pure nothrow { super("vela: thread pool saturated (queue full)"); }
 }
 
 private alias Job = void delegate();
 
-/// Pool com threads fixas e fila circular de tamanho fixo.
+/// Pool with fixed threads and a fixed-size circular queue.
 final class ThreadPool
 {
     private Mutex mu;
@@ -42,7 +42,7 @@ final class ThreadPool
 
     this(uint nThreads, uint queueMax)
     {
-        assert(nThreads > 0 && queueMax > 0, "vela: ThreadPool precisa de threads e fila > 0");
+        assert(nThreads > 0 && queueMax > 0, "vela: ThreadPool needs threads and a queue > 0");
         mu = new Mutex;
         cv = new Condition(mu);
         ring = new Job[queueMax];
@@ -55,7 +55,7 @@ final class ThreadPool
         }
     }
 
-    /// Enfileira; devolve false se a fila está cheia.
+    /// Enqueues; returns false if the queue is full.
     bool submit(Job j)
     {
         synchronized (mu)
@@ -69,14 +69,14 @@ final class ThreadPool
         return true;
     }
 
-    /// Tarefas esperando numa thread livre (métrica).
+    /// Tasks waiting for a free thread (metric).
     size_t pending()
     {
         synchronized (mu)
             return count;
     }
 
-    /// Termina as tarefas já enfileiradas e encerra as threads.
+    /// Finishes the already-enqueued tasks and stops the threads.
     void shutdown()
     {
         synchronized (mu)
@@ -117,8 +117,8 @@ shared static this()
     gPoolMu = new Mutex;
 }
 
-/// Define o tamanho do pool padrão. Chame antes de `serve`; depois que o pool
-/// existe, a chamada é ignorada (devolve false).
+/// Sets the size of the default pool. Call it before `serve`; once the pool
+/// exists, the call is ignored (returns false).
 bool configureOffload(uint threads, uint queueMax)
 {
     synchronized (gPoolMu)
@@ -131,7 +131,7 @@ bool configureOffload(uint threads, uint queueMax)
     }
 }
 
-/// O pool padrão (criado no primeiro uso).
+/// The default pool (created on first use).
 ThreadPool offloadPool()
 {
     synchronized (gPoolMu)
@@ -142,8 +142,8 @@ ThreadPool offloadPool()
     }
 }
 
-/// Estado compartilhado entre o fiber e a thread do pool. Dono do eventfd:
-/// quem decrementar `refs` até zero fecha o fd.
+/// State shared between the fiber and the pool thread. Owner of the eventfd:
+/// whoever decrements `refs` to zero closes the fd.
 private final class Call(T)
 {
     int efd = -1;
@@ -159,17 +159,17 @@ private final class Call(T)
     }
 }
 
-/// Roda `work` numa thread do pool e devolve o resultado, suspendendo só o fiber.
-/// Exceções do `work` são relançadas aqui.
+/// Runs `work` on a pool thread and returns the result, suspending only the fiber.
+/// Exceptions from `work` are rethrown here.
 T offload(T)(T delegate() work)
 {
     if (currentScheduler is null || !currentScheduler.inRequest)
-        return work(); // fora de um fiber: inline
+        return work(); // outside a fiber: inline
 
     auto call = new Call!T;
     call.efd = eventfd(0, 0x800 /*EFD_NONBLOCK*/ | 0x80000 /*EFD_CLOEXEC*/);
     if (call.efd < 0)
-        throw new Exception("vela: eventfd falhou em offload");
+        throw new Exception("vela: eventfd failed in offload");
 
     auto job = delegate() {
         try
@@ -192,8 +192,8 @@ T offload(T)(T delegate() work)
         throw new PoolSaturated;
     }
 
-    // Se awaitFd lançar RequestCancelled, o job ainda vai escrever no eventfd
-    // e fechá-lo; aqui só soltamos a nossa referência.
+    // If awaitFd throws RequestCancelled, the job will still write to the eventfd
+    // and close it; here we only drop our reference.
     scope (exit)
         call.release();
     awaitFd(call.efd, IoEvent.readable);
@@ -206,7 +206,7 @@ T offload(T)(T delegate() work)
 
 unittest
 {
-    // fora de fiber: inline
+    // outside a fiber: inline
     assert(offload(() => 40 + 2) == 42);
     int x;
     offload(() { x = 7; });

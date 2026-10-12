@@ -1,12 +1,12 @@
-/// API "de verdade" em vela: usuários no Postgres (RDS), cotação vinda de uma API
-/// externa, autenticação Bearer, CORS, arquivos estáticos e OpenAPI.
+/// A "real" API in vela: users in Postgres (RDS), a quote coming from an
+/// external API, Bearer authentication, CORS, static files and OpenAPI.
 ///
-/// Variáveis de ambiente:
-///   PORT           porta (8080)
-///   DATABASE_URL   conninfo do libpq, ex.: "host=meu-rds.exemplo.com dbname=app user=app password=..."
-///   API_TOKEN      token Bearer aceito em /api/v1 (obrigatório)
-///   RATES_URL      base da API de cotações (padrão https://api.exchangerate.host)
-///   CORS_ORIGINS   origens permitidas, separadas por vírgula (padrão: nenhuma)
+/// Environment variables:
+///   PORT           port (8080)
+///   DATABASE_URL   libpq conninfo, e.g. "host=my-rds.example.com dbname=app user=app password=..."
+///   API_TOKEN      Bearer token accepted on /api/v1 (required)
+///   RATES_URL      base of the exchange-rates API (default https://api.exchangerate.host)
+///   CORS_ORIGINS   allowed origins, comma-separated (default: none)
 module app;
 
 import vela;
@@ -16,7 +16,7 @@ import core.stdc.stdlib : getenv;
 import core.time : seconds;
 import core.stdc.string : strlen;
 
-// ---------------------------------------------------------------- configuração
+// ---------------------------------------------------------------- configuration
 
 struct Config
 {
@@ -27,7 +27,7 @@ struct Config
     string[] corsOrigins;
 }
 
-__gshared Config config; // escrito uma vez no main, lido por todos os workers
+__gshared Config config; // written once in main, read by all workers
 
 string env(const(char)* name, string fallback = null)
 {
@@ -58,13 +58,13 @@ struct Rates
     string raw;
 }
 
-/// Quem chamou, definido pelo middleware de autenticação.
+/// Who called, set by the authentication middleware.
 struct Caller
 {
     string token;
 }
 
-// ---------------------------------------------------------------- banco
+// ---------------------------------------------------------------- database
 
 PgPool db()
 {
@@ -72,12 +72,12 @@ PgPool db()
     cfg.conninfo = config.databaseUrl;
     cfg.maxConns = 8;
     cfg.cacheStatements = true;
-    return pgPool(cfg); // um pool por worker
+    return pgPool(cfg); // one pool per worker
 }
 
 void ensureSchema()
 {
-    // roda no main, antes do servidor: sem fibers, o driver cai no modo bloqueante
+    // runs in main, before the server: no fibers, so the driver falls back to blocking mode
     auto c = PgConn.connect(config.databaseUrl, seconds(10), seconds(30));
     scope (exit) c.shutdown();
     c.exec("create table if not exists users(id serial primary key, name text not null, "
@@ -88,25 +88,25 @@ void ensureSchema()
 
 string health() => "ok";
 
-@summary("Lista usuários")
+@summary("List users")
 User[] listUsers(int limit = 20, int offset = 0)
 {
     if (limit < 1 || limit > 100)
-        throw new HttpError(422, "limit deve estar entre 1 e 100");
+        throw new HttpError(422, "limit must be between 1 and 100");
     return db.query("select id, name, email, age from users order by id limit $1 offset $2", limit, offset)
         .rowsAs!User;
 }
 
-@summary("Busca um usuário")
+@summary("Fetch a user")
 User getUser(int id)
 {
     auto rows = db.query("select id, name, email, age from users where id = $1", id).rowsAs!User;
     if (rows.length == 0)
-        throw new HttpError(404, "usuário não encontrado");
+        throw new HttpError(404, "user not found");
     return rows[0];
 }
 
-@summary("Cria um usuário")
+@summary("Create a user")
 WithStatus!User createUser(JsonBody!UserInput body_)
 {
     auto u = db.query("insert into users(name, email, age) values ($1, $2, $3) returning id, name, email, age",
@@ -114,33 +114,33 @@ WithStatus!User createUser(JsonBody!UserInput body_)
     return withStatus(201, u);
 }
 
-@summary("Atualiza um usuário")
+@summary("Update a user")
 User updateUser(int id, JsonBody!UserInput body_)
 {
     auto rows = db.query("update users set name = $2, email = $3, age = $4 where id = $1 "
         ~ "returning id, name, email, age", id, body_.name, body_.email, body_.age).rowsAs!User;
     if (rows.length == 0)
-        throw new HttpError(404, "usuário não encontrado");
+        throw new HttpError(404, "user not found");
     return rows[0];
 }
 
-@summary("Remove um usuário")
+@summary("Delete a user")
 void deleteUser(int id)
 {
     if (db.query("delete from users where id = $1 returning id", id).rows == 0)
-        throw new HttpError(404, "usuário não encontrado");
+        throw new HttpError(404, "user not found");
 }
 
-@summary("Cotação vinda de uma API externa")
+@summary("Quote from an external API")
 Response rates(string currency, Local!RequestId rid)
 {
     foreach (char ch; currency)
         if (!((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z')))
-            throw new HttpError(422, "moeda inválida");
+            throw new HttpError(422, "invalid currency");
     HeaderPair[1] h = [HeaderPair("X-Request-Id", rid.value.idup)];
     auto r = httpClient().get(config.ratesUrl ~ "/latest?base=" ~ currency, h[]);
     if (!r.ok)
-        throw new HttpError(502, "a API de cotações respondeu " ~ (r.status == 404 ? "404" : "com erro"));
+        throw new HttpError(502, "the rates API answered " ~ (r.status == 404 ? "404" : "with an error"));
     return Response(200, "application/json", r.body);
 }
 
@@ -158,20 +158,20 @@ App buildApp()
     if (config.corsOrigins.length)
         app.use(cors(CorsConfig(config.corsOrigins, "GET, POST, PUT, DELETE", "Authorization, Content-Type")));
 
-    // erros do banco viram respostas HTTP
+    // database errors become HTTP responses
     app.onError((Context ctx, Exception e) {
         if (auto he = cast(HttpError) e)
             return ctx.text(he.msg, he.status);
         if (auto pe = cast(PgError) e)
         {
             if (pe.isUniqueViolation)
-                return ctx.text("já existe um registro com esse valor", 409);
+                return ctx.text("a record with that value already exists", 409);
             if (cast(PgTimeout) pe)
-                return ctx.text("banco de dados demorou demais", 504);
+                return ctx.text("database took too long", 504);
         }
         if (cast(HttpClientTimeout) e)
-            return ctx.text("serviço externo demorou demais", 504);
-        ctx.text("erro interno", 500);
+            return ctx.text("external service took too long", 504);
+        ctx.text("internal error", 500);
     });
 
     app.get!("/health", health);
@@ -182,7 +182,7 @@ App buildApp()
         if (token.length == 0 || token != config.apiToken)
         {
             ctx.setHeader("WWW-Authenticate", "Bearer");
-            throw new HttpError(401, "token ausente ou inválido");
+            throw new HttpError(401, "missing or invalid token");
         }
         ctx.locals.set(Caller(token.idup));
         next();
@@ -196,7 +196,7 @@ App buildApp()
     api.get!("/whoami", whoami);
 
     app.serveStatic("/assets", "public");
-    app.serveOpenApi(OpenApiInfo("vela api", "1.0.0", "Exemplo de API com Postgres e API externa"));
+    app.serveOpenApi(OpenApiInfo("vela api", "1.0.0", "Example API with Postgres and an external API"));
     return app;
 }
 
@@ -214,8 +214,8 @@ void main()
     {
         import core.stdc.stdio : fputs, stderr;
 
-        fputs("defina DATABASE_URL e API_TOKEN\n", stderr);
-        throw new Exception("configuração incompleta");
+        fputs("set DATABASE_URL and API_TOKEN\n", stderr);
+        throw new Exception("incomplete configuration");
     }
     ensureSchema();
 

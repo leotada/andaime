@@ -1,17 +1,17 @@
-/// Loop de eventos do Linux: epoll edge-triggered, um fiber por requisição.
+/// Linux event loop: edge-triggered epoll, one fiber per request.
 ///
-/// Fluxo de uma conexão (`Conn.phase`):
-///   reading -> (head+corpo completos) -> running -> writing -> reading ...
-/// `running` é o handler dentro de um fiber; se ele chama `sleep`/`awaitFd`,
-/// o fiber é suspenso e o loop segue com as outras conexões. Quando o fiber
-/// volta (timer ou fd pronto), o loop retoma de onde parou.
+/// Flow of a connection (`Conn.phase`):
+///   reading -> (head+body complete) -> running -> writing -> reading ...
+/// `running` is the handler inside a fiber; if it calls `sleep`/`awaitFd`,
+/// the fiber is suspended and the loop moves on with the other connections. When the fiber
+/// comes back (timer or ready fd), the loop resumes where it stopped.
 ///
-/// Cancelamento: se o cliente fecha enquanto o fiber está suspenso (EPOLLRDHUP)
-/// ou o prazo da requisição estoura, a próxima espera do handler lança
-/// `RequestCancelled`; a pilha desce rodando `scope(exit)` e destrutores.
+/// Cancellation: if the client closes while the fiber is suspended (EPOLLRDHUP)
+/// or the request deadline expires, the handler's next wait throws
+/// `RequestCancelled`; the stack unwinds running `scope(exit)` and destructors.
 ///
-/// Pools: fibers ociosos acima de `maxIdleWorkers` são desfeitos (a stack volta
-/// ao SO); buffers de rede vão ao `BufferPool`, que tem teto próprio.
+/// Pools: idle fibers above `maxIdleWorkers` are torn down (the stack goes back
+/// to the OS); network buffers go to the `BufferPool`, which has its own ceiling.
 module vela.engine.epoll;
 
 version (linux):
@@ -45,10 +45,10 @@ private void mallocTrim(size_t pad) nothrow @nogc
 }
 private enum SOCK_NONBLOCK = 0x800, SOCK_CLOEXEC = 0x80000;
 
-// ======================================================================= estruturas
+// ======================================================================= structures
 
-/// Headers por requisição. Cada fiber carrega a sua tabela (32 B por entrada), então
-/// o valor pesa em toda requisição em voo; acima disso o parser responde 431.
+/// Headers per request. Each fiber carries its own table (32 B per entry), so
+/// the value weighs on every in-flight request; above it the parser answers 431.
 private enum maxHeaders = 32;
 
 private enum Kind : ubyte { listener, wake, conn, waiter }
@@ -87,11 +87,11 @@ private final class Conn : Item
     Phase phase;
     Buffer buf;
     bool haveHead;
-    bool sent100;          /// já respondeu 100 Continue a esta requisição
-    size_t headLen, total; /// geometria da requisição atual (válida com haveHead)
-    Worker worker;         /// enquanto running/writing
-    size_t sent;           /// bytes de worker.output já enviados
-    long deadlineMs;       /// relógio monotônico do loop; 0 = sem prazo
+    bool sent100;          /// already answered 100 Continue to this request
+    size_t headLen, total; /// geometry of the current request (valid with haveHead)
+    Worker worker;         /// while running/writing
+    size_t sent;           /// bytes of worker.output already sent
+    long deadlineMs;       /// loop's monotonic clock; 0 = no deadline
 
     this() nothrow @safe { super(Kind.conn); }
 }
@@ -148,7 +148,7 @@ private final class Worker : Fiber
             catch (Throwable t)
             {
                 failed = true;
-                fprintf(stderr, "vela: erro não tratado no handler: %.*s\n",
+                fprintf(stderr, "vela: unhandled error in handler: %.*s\n",
                     cast(int) t.msg.length, t.msg.ptr);
             }
             done = true;
@@ -157,7 +157,7 @@ private final class Worker : Fiber
     }
 }
 
-// ======================================================================= o loop
+// ======================================================================= the loop
 
 final class EpollLoop : EventLoop, Scheduler
 {
@@ -170,7 +170,7 @@ final class EpollLoop : EventLoop, Scheduler
     private HeaderField[maxHeaders] scratch;
     private ByteBuffer errOut;
 
-    private Conn[] conns; /// por fd
+    private Conn[] conns; /// by fd
     private Stack!Conn spare, dead;
     private Stack!Worker idle;
     private Timer[] heap;
@@ -182,15 +182,15 @@ final class EpollLoop : EventLoop, Scheduler
     private long stopDeadlineMs;
     private size_t connCount, inFlight, peakInFlight, workersCreated, workersRetired;
     private size_t rejected, cancelledN, timedOutN, stalls;
-    private long quietSinceMs;      /// desde quando inFlight == 0 (0 = ocupado)
-    private size_t createdAtTrim;  /// workersCreated na última limpeza
+    private long quietSinceMs;      /// since when inFlight == 0 (0 = busy)
+    private size_t createdAtTrim;  /// workersCreated at the last cleanup
     private size_t trims;
     private long maxStallMs, lastStallLogMs = -1_000_000;
     private bool stopping;
     private shared bool stopReq;
     private RequestCancelled cancelledEx;
 
-    /// Porta em que este loop escuta (útil com `port = 0`); válida quando `ready`.
+    /// Port this loop listens on (useful with `port = 0`); valid when `ready`.
     ushort boundPort;
     shared bool ready;
 
@@ -218,7 +218,7 @@ final class EpollLoop : EventLoop, Scheduler
             connCount, rejected, cancelledN, timedOutN, stalls, maxStallMs);
     }
 
-    /// Quantas vezes o loop devolveu memória ao SO depois de uma rajada.
+    /// How many times the loop returned memory to the OS after a burst.
     size_t trimCount() const nothrow @nogc => trims;
 
     override void stop() nothrow @nogc
@@ -329,7 +329,7 @@ final class EpollLoop : EventLoop, Scheduler
             host[0 .. cfg.host.length] = cfg.host[];
             if (inet_pton(AF_INET, host.ptr, &addr.sin_addr) != 1)
             {
-                fprintf(stderr, "vela: host inválido: %s\n", host.ptr);
+                fprintf(stderr, "vela: invalid host: %s\n", host.ptr);
                 return false;
             }
         }
@@ -350,7 +350,7 @@ final class EpollLoop : EventLoop, Scheduler
 
         listenItem = new Item(Kind.listener);
         epoll_event ev;
-        ev.events = EPOLLIN; // nível: se sobrar conexão após o lote, o próximo wait avisa
+        ev.events = EPOLLIN; // level-triggered: if connections remain after the batch, the next wait reports them
         ev.data.ptr = cast(void*) listenItem;
         epoll_ctl(ep, EPOLL_CTL_ADD, listenFd, &ev);
         return true;
@@ -362,7 +362,7 @@ final class EpollLoop : EventLoop, Scheduler
         {
             immutable fd = accept4(listenFd, null, null, SOCK_NONBLOCK | SOCK_CLOEXEC);
             if (fd < 0)
-                return; // EAGAIN, EMFILE...: o próximo wait tenta de novo
+                return; // EAGAIN, EMFILE...: the next wait tries again
             if (connCount >= cfg.maxConnections || stopping)
             {
                 close(fd);
@@ -392,7 +392,7 @@ final class EpollLoop : EventLoop, Scheduler
         }
     }
 
-    // ------------------------------------------------------------------ eventos
+    // ------------------------------------------------------------------ events
 
     private void onEvent(Item it, uint events)
     {
@@ -418,7 +418,7 @@ final class EpollLoop : EventLoop, Scheduler
     private void onConnEvent(Conn c, uint events)
     {
         if (c.fd < 0)
-            return; // fechada neste mesmo lote
+            return; // closed in this same batch
         if (events & EPOLLERR)
         {
             if (c.phase == Phase.running)
@@ -438,7 +438,7 @@ final class EpollLoop : EventLoop, Scheduler
                     closeConn(c);
                     break;
                 case Phase.reading:
-                    drive(c); // pode haver uma requisição completa antes do FIN
+                    drive(c); // there may be a complete request before the FIN
                     if (c.fd >= 0 && c.phase == Phase.reading)
                         closeConn(c);
                     break;
@@ -460,7 +460,7 @@ final class EpollLoop : EventLoop, Scheduler
     private void onWaiter(Worker w, uint events)
     {
         if (!w.waiting)
-            return; // evento atrasado de uma espera que já acabou
+            return; // late event from a wait that already ended
         w.wakeEvents = events;
         wake(w);
         Conn c = w.conn;
@@ -469,12 +469,12 @@ final class EpollLoop : EventLoop, Scheduler
             drive(c);
     }
 
-    // ------------------------------------------------------------------ leitura e parse
+    // ------------------------------------------------------------------ reading and parsing
 
     private enum Step : ubyte { needMore, ready, failed }
 
-    /// Lê e processa o que houver na conexão, até esperar por mais bytes,
-    /// suspender num handler ou fechar. Nunca recursivo.
+    /// Reads and processes whatever is on the connection, until it waits for more bytes,
+    /// suspends in a handler or closes. Never recursive.
     private void drive(Conn c)
     {
         for (;;)
@@ -485,7 +485,7 @@ final class EpollLoop : EventLoop, Scheduler
             {
                 case Step.ready:
                     startRequest(c);
-                    break; // volta ao topo: pode haver outra requisição em pipelining
+                    break; // back to the top: there may be another pipelined request
                 case Step.needMore:
                     if (!fill(c))
                         return;
@@ -496,11 +496,11 @@ final class EpollLoop : EventLoop, Scheduler
         }
     }
 
-    /// Lê até EAGAIN. Devolve false se não há mais o que ler agora (ou fechou).
+    /// Reads until EAGAIN. Returns false if there is nothing more to read right now (or it closed).
     private bool fill(Conn c)
     {
         if (c.buf.isNull)
-            c.buf = pool.acquire(4096); // empresta só quando chega o primeiro byte
+            c.buf = pool.acquire(4096); // only borrows when the first byte arrives
         bool any = false;
         for (;;)
         {
@@ -517,11 +517,11 @@ final class EpollLoop : EventLoop, Scheduler
             if (r > 0)
             {
                 if (wasEmpty)
-                    c.deadlineMs = nowMs + cfg.headerTimeoutMs; // não estende a cada byte
+                    c.deadlineMs = nowMs + cfg.headerTimeoutMs; // not extended on every byte
                 c.buf.len += r;
                 any = true;
                 if (c.buf.free_.length != 0)
-                    return true; // leitura curta: o kernel esvaziou
+                    return true; // short read: the kernel drained it
                 continue;
             }
             if (r == 0)
@@ -534,7 +534,7 @@ final class EpollLoop : EventLoop, Scheduler
             if (errno == EAGAIN)
             {
                 if (c.buf.len == 0)
-                    pool.release(c.buf); // nada chegou: não segura o buffer
+                    pool.release(c.buf); // nothing arrived: do not hold the buffer
                 return any;
             }
             closeConn(c);
@@ -566,8 +566,8 @@ final class EpollLoop : EventLoop, Scheduler
                 return Step.failed;
             }
         }
-        // Expect: 100-continue: o cliente espera o aval antes de mandar o corpo.
-        // O parser já recusou (413/417) o que não vale a pena receber.
+        // Expect: 100-continue: the client waits for the go-ahead before sending the body.
+        // The parser already refused (413/417) what is not worth receiving.
         if (!c.sent100 && c.buf.len < c.total)
         {
             Request tmp;
@@ -581,7 +581,7 @@ final class EpollLoop : EventLoop, Scheduler
         return c.buf.len >= c.total ? Step.ready : Step.needMore;
     }
 
-    // ------------------------------------------------------------------ requisição
+    // ------------------------------------------------------------------ request
 
     private void startRequest(Conn c)
     {
@@ -596,12 +596,12 @@ final class EpollLoop : EventLoop, Scheduler
             return;
         }
         Worker w = acquireWorker();
-        // segundo parse, agora nas estruturas do próprio fiber (o parse é barato;
-        // o head fica vivo enquanto o fiber estiver suspenso)
+        // second parse, now into the fiber's own structures (parsing is cheap;
+        // the head stays alive while the fiber is suspended)
         parseRequestHead(cast(const(char)[]) c.buf.data, w.req, w.store[], cfg.limits);
         w.req.body = c.buf.mem[c.headLen .. c.total];
         if (stopping)
-            w.req.keepAlive = false; // drenando: a resposta anuncia Connection: close
+            w.req.keepAlive = false; // draining: the response announces Connection: close
         w.conn = c;
         w.output.clear();
         w.cancelled = w.timedOut = w.failed = w.closeAfter = false;
@@ -631,12 +631,12 @@ final class EpollLoop : EventLoop, Scheduler
     {
         w.conn = null;
         inFlight--;
-        w.output.shrinkTo(64 << 10); // um pico de resposta não fica preso ao fiber
+        w.output.shrinkTo(64 << 10); // a response peak does not stay pinned to the fiber
         if (idle.n < cfg.maxIdleWorkers)
             idle.push(w);
         else
         {
-            // termina o fiber de verdade (a stack volta ao SO) e solta o objeto
+            // really ends the fiber (the stack goes back to the OS) and releases the object
             w.retiring = true;
             w.call();
             destroy(w);
@@ -658,8 +658,8 @@ final class EpollLoop : EventLoop, Scheduler
             finish(w);
     }
 
-    /// Um handler ficou `ms` sem devolver o worker ao loop: nesse tempo nenhuma
-    /// outra conexão deste worker andou. Conta sempre; avisa no máximo 1x por segundo.
+    /// A handler went `ms` without giving the worker back to the loop: during that time no
+    /// other connection of this worker made progress. Always counts; warns at most once per second.
     private void noteStall(Worker w, long ms)
     {
         stalls++;
@@ -670,12 +670,12 @@ final class EpollLoop : EventLoop, Scheduler
             return;
         lastStallLogMs = now;
         auto m = methodName(w.req.method);
-        fprintf(stderr, "vela: aviso: um handler segurou o worker por %ld ms sem ceder (%.*s %.*s); "
-            ~ "espere com sleep/awaitFd ou tire o trabalho pesado do loop\n", ms,
+        fprintf(stderr, "vela: warning: a handler held the worker for %ld ms without yielding (%.*s %.*s); "
+            ~ "wait with sleep/awaitFd or move the heavy work out of the loop\n", ms,
             cast(int) m.length, m.ptr, cast(int) w.req.path.length, w.req.path.ptr);
     }
 
-    /// O handler voltou (ou foi cancelado): decide o que enviar.
+    /// The handler returned (or was cancelled): decides what to send.
     private void finish(Worker w)
     {
         Conn c = w.conn;
@@ -685,7 +685,7 @@ final class EpollLoop : EventLoop, Scheduler
             {
                 timedOutN++;
                 w.output.clear();
-                static immutable body504 = `{"detail":"tempo limite da requisição excedido"}`;
+                static immutable body504 = `{"detail":"request time limit exceeded"}`;
                 writeResponseHead(w.output, 504, "application/json", body504.length, null, false);
                 w.output.put(body504);
                 w.closeAfter = true;
@@ -693,7 +693,7 @@ final class EpollLoop : EventLoop, Scheduler
             else
             {
                 cancelledN++;
-                closeConn(c); // cliente já foi embora
+                closeConn(c); // client already gone
                 return;
             }
         }
@@ -725,7 +725,7 @@ final class EpollLoop : EventLoop, Scheduler
             if (n < 0 && errno == EINTR)
                 continue;
             if (n < 0 && errno == EAGAIN)
-                return; // espera o próximo EPOLLOUT
+                return; // wait for the next EPOLLOUT
             closeConn(c);
             return;
         }
@@ -743,19 +743,19 @@ final class EpollLoop : EventLoop, Scheduler
             closeConn(c);
             return;
         }
-        c.buf.compact(c.total); // o que sobrou é a próxima requisição (pipelining)
+        c.buf.compact(c.total); // what is left over is the next request (pipelining)
         c.haveHead = false;
         c.sent100 = false;
         c.headLen = c.total = c.sent = 0;
         if (c.buf.len == 0)
-            pool.release(c.buf); // ocioso: não segura buffer
+            pool.release(c.buf); // idle: do not hold the buffer
         c.phase = Phase.reading;
         c.deadlineMs = nowMs + cfg.idleTimeoutMs;
     }
 
-    // ------------------------------------------------------------------ cancelamento
+    // ------------------------------------------------------------------ cancellation
 
-    /// Cliente foi embora (`timeout = false`) ou o prazo estourou (`true`).
+    /// Client went away (`timeout = false`) or the deadline expired (`true`).
     private void cancelRequest(Conn c, bool timeout)
     {
         auto w = c.worker;
@@ -766,7 +766,7 @@ final class EpollLoop : EventLoop, Scheduler
         if (w.waiting)
         {
             wake(w);
-            resume(w); // a espera lança RequestCancelled; a pilha desce e o fiber termina
+            resume(w); // the wait throws RequestCancelled; the stack unwinds and the fiber ends
         }
     }
 
@@ -780,7 +780,7 @@ final class EpollLoop : EventLoop, Scheduler
     override uint awaitFd(int fd, uint events, long timeoutMs)
     {
         auto w = cast(Worker) Fiber.getThis();
-        assert(w !is null, "vela: awaitFd fora de um fiber de requisição");
+        assert(w !is null, "vela: awaitFd outside a request fiber");
         if (w.cancelled)
             throw cancelledEx;
 
@@ -803,7 +803,7 @@ final class EpollLoop : EventLoop, Scheduler
     override void sleepMs(long ms)
     {
         auto w = cast(Worker) Fiber.getThis();
-        assert(w !is null, "vela: sleep fora de um fiber de requisição");
+        assert(w !is null, "vela: sleep outside a request fiber");
         if (w.cancelled)
             throw cancelledEx;
         beginWait(w, ms);
@@ -825,18 +825,18 @@ final class EpollLoop : EventLoop, Scheduler
         }
     }
 
-    /// Encerra a espera de `w` (fd pronto, timer ou cancelamento).
+    /// Ends the wait of `w` (fd ready, timer or cancellation).
     private void wake(Worker w)
     {
         w.waiting = false;
         if (w.timerPending)
-            staleTimers++; // o Timer continua no heap até vencer; já não vale mais
+            staleTimers++; // the Timer stays in the heap until it expires; it no longer counts
         w.timerPending = false;
         w.waitGen++;
         w.waitFd = -1;
     }
 
-    // ------------------------------------------------------------------ timers (heap mínimo)
+    // ------------------------------------------------------------------ timers (min-heap)
 
     private void heapPush(Timer t)
     {
@@ -896,7 +896,7 @@ final class EpollLoop : EventLoop, Scheduler
             if (c.fd >= 0 && c.phase == Phase.reading)
                 drive(c);
         }
-        // espera que acaba cedo deixa Timers mortos no heap: limpa quando passam da metade
+        // a wait that ends early leaves dead Timers in the heap: clean up when they pass half
         if (heapN > 1024 && staleTimers * 2 > heapN)
             compactHeap();
     }
@@ -916,10 +916,10 @@ final class EpollLoop : EventLoop, Scheduler
                 siftDown(i);
     }
 
-    // ------------------------------------------------------------------ prazos de conexão
+    // ------------------------------------------------------------------ connection deadlines
 
-    /// Varre as conexões a cada 250 ms. Com 10 mil conexões são ~40 mil
-    /// comparações por segundo; uma timer wheel só entra se o perfil pedir (M4).
+    /// Sweeps the connections every 250 ms. With 10 thousand connections that is ~40 thousand
+    /// comparisons per second; a timer wheel only comes in if the profile asks for it (M4).
     private void sweep()
     {
         foreach (c; conns)
@@ -930,15 +930,15 @@ final class EpollLoop : EventLoop, Scheduler
             {
                 case Phase.reading:
                     if (c.buf.isNull || c.buf.len == 0)
-                        closeConn(c); // keep-alive ocioso demais
+                        closeConn(c); // keep-alive idle for too long
                     else
-                        sendErrorAndClose(c, 408); // head/corpo lento demais
+                        sendErrorAndClose(c, 408); // head/body too slow
                     break;
                 case Phase.running:
                     cancelRequest(c, true);
                     break;
                 case Phase.writing:
-                    closeConn(c); // cliente não lê
+                    closeConn(c); // client does not read
                     break;
                 case Phase.closed:
                     break;
@@ -946,11 +946,11 @@ final class EpollLoop : EventLoop, Scheduler
         }
     }
 
-    // ------------------------------------------------------------------ fechamento
+    // ------------------------------------------------------------------ closing
 
     private void sendRaw(Conn c, const(char)[] data)
     {
-        // respostas de erro são curtas: um send não bloqueante basta
+        // error responses are short: one non-blocking send is enough
         send(c.fd, data.ptr, data.length, MSG_NOSIGNAL);
     }
 
@@ -966,7 +966,7 @@ final class EpollLoop : EventLoop, Scheduler
     {
         if (c.fd < 0)
             return;
-        close(c.fd); // o kernel remove o fd do epoll
+        close(c.fd); // the kernel removes the fd from epoll
         conns[c.fd] = null;
         c.fd = -1;
         connCount--;
@@ -982,8 +982,8 @@ final class EpollLoop : EventLoop, Scheduler
         dead.push(c);
     }
 
-    /// Objetos Conn fechados só voltam ao pool no fim do lote de eventos: um
-    /// evento atrasado do mesmo lote ainda aponta para eles (e vê fd < 0).
+    /// Closed Conn objects only go back to the pool at the end of the event batch: a
+    /// late event from the same batch still points at them (and sees fd < 0).
     private void flushDead()
     {
         while (!dead.empty)
@@ -994,12 +994,12 @@ final class EpollLoop : EventLoop, Scheduler
         }
     }
 
-    // ------------------------------------------------------------------ memória depois de rajada
+    // ------------------------------------------------------------------ memory after a burst
 
-    /// Passada uma rajada (>= trimBurst fibers criados) e 1 s sem nenhuma requisição em
-    /// andamento, devolve memória ao SO: sem isso o RSS fica no pico, porque os Contexts
-    /// e Workers desfeitos viram lixo que ninguém coleta enquanto o servidor está parado.
-    /// A coleta para os outros workers por alguns ms, uma vez por rajada.
+    /// After a burst (>= trimBurst fibers created) and 1 s with no request in
+    /// progress, returns memory to the OS: without it RSS stays at the peak, because the torn-down Contexts
+    /// and Workers become garbage nobody collects while the server is idle.
+    /// The collection stops the other workers for a few ms, once per burst.
     private void trimIfQuiet()
     {
         if (!cfg.trimAfterBurst)
@@ -1030,7 +1030,7 @@ final class EpollLoop : EventLoop, Scheduler
 
     private enum trimBurst = 128;
 
-    // ------------------------------------------------------------------ parada
+    // ------------------------------------------------------------------ stop
 
     private void beginStop()
     {
@@ -1053,7 +1053,7 @@ final class EpollLoop : EventLoop, Scheduler
 
     private void teardown()
     {
-        // desfaz o que ainda estiver suspenso: cada handler recebe RequestCancelled
+        // tears down whatever is still suspended: each handler receives RequestCancelled
         foreach (c; conns)
             if (c !is null && c.fd >= 0 && c.phase == Phase.running)
                 cancelRequest(c, false);
@@ -1077,7 +1077,7 @@ final class EpollLoop : EventLoop, Scheduler
     }
 }
 
-// ======================================================================= vários workers
+// ======================================================================= multiple workers
 
 private __gshared EpollLoop[] gLoops;
 
@@ -1094,7 +1094,7 @@ private Thread startWorker(EpollLoop lp, ServerConfig cfg, HandlerFactory f)
     return t;
 }
 
-/// Sobe `cfg.workers` loops (um por núcleo se 0) e bloqueia até SIGINT/SIGTERM.
+/// Starts `cfg.workers` loops (one per core if 0) and blocks until SIGINT/SIGTERM.
 void runEpollServer(ServerConfig cfg, HandlerFactory factory)
 {
     uint n = cfg.workers;
@@ -1112,13 +1112,13 @@ void runEpollServer(ServerConfig cfg, HandlerFactory factory)
     sigaction(SIGINT, &sa, null);
     sigaction(SIGTERM, &sa, null);
 
-    printf("vela (epoll, %u worker%s) em http://%.*s:%d\n", n, n == 1 ? "".ptr : "s".ptr,
+    printf("vela (epoll, %u worker%s) at http://%.*s:%d\n", n, n == 1 ? "".ptr : "s".ptr,
         cast(int) cfg.host.length, cfg.host.ptr, cast(int) cfg.port);
 
     Thread[] threads;
     foreach (i; 1 .. n)
         threads ~= startWorker(gLoops[i], cfg, factory);
-    gLoops[0].run(cfg, factory); // o worker 0 roda na thread principal
+    gLoops[0].run(cfg, factory); // worker 0 runs on the main thread
     foreach (t; threads)
         t.join();
 }

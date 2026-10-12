@@ -1,12 +1,12 @@
-/// Contexto por requisição e pipeline de middleware em cebola.
+/// Per-request context and onion-style middleware pipeline.
 module vela.web.context;
 
 import vela.http.types;
 import vela.http.buffer;
 import vela.web.dto : FieldErrors;
 
-/// Valores dos `{params}` da rota, na ordem em que aparecem no padrão.
-/// O wrapper do handler sabe em compilação qual índice é qual nome.
+/// Values of the route's `{params}`, in the order they appear in the pattern.
+/// The handler wrapper knows at compile time which index is which name.
 struct PathParams
 {
     enum size_t max = 8;
@@ -15,7 +15,7 @@ struct PathParams
 
     void push(const(char)[] v) nothrow @nogc @safe
     {
-        values[count++] = v; // o registro garante count <= max
+        values[count++] = v; // the registration guarantees count <= max
     }
 
     void pop() nothrow @nogc @safe
@@ -26,7 +26,7 @@ struct PathParams
     const(char)[] opIndex(size_t i) const nothrow @nogc @safe => values[i];
 }
 
-/// Estado da resposta. O buffer é reaproveitado entre requisições.
+/// Response state. The buffer is reused across requests.
 struct ResponseState
 {
     int status = 200;
@@ -43,7 +43,7 @@ struct ResponseState
                 h.value = value;
                 return;
             }
-        assert(headerCount < headerStore.length, "vela: mais de 16 headers extras na resposta");
+        assert(headerCount < headerStore.length, "vela: more than 16 extra response headers");
         headerStore[headerCount++] = HeaderField(name, value);
     }
 
@@ -58,13 +58,13 @@ struct ResponseState
     }
 }
 
-/// Armazenamento tipado por requisição para passar dados de um middleware ao
-/// handler (usuário autenticado, id da requisição...). Um valor por tipo:
+/// Typed per-request storage to pass data from a middleware to the
+/// handler (authenticated user, request id...). One value per type:
 ///
-///     ctx.locals.set(User(7, "ana"));          // no middleware
-///     string me(Local!User u) => u.name;       // no handler
+///     ctx.locals.set(User(7, "ana"));          // in the middleware
+///     string me(Local!User u) => u.name;       // in the handler
 ///
-/// As caixas são reaproveitadas entre requisições: depois do aquecimento não aloca.
+/// The boxes are reused across requests: after warm-up it does not allocate.
 struct Locals
 {
     private static class Box { }
@@ -80,7 +80,7 @@ struct Locals
     enum size_t capacity = 8;
     private Slot[capacity] slots;
 
-    /// Guarda `value` (substitui o anterior do mesmo tipo).
+    /// Stores `value` (replaces the previous one of the same type).
     void set(T)(T value)
     {
         Slot* free;
@@ -95,7 +95,7 @@ struct Locals
             if (free is null && sl.key is null)
                 free = &sl;
         }
-        assert(free !is null, "vela: mais de 8 tipos em ctx.locals");
+        assert(free !is null, "vela: more than 8 types in ctx.locals");
         auto b = new TypedBox!T;
         b.value = value;
         free.key = typeid(T);
@@ -103,7 +103,7 @@ struct Locals
         free.live = true;
     }
 
-    /// Ponteiro para o valor, ou null se nenhum middleware o definiu nesta requisição.
+    /// Pointer to the value, or null if no middleware set it in this request.
     T* find(T)() return
     {
         foreach (ref sl; slots)
@@ -119,8 +119,8 @@ struct Locals
     }
 }
 
-/// Um objeto por conexão, reutilizado a cada requisição: nada é alocado
-/// por requisição. Não guarde referências a ele depois que o handler retorna.
+/// One object per connection, reused on every request: nothing is allocated
+/// per request. Do not keep references to it after the handler returns.
 final class Context
 {
     Request request;
@@ -128,12 +128,12 @@ final class Context
     ResponseState response;
     FieldErrors errors;
     Locals locals;
-    package char[64] allowBuf; // valor do header Allow do 405
+    package char[64] allowBuf; // value of the 405 Allow header
     private char[512] scratchBuf;
     private size_t scratchUsed;
 
-    /// Memória temporária válida até o fim da requisição (para montar valores de
-    /// headers de resposta sem alocar). Passou de 512 bytes, cai no GC.
+    /// Temporary memory valid until the end of the request (to build
+    /// response header values without allocating). Past 512 bytes, it falls back to the GC.
     char[] scratch(size_t n) nothrow @trusted
     {
         if (scratchUsed + n <= scratchBuf.length)
@@ -145,7 +145,7 @@ final class Context
         return new char[n];
     }
 
-    /// Prepara para uma nova requisição sem liberar buffers.
+    /// Prepares for a new request without releasing buffers.
     void reset(ref Request r) nothrow @nogc @safe
     {
         request = r;
@@ -156,7 +156,7 @@ final class Context
         scratchUsed = 0;
     }
 
-    // ---- atalhos para middlewares e handlers que recebem `Context`
+    // ---- shortcuts for middlewares and handlers that receive `Context`
 
     void setHeader(const(char)[] name, const(char)[] value) nothrow @nogc @safe
     {
@@ -172,11 +172,11 @@ final class Context
     }
 }
 
-/// Middleware em cebola: faça algo, chame `next()`, faça algo depois.
+/// Onion-style middleware: do something, call `next()`, do something after.
 alias Middleware = void delegate(Context ctx, Next next);
 
-/// Continuação do pipeline. É um struct (não um closure): chamar `next()`
-/// não aloca. Não chamar `next()` interrompe a cadeia (ex.: auth negada).
+/// Continuation of the pipeline. It is a struct (not a closure): calling `next()`
+/// does not allocate. Not calling `next()` stops the chain (e.g. auth denied).
 struct Next
 {
     private void delegate(Context, size_t) runner;

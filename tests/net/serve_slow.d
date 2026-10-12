@@ -1,5 +1,5 @@
-/// Servidor de carga: uma rota que "espera uma API externa" por N ms (padrão 3000).
-/// Uso: serve_slow [porta] [esperaMs] — veja o teste de memória em tools/check.sh.
+/// Load server: a route that "waits for an external API" for N ms (default 3000).
+/// Usage: serve_slow [port] [waitMs] — see the memory test in tools/check.sh.
 module serve_slow;
 
 import vela;

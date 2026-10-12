@@ -1,5 +1,5 @@
-/// Recursos da camada web que uma aplicação real usa: grupos com middleware,
-/// ctx.locals / Local!T, onError, onNotFound, barra final e CORS.
+/// Web-layer features a real application uses: groups with middleware,
+/// ctx.locals / Local!T, onError, onNotFound, trailing slash and CORS.
 module features;
 
 import vela;
@@ -19,7 +19,7 @@ App build(ref string[] trace)
 {
     auto app = new App;
     app.redirectTrailingSlash = true;
-    app.use(cors(CorsConfig(["https://app.exemplo.com"], "GET, POST", null, "X-Total", true)));
+    app.use(cors(CorsConfig(["https://app.example.com"], "GET, POST", null, "X-Total", true)));
     app.use((Context c, Next n) { trace ~= "app>"; n(); trace ~= "<app"; });
 
     app.get!("/hi", hi);
@@ -36,7 +36,7 @@ App build(ref string[] trace)
     admin.use((Context c, Next n) {
         auto tok = c.request.header("Authorization");
         if (tok != "Bearer ok")
-            throw new HttpError(401, "faltou o token");
+            throw new HttpError(401, "missing token");
         c.locals.set(User(1, "ana"));
         trace ~= "admin>";
         n();
@@ -51,17 +51,17 @@ unittest
     string[] trace;
     auto c = TestClient(build(trace));
 
-    // grupo: prefixo + middleware só nas rotas do grupo
+    // group: prefix + middleware only on the group's routes
     auto r = c.get("/hi");
     assert(r.status == 200 && r.body == "hi");
-    assert(trace == ["app>", "<app"], "middleware do grupo vazou para fora");
+    assert(trace == ["app>", "<app"], "group middleware leaked outside");
     trace = null;
     r = c.get("/api/hi");
     assert(r.status == 200 && r.body == "hi");
     assert(trace == ["app>", "api>", "<api", "<app"], trace[0]);
-    assert(c.get("/api").body == "hi", "'/' do grupo vira o próprio prefixo");
+    assert(c.get("/api").body == "hi", "the group's '/' becomes the prefix itself");
 
-    // subgrupo herda middlewares e usa locals
+    // subgroup inherits middlewares and uses locals
     assert(c.get("/api/admin/me").status == 401);
     trace = null;
     r = c.get("/api/admin/me", hdr("Authorization", "Bearer ok"));
@@ -69,20 +69,20 @@ unittest
     assert(trace == ["app>", "api>", "admin>", "<api", "<app"]);
     assert(c.get("/api/admin/x/abc", hdr("Authorization", "Bearer ok")).body == "abc");
 
-    // Local!T sem middleware: erro de configuração, 500 sem vazar detalhes
+    // Local!T without middleware: configuration error, 500 without leaking details
     r = c.get("/orphan");
-    assert(r.status == 500 && r.body == `{"detail":"erro interno"}`);
+    assert(r.status == 500 && r.body == `{"detail":"internal error"}`);
 
-    // locals não vazam entre requisições
+    // locals do not leak between requests
     c.get("/api/admin/me", hdr("Authorization", "Bearer ok"));
     assert(c.get("/orphan").status == 500);
 
-    // barra final
+    // trailing slash
     r = c.get("/hi/?a=1");
     assert(r.status == 308 && r.header("Location") == "/hi?a=1", r.header("Location"));
     r = c.get("/api/");
     assert(r.status == 308 && r.header("Location") == "/api");
-    assert(c.get("/nada/").status == 404); // nem com nem sem barra: 404 normal
+    assert(c.get("/nada/").status == 404); // neither with nor without slash: ordinary 404
     assert(c.get("/api/hi/").status == 308);
 }
 
@@ -90,24 +90,24 @@ unittest
 {
     string[] trace;
     auto c = TestClient(build(trace));
-    string ori = "https://app.exemplo.com";
+    string ori = "https://app.example.com";
 
-    // sem Origin: nenhum header CORS
+    // without Origin: no CORS headers
     auto r = c.get("/hi");
     assert(r.header("Access-Control-Allow-Origin") is null);
 
-    // origem permitida
+    // allowed origin
     r = c.get("/hi", hdr("Origin", ori));
     assert(r.status == 200);
     assert(r.header("Access-Control-Allow-Origin") == ori && r.header("Vary") == "Origin");
     assert(r.header("Access-Control-Allow-Credentials") == "true");
     assert(r.header("Access-Control-Expose-Headers") == "X-Total");
 
-    // origem desconhecida: sem headers (o navegador bloqueia)
+    // unknown origin: no headers (the browser blocks it)
     r = c.get("/hi", hdr("Origin", "https://mal.com"));
     assert(r.status == 200 && r.header("Access-Control-Allow-Origin") is null);
 
-    // preflight de uma rota que só existe para GET: 204 sem passar pelo roteador
+    // preflight of a route that only exists for GET: 204 without going through the router
     r = c.send(Method.OPTIONS, "/hi", null, [hdr("Origin", ori), hdr("Access-Control-Request-Method", "POST"),
         hdr("Access-Control-Request-Headers", "content-type,authorization")]);
     assert(r.status == 204, "preflight");
@@ -125,25 +125,25 @@ unittest
         if (auto he = cast(HttpError) e)
             ctx.text("http:" ~ he.msg, he.status);
         else
-            ctx.text("falha", 500);
+            ctx.text("failure", 500);
     });
     app.onNotFound((Context ctx) { ctx.text("sumiu", 404); });
     auto c = TestClient(app);
 
     auto r = c.get("/boom");
-    assert(r.status == 500 && r.body == "falha", "detalhes internos não devem vazar");
+    assert(r.status == 500 && r.body == "failure", "internal details must not leak");
     r = c.get("/denied");
     assert(r.status == 403 && r.body == "http:proibido");
-    r = c.get("/nao-existe");
+    r = c.get("/does-not-exist");
     assert(r.status == 404 && r.body == "sumiu");
-    // exceção lançada por middleware também passa pelo onError
+    // an exception thrown by a middleware also goes through onError
     r = c.get("/api/admin/me");
-    assert(r.status == 401 && r.body == "http:faltou o token");
+    assert(r.status == 401 && r.body == "http:missing token");
 }
 
 unittest
 {
-    // prefixo inválido é erro de startup com mensagem clara
+    // an invalid prefix is a startup error with a clear message
     auto app = new App;
     foreach (bad; ["api", "/api/", "/o/{id}"])
     {
@@ -168,11 +168,11 @@ unittest
     auto r = c.get("/rid");
     assert(r.body.length == 16 && r.header("X-Request-Id") == r.body);
     auto r2 = c.get("/rid");
-    assert(r2.body != r.body, "ids deveriam variar");
+    assert(r2.body != r.body, "ids should vary");
     r = c.get("/rid", hdr("X-Request-Id", "abc-123"));
     assert(r.body == "abc-123" && r.header("X-Request-Id") == "abc-123");
     r = c.get("/rid", hdr("X-Request-Id", "evil\r\nSet-Cookie: x"));
-    assert(r.body.length == 16, "id inseguro deve ser descartado");
+    assert(r.body.length == 16, "an unsafe id must be discarded");
 
     assert(c.get("/tok", hdr("Authorization", "Bearer abc.def")).body == "abc.def");
     assert(c.get("/tok").body == "");

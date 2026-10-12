@@ -1,9 +1,9 @@
 # dapi
 
-O código usa o nome provisório **vela** (pacote DUB e `import vela;`).
+The code uses the provisional name **vela** (DUB package and `import vela;`).
 
-Micro framework web em D com ergonomia estilo FastAPI: a assinatura da função é o
-contrato HTTP, e o dispatch é gerado em tempo de compilação.
+A micro web framework in D with FastAPI-style ergonomics: the function signature is the
+HTTP contract, and the dispatch is generated at compile time.
 
 ```d
 import vela;
@@ -23,174 +23,172 @@ void main()
 }
 ```
 
-## Potencial
+## Potential
 
-**Para quem escreve a API**
-- Assinatura é contrato: parâmetros de caminho, query, headers e corpo JSON tipado são extraídos e validados
-  a partir dos tipos e nomes da função. Erro de entrada vira 422 no formato do FastAPI; o handler só roda com dados válidos.
-- Documentação que não desatualiza: o `openapi.json` e o Swagger UI saem das mesmas assinaturas que geram o dispatch.
-- Respostas fluidas: devolva `string`, struct, array, `WithStatus!T` ou `Response`; `throw new HttpError(...)` para falhas.
-- Erros de compilação de uma linha dizendo o que corrigir, bons para humanos e para agentes de IA (sem *backtrace*
-  de templates), e tipos previsíveis que mantêm o `serve-d` responsivo.
+**For whoever writes the API**
+- The signature is the contract: path parameters, query, headers and a typed JSON body are extracted and validated
+  from the function's types and names. Bad input becomes a 422 in FastAPI's format; the handler only runs with valid data.
+- Documentation that does not go stale: `openapi.json` and the Swagger UI come from the same signatures that generate the dispatch.
+- Fluent responses: return `string`, a struct, an array, `WithStatus!T` or `Response`; `throw new HttpError(...)` for failures.
+- One-line compile errors that say what to fix, good for humans and for AI agents (no template *backtrace*),
+  and predictable types that keep `serve-d` responsive.
 
-**Para quem opera o servidor**
-- Não bloqueia: um fiber por requisição; banco, API externa e DNS suspendem só o fiber, qualquer que seja o número
-  de requisições em voo. Trabalho pesado vai para um pool de threads limitado (`offload`), que recusa com `PoolSaturated`
-  em vez de crescer sem teto.
-- Memória pensada para VPS barata: buffers de rede reaproveitados, tabela de headers por fiber, teto de requisições
-  em voo (503 + `Retry-After`). Medido: 1.000 requisições simultâneas em ~25 MB de RSS; o caminho quente não aloca no GC.
-- Robusto por padrão: prazos de head/ocioso/escrita/requisição, proteção contra slowloris, cancelamento quando o
-  cliente some (o `scope(exit)` do handler roda), parada graciosa, parser HTTP/1.1 zero-copy fuzzado com ASan.
-- Compilação rápida: o `app.d` do exemplo compila em ~250 ms no DMD, porque o dispatch usa `static foreach` e
-  `static if` rasos em vez de cadeias profundas de templates.
+**For whoever runs the server**
+- It does not block: one fiber per request; database, external API and DNS suspend only the fiber, however many
+  requests are in flight. Heavy work goes to a bounded thread pool (`offload`), which refuses with `PoolSaturated`
+  instead of growing without a ceiling.
+- Memory designed for cheap VPSs: reused network buffers, a per-fiber header table, an in-flight request ceiling
+  (503 + `Retry-After`). Measured: 1,000 simultaneous requests in ~25 MB of RSS; the hot path does not allocate on the GC.
+- Robust by default: head/idle/write/request deadlines, slowloris protection, cancellation when the
+  client goes away (the handler's `scope(exit)` runs), graceful stop, a zero-copy HTTP/1.1 parser fuzzed with ASan.
+- Fast compilation: the example's `app.d` compiles in ~250 ms on DMD, because the dispatch uses shallow `static foreach` and
+  `static if` instead of deep template chains.
 
-**Para crescer**
-- Camadas separadas (`http` sem I/O, `web`, `engine`) e drivers opcionais fora do núcleo (`drivers/pg`): o `vela`
-  não depende de libpq. Novos drivers e backends (kqueue, io_uring) entram sem mexer na camada de aplicação.
-- Middleware em cebola com grupos de rotas, `ctx.locals`, CORS, arquivos estáticos e `onError`, tudo com D idiomático
-  (slices, strings, delegates, DTOs), sem anotações defensivas de `@nogc`.
+**For growing**
+- Separate layers (`http` without I/O, `web`, `engine`) and optional drivers outside the core (`drivers/pg`): `vela`
+  does not depend on libpq. New drivers and backends (kqueue, io_uring) plug in without touching the application layer.
+- Onion-style middleware with route groups, `ctx.locals`, CORS, static files and `onError`, all in idiomatic D
+  (slices, strings, delegates, DTOs), with no defensive `@nogc` annotations.
 
-Comece por [docs/quickstart.md](docs/quickstart.md).
+Start with [docs/quickstart.md](docs/quickstart.md). If you are an AI agent working on this repository, read [AGENTS.md](AGENTS.md).
 
-## Estado
+## Status
 
-Camada web completa e testada (M1). O M2 está fechado no Linux: `EpollLoop` com epoll
-edge-triggered, um fiber por requisição, `SO_REUSEPORT`, prazos, teto de requisições em voo,
-cancelamento, header `Date`, detector de loop travado, limpeza de memória depois de rajadas e
-parada graciosa. Faltam o kqueue (M5) e o io_uring (M6). Fora do Linux, `serve` cai no servidor
-de desenvolvimento bloqueante.
+The web layer is complete and tested (M1). M2 is closed on Linux: `EpollLoop` with edge-triggered
+epoll, one fiber per request, `SO_REUSEPORT`, deadlines, an in-flight request ceiling, cancellation, the `Date` header,
+a stalled-loop detector, memory cleanup after bursts and graceful stop. kqueue (M5) and io_uring (M6) are still to
+come. Outside Linux, `serve` falls back to the blocking development server.
 
-O M3 também está pronto no Linux: pool de threads limitado (`offload`), driver PostgreSQL sobre
-libpq assíncrona (pacote separado `vela-pg`, em `drivers/pg`) e cliente HTTP/HTTPS cooperativo (`httpClient()`). Os três suspendem
-só o fiber da requisição.
+M3 is also done on Linux: a bounded thread pool (`offload`), a PostgreSQL driver over asynchronous
+libpq (the separate package `vela-pg`, in `drivers/pg`) and a cooperative HTTP/HTTPS client (`httpClient()`). All three suspend
+only the request's fiber.
 
-Dentro de um handler, esperar sem bloquear o worker:
+Inside a handler, wait without blocking the worker:
 
 ```d
 import core.time : msecs;
-string slow() { sleep(500.msecs); return "ok"; }   // o worker atende outras conexões enquanto isso
+string slow() { sleep(500.msecs); return "ok"; }   // the worker serves other connections meanwhile
 ```
 
-### Banco, APIs externas e trabalho pesado (M3)
+### Database, external APIs and heavy work (M3)
 
 ```d
-import vela.db;                       // dependency "vela-pg" path="drivers/pg"; precisa de libpq5 instalada
+import vela.db;                       // dependency "vela-pg" path="drivers/pg"; needs libpq5 installed
 
 struct User { int id; string name; Maybe!string email; }
 
 string user(int id)
 {
-    auto db = pgPool("host=meu-rds.exemplo.rds.amazonaws.com dbname=app user=app");   // um pool por worker
+    auto db = pgPool("host=my-rds.example.rds.amazonaws.com dbname=app user=app");   // one pool per worker
     auto u = db.query("select id, name, email from users where id = $1", id).rowsAs!User;
     return u.length ? u[0].name : "?";
 }
 
-string cotacao()
+string quote()
 {
-    auto r = httpClient().get("https://api.exemplo.com/v1/cotacao");   // HTTPS verificado, keep-alive
-    return r.ok ? r.body : "indisponível";
+    auto r = httpClient().get("https://api.example.com/v1/quote");   // verified HTTPS, keep-alive
+    return r.ok ? r.body : "unavailable";
 }
 
-string pesado()
+string heavy()
 {
-    return offload(() => calculoQueNaoDaParaFazerCooperativamente());   // pool de threads (configureOffload)
+    return offload(() => workThatCannotBeDoneCooperatively());   // thread pool (configureOffload)
 }
 ```
 
-- Consultas usam parâmetros `$1..$n` em texto: nunca monte SQL com valores do usuário.
-- Cliente some ou o prazo estoura no meio de uma consulta: o driver pede o cancelamento ao servidor e
-  descarta a conexão. O mesmo vale para chamadas HTTP de saída (a conexão é fechada).
-- libpq e OpenSSL são carregadas em tempo de execução (dlopen): o vela compila sem elas instaladas.
-- `offload` lança `PoolSaturated` quando a fila enche; decida se isso vira 503.
+- Queries use `$1..$n` text parameters: never build SQL from user-supplied values.
+- If the client goes away or the deadline expires midway through a query, the driver asks the server to cancel and
+  discards the connection. The same goes for outgoing HTTP calls (the connection is closed).
+- libpq and OpenSSL are loaded at run time (dlopen): vela builds without them installed.
+- `offload` throws `PoolSaturated` when the queue fills up; decide whether that becomes a 503.
 
-### Aplicação real: grupos, locals, erros, CORS, estáticos, OpenAPI
+### Real application: groups, locals, errors, CORS, static files, OpenAPI
 
-Exemplo completo (Postgres + API externa + estáticos + docs): `examples/api`.
+A complete example (Postgres + external API + static files + docs): `examples/api`.
 
 ```d
 auto app = new App;
-app.use(accessLog());                       // log de acesso; requestId("X-Request-Id") propaga o id
-app.use(cors(CorsConfig(["https://app.exemplo.com"])));   // preflight 204 antes do roteamento
-app.onError((Context ctx, Exception e) { /* resposta de erro própria */ });
-app.onNotFound((Context ctx) { /* 404 próprio */ });
-app.redirectTrailingSlash();                // /users/ -> 308 /users/ (query preservada)
+app.use(accessLog());                       // access log; requestId("X-Request-Id") propagates the id
+app.use(cors(CorsConfig(["https://app.example.com"])));   // 204 preflight before routing
+app.onError((Context ctx, Exception e) { /* your own error response */ });
+app.onNotFound((Context ctx) { /* your own 404 */ });
+app.redirectTrailingSlash = true;           // /users/ -> 308 /users (query preserved)
 
-auto admin = app.group("/admin");           // prefixo literal (sem {param}); middlewares só valem p/ rotas registradas depois
-admin.use((Context ctx, Next next) { ctx.locals.set(Usuario(bearerToken(ctx))); next(); });
-admin.get!("/me", me);                      // UserResponse me(Local!Usuario u) { ... }  -> Local ausente = 500
+auto admin = app.group("/admin");           // literal prefix (no {param}); middlewares only apply to routes registered afterwards
+admin.use((Context ctx, Next next) { ctx.locals.set(User(bearerToken(ctx))); next(); });
+admin.get!("/me", me);                      // UserResponse me(Local!User u) { ... }  -> missing Local = 500
 
-app.serveStatic("/assets", "./public");     // ETag/304, Last-Modified, index, bloqueia .., dotfiles e symlinks que saem da raiz
-app.serveOpenApi(OpenApiInfo("Minha API", "1.0"));   // /openapi.json (gerado dos handlers) e /docs (Swagger UI via CDN)
+app.serveStatic("/assets", "./public");     // ETag/304, Last-Modified, index, blocks .., dotfiles and symlinks that leave the root
+app.serveOpenApi(OpenApiInfo("My API", "1.0"));   // /openapi.json (generated from the handlers) and /docs (Swagger UI via CDN)
 ```
 
-- Anotações para o OpenAPI/validação: `@summary`, `@jsonKey`, `@jsonIgnore`, `@optional`, `@minLength`, `@maxLength`, `@inRange`.
-- `Expect: 100-continue` é respondido pelo motor; outro valor de `Expect` dá 417.
-- `PgConfig.cacheStatements = true` usa statements preparados (até 128 por conexão, com nova tentativa
-  se o plano for invalidado). Fica desligado por padrão: não use atrás de PgBouncer em modo transaction.
-- Parser: `tests/fuzz/corpus/` (55 requisições de ataque, `<nome>.<ok|incomplete|status>.http`),
-  fuzz de mutação com invariantes (`fuzz_parse.d [iterações] [semente]`) e libFuzzer+ASan com `tools/fuzz.sh [segundos]`.
-- Limites conhecidos: corpo de requisição chunked não é suportado (501); `/docs` carrega o Swagger UI de um CDN;
-  arquivos estáticos até 256 KiB são lidos no worker (maiores vão para o `offload`); handler só de CPU não é cancelável.
+- Annotations for OpenAPI/validation: `@summary`, `@jsonKey`, `@jsonIgnore`, `@optional`, `@minLength`, `@maxLength`, `@inRange`.
+- `Expect: 100-continue` is answered by the engine; any other `Expect` value gets a 417.
+- `PgConfig.cacheStatements = true` uses prepared statements (up to 128 per connection, with a retry
+  if the plan is invalidated). It is off by default: do not use it behind PgBouncer in transaction mode.
+- Parser: `tests/fuzz/corpus/` (55 attack requests, `<name>.<ok|incomplete|status>.http`),
+  a mutation fuzzer with invariants (`fuzz_parse.d [iterations] [seed]`) and libFuzzer+ASan with `tools/fuzz.sh [seconds]`.
+- Known limits: chunked request bodies are not supported (501); `/docs` loads the Swagger UI from a CDN;
+  static files up to 256 KiB are read on the worker (larger ones go to `offload`); a CPU-only handler cannot be cancelled.
 
-## Comandos
+## Commands
 
 ```sh
-tools/check.sh                       # tudo: unittests, exemplo, alocação, rede, Postgres, cliente HTTP, memória, compile-fail, orçamento
-                                     # (sobe um PostgreSQL descartável e um upstream Python; sem eles, esses testes são pulados)
-DC=ldmd2 tools/check.sh              # o mesmo com LDC
+tools/check.sh                       # everything: unittests, example, allocation, network, Postgres, HTTP client, memory, compile-fail, budget
+                                     # (starts a throwaway PostgreSQL and a Python upstream; without them, those tests are skipped)
+DC=ldmd2 tools/check.sh              # the same with LDC
 
-cd examples/hello && dub run         # sobe o exemplo em http://localhost:8080
+cd examples/hello && dub run         # starts the example at http://localhost:8080
 curl -X POST localhost:8080/users -d '{"name":"Ana","age":31}'
 ```
 
-Testado com DMD 2.113 e LDC 1.43 (Linux x86_64).
+Tested with DMD 2.113 and LDC 1.43 (Linux x86_64).
 
-Requisitos: um compilador D (DMD ou LDC) e DUB. O núcleo (`vela`) não precisa de banco algum. Só quem usa o driver opcional `vela-pg` precisa de `libpq5` em tempo de execução; para HTTPS de saída do cliente HTTP, OpenSSL 3 (ambas carregadas por dlopen).
+Requirements: a D compiler (DMD or LDC) and DUB. The core (`vela`) needs no database. Only whoever uses the optional `vela-pg` driver needs `libpq5` at run time; the HTTP client's outgoing HTTPS needs OpenSSL 3 (both loaded by dlopen).
 
-## Pacotes
+## Packages
 
-| Pacote        | Papel                                                       | Depende de |
+| Package       | Role                                                        | Depends on |
 |---------------|-------------------------------------------------------------|------------|
-| `vela:http`   | tipos, parser HTTP/1.1 zero-copy, writer. Sem I/O.          | —          |
-| `vela:web`    | App, router, introspecção de handlers, JSON, middleware     | http       |
-| `vela:engine` | event loop, buffers, conexões, `offload`, cliente HTTP/TLS. Não conhece rotas. | http |
-| `vela-pg` (`drivers/pg`) | driver PostgreSQL cooperativo (libpq assíncrona). **Pacote DUB independente**: o núcleo não depende dele nem do libpq | vela:engine |
-| `vela`        | `import vela;` e `vela.server` (cola entre web e engine)    | todos      |
+| `vela:http`   | types, zero-copy HTTP/1.1 parser, writer. No I/O.           | —          |
+| `vela:web`    | App, router, handler introspection, JSON, middleware        | http       |
+| `vela:engine` | event loop, buffers, connections, `offload`, HTTP/TLS client. Knows nothing about routes. | http |
+| `vela-pg` (`drivers/pg`) | cooperative PostgreSQL driver (async libpq). **An independent DUB package**: the core depends neither on it nor on libpq | vela:engine |
+| `vela`        | `import vela;` and `vela.server` (glue between web and engine) | all     |
 
-## Regras que os testes garantem
+## Rules the tests guarantee
 
-- O caminho quente do framework não aloca no GC (`tests/alloc/hot_path.d`).
-- Assinatura inválida = erro de compilação de uma linha (`tests/compile_fail/`).
-- `app.d` do exemplo compila em menos de 400 ms no DMD (`tools/check.sh`).
-- O motor aguenta cancelamento, teto de requisições, prazos e escrita parcial (`tests/net/epoll_net.d`).
-- O driver Postgres não bloqueia o worker, respeita o pool, cancela no servidor e descarta a conexão (`tests/db/pg_net.d`).
-- O cliente HTTP/HTTPS não bloqueia, reaproveita conexões, repete em conexão velha e respeita prazos (`tests/net/client_net.d`).
-- O parser sobrevive ao corpus de ataques e ao fuzz (`tests/fuzz/`), e o exemplo `examples/api` passa 31 checagens de ponta a ponta (`tests/example/api_e2e.py`).
-- 1.000 requisições em voo cabem em menos de 30 MB de RSS (`tools/check.sh`, seção de memória).
+- The framework's hot path does not allocate on the GC (`tests/alloc/hot_path.d`).
+- An invalid signature = a one-line compile error (`tests/compile_fail/`).
+- The example's `app.d` compiles in under 400 ms on DMD (`tools/check.sh`).
+- The engine handles cancellation, the request ceiling, deadlines and partial writes (`tests/net/epoll_net.d`).
+- The Postgres driver does not block the worker, respects the pool, cancels on the server and discards the connection (`tests/db/pg_net.d`).
+- The HTTP/HTTPS client does not block, reuses connections, retries on a stale one and respects deadlines (`tests/net/client_net.d`).
+- The parser survives the attack corpus and the fuzzer (`tests/fuzz/`), and the `examples/api` example passes 31 end-to-end checks (`tests/example/api_e2e.py`).
+- 1,000 in-flight requests fit in under 30 MB of RSS (`tools/check.sh`, memory section).
 
 ## Spikes
 
-- `spikes/epoll_fibers/`: epoll + um fiber por requisição, 10.000 requisições em voo (ver o README de lá).
+- `spikes/epoll_fibers/`: epoll + one fiber per request, 10,000 in-flight requests (see the README there).
 
-## Armadilhas
+## Pitfalls
 
-- Tabelas de funções carregadas por dlopen ficam numa `struct`, nunca em variáveis `extern (C)` soltas:
-  uma variável `extern (C)` chamada `ERR_clear_error` vira símbolo global e a própria libssl passa a chamá-la.
-- Um `Group.use` só afeta rotas registradas depois dele (semântica do Express).
-- `pgPool`/`httpClient` são thread-local (um por worker); não passe conexões entre workers.
+- Function tables loaded through dlopen live in a `struct`, never in loose `extern (C)` variables:
+  an `extern (C)` variable named `ERR_clear_error` becomes a global symbol and libssl itself starts calling it.
+- A `Group.use` only affects routes registered after it (Express semantics).
+- `pgPool`/`httpClient` are thread-local (one per worker); do not pass connections between workers.
+- Module variables in D are thread-local: with several workers, each has its own copy.
+- A `get`/`post` of your own in the same unit hides vela's `get`/`post`; use `vela.get!(...)(app)`.
+- Blocking code in a handler (a `Thread.sleep`, a synchronous C lib) stalls the whole worker.
+  The loop warns in the log when a handler goes past `stallWarnMs` (50 ms) without yielding.
+  I/O waits go through `sleep`/`awaitFd`. A handler that goes past `requestTimeoutMs` without waiting
+  for anything is only cancelled when it waits again.
+- D's GC interrupts blocking `read`/`send` calls (test clients, tools) with `EINTR`; handle it.
+- `Header!"X"` and `const(char)[]` are slices of the network buffer, valid only during the
+  request. Use `string` (copied) or `.idup` to keep them.
+- Handlers are module functions, lambdas (which may capture local variables) or
+  controller methods with `@Get(...)` mounted through `app.mount(obj)`.
 
-- Variáveis de módulo em D são thread-local: com vários workers, cada um tem a sua cópia.
-- Um `get`/`post` seu na mesma unidade esconde o `get`/`post` do vela; use `vela.get!(...)(app)`.
-- Código bloqueante num handler (um `Thread.sleep`, uma lib C síncrona) trava o worker inteiro.
-  O loop avisa no log quando um handler passa de `stallWarnMs` (50 ms) sem ceder.
-  Esperas de I/O passam por `sleep`/`awaitFd`. Um handler que passa de `requestTimeoutMs` sem esperar
-  nada só é cancelado quando voltar a esperar.
-- O GC do D interrompe `read`/`send` bloqueantes (clientes de teste, ferramentas) com `EINTR`; trate-o.
-- `Header!"X"` e `const(char)[]` são fatias do buffer de rede, válidas só durante a
-  requisição. Use `string` (copiado) ou `.idup` para guardar.
-- Handlers são funções de módulo, lambdas (podem capturar variáveis locais) ou
-  métodos de controllers com `@Get(...)` montados via `app.mount(obj)`.
-
-## Licença
+## License
 
 [MIT](LICENSE).

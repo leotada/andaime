@@ -1,5 +1,5 @@
-/// Cola entre `vela:web` (App) e `vela:engine` (transporte).
-/// É o único módulo que conhece as duas camadas.
+/// Glue between `vela:web` (App) and `vela:engine` (transport).
+/// It is the only module that knows both layers.
 module vela.server;
 
 import vela.http;
@@ -10,7 +10,7 @@ import vela.engine.devserver : runDevServer;
 version (linux)
     import vela.engine.epoll : runEpollServer;
 
-/// Sobe o servidor. Uso: `app.serve(8080);`
+/// Starts the server. Usage: `app.serve(8080);`
 void serve(App app, ushort port = 8080)
 {
     ServerConfig cfg;
@@ -26,9 +26,9 @@ void serve(App app, ServerConfig cfg)
         runDevServer(cfg, handlerFactory(app)());
 }
 
-/// Cria, para cada fiber do engine, um Context próprio e o callback que o usa.
-/// Um Context por fiber (não por requisição): requisições suspensas ao mesmo
-/// tempo não podem dividir o mesmo.
+/// Creates, for each engine fiber, its own Context and the callback that uses it.
+/// One Context per fiber (not per request): requests suspended at the same
+/// time cannot share the same one.
 HandlerFactory handlerFactory(App app)
 {
     return () {
@@ -42,7 +42,7 @@ HandlerFactory handlerFactory(App app)
                 ctx.response.headers, req.keepAlive);
             if (req.method != Method.HEAD && ctx.response.status != 204 && ctx.response.status != 304)
                 o.put(body);
-            ctx.response.body.shrinkTo(64 << 10); // pico de resposta não fica preso ao Context
+            ctx.response.body.shrinkTo(64 << 10); // a response peak does not stay pinned to the Context
         };
         return cb;
     };

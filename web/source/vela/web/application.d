@@ -1,4 +1,4 @@
-/// `App`: registro de rotas, middlewares e o ponto de entrada por requisição.
+/// `App`: route registration, middlewares and the per-request entry point.
 module vela.web.application;
 
 import vela.http.types;
@@ -9,7 +9,7 @@ import vela.web.handler_traits : handlerError, dispatch;
 import vela.web.json : writeJsonString;
 import vela.web.openapi;
 
-/// UDA de rota para métodos de controllers: `@Get("/users/{id}")`.
+/// Route UDA for controller methods: `@Get("/users/{id}")`.
 struct Route
 {
     Method method;
@@ -24,11 +24,11 @@ Route Delete(string path) => Route(Method.DELETE, path);
 
 alias HandlerFn = void delegate(Context);
 
-/// Chamado no lugar do tratamento padrão quando um handler ou middleware lança.
-/// Escreva a resposta em `ctx` (`ctx.text(...)`, `ctx.response.status = ...`).
+/// Called instead of the default handling when a handler or middleware throws.
+/// Write the response into `ctx` (`ctx.text(...)`, `ctx.response.status = ...`).
 alias ErrorHandler = void delegate(Context ctx, Exception e);
 
-/// Executa os middlewares de um grupo e, no fim, o handler da rota.
+/// Runs a group's middlewares and, at the end, the route's handler.
 private final class Chain
 {
     Middleware[] mws;
@@ -48,14 +48,14 @@ private final class Chain
     }
 }
 
-/// Conjunto de rotas com prefixo e middlewares próprios:
+/// Set of routes with their own prefix and middlewares:
 ///
 ///     auto api = app.group("/api/v1");
-///     api.use(&exigeLogin);
-///     api.get!("/users/{id}", getUser);        // GET /api/v1/users/{id}, com exigeLogin
+///     api.use(&requireLogin);
+///     api.get!("/users/{id}", getUser);        // GET /api/v1/users/{id}, with requireLogin
 ///
-/// Um middleware vale para as rotas registradas DEPOIS do `use` (como no Express).
-/// O prefixo é texto puro: sem `{param}` (o binding por nome é decidido em compilação).
+/// A middleware applies to routes registered AFTER the `use` (as in Express).
+/// The prefix is plain text: no `{param}` (binding by name is decided at compile time).
 final class Group
 {
     private App app;
@@ -79,7 +79,7 @@ final class Group
         mws ~= (Context c, Next n) => mw(c, n);
     }
 
-    /// Subgrupo: herda o prefixo e os middlewares atuais.
+    /// Subgroup: inherits the current prefix and middlewares.
     Group group(string sub)
     {
         return new Group(app, prefix ~ checkPrefix(sub), mws.dup);
@@ -100,13 +100,13 @@ final class Group
 private string checkPrefix(string prefix) pure
 {
     if (prefix.length && prefix[0] != '/')
-        throw new RouteError("vela: o prefixo do grupo '" ~ prefix ~ "' deve começar com '/'");
+        throw new RouteError("vela: group prefix '" ~ prefix ~ "' must start with '/'");
     if (prefix.length && prefix[$ - 1] == '/')
-        throw new RouteError("vela: o prefixo do grupo '" ~ prefix ~ "' não deve terminar com '/'");
+        throw new RouteError("vela: group prefix '" ~ prefix ~ "' must not end with '/'");
     foreach (char c; prefix)
         if (c == '{' || c == '}')
-            throw new RouteError("vela: o prefixo do grupo '" ~ prefix ~ "' não pode ter {parâmetros}; "
-                ~ "ponha os parâmetros nas rotas do grupo");
+            throw new RouteError("vela: group prefix '" ~ prefix ~ "' cannot contain {parameters}; "
+                ~ "put the parameters in the group's routes");
     return prefix;
 }
 
@@ -119,7 +119,7 @@ final class App
     private HandlerFn notFoundHandler;
     private OpRecord[] ops;
 
-    /// Se a rota não existe mas existe com/sem a barra final, responde 308 para ela.
+    /// If the route does not exist but exists with/without the trailing slash, answers 308 to it.
     bool redirectTrailingSlash;
 
     this()
@@ -127,7 +127,7 @@ final class App
         router = new Router;
     }
 
-    // ---- middlewares (ordem de registro = de fora para dentro)
+    // ---- middlewares (registration order = outside in)
 
     void use(Middleware mw)
     {
@@ -139,27 +139,27 @@ final class App
         middlewares ~= (Context c, Next n) => mw(c, n);
     }
 
-    /// Cria um grupo de rotas com prefixo e middlewares próprios.
+    /// Creates a route group with its own prefix and middlewares.
     Group group(string prefix)
     {
         return new Group(this, checkPrefix(prefix), null);
     }
 
-    /// Trata qualquer exceção lançada por handlers e middlewares (incluindo `HttpError`).
-    /// Exceções que não são `HttpError` continuam sendo registradas no log antes.
+    /// Handles any exception thrown by handlers and middlewares (including `HttpError`).
+    /// Exceptions that are not `HttpError` are still logged first.
     void onError(ErrorHandler h)
     {
         errorHandler = h;
     }
 
-    /// Resposta para rotas inexistentes (substitui o 404 em JSON padrão).
+    /// Response for nonexistent routes (replaces the default JSON 404).
     void onNotFound(HandlerFn h)
     {
         notFoundHandler = h;
     }
 
-    /// Registra um handler já gerado. As funções `get`/`post`/... abaixo
-    /// validam a assinatura em compilação e chamam isto.
+    /// Registers an already-generated handler. The `get`/`post`/... functions below
+    /// validate the signature at compile time and call this.
     void register(Method method, string path, HandlerFn h, OpDescribe describe = null)
     {
         handlers ~= h;
@@ -167,8 +167,8 @@ final class App
         ops ~= OpRecord(method, path, describe);
     }
 
-    /// Publica `/openapi.json` (e a página `/docs`) gerados das assinaturas dos
-    /// handlers registrados ATÉ aqui. Chame depois de registrar as rotas.
+    /// Publishes `/openapi.json` (and the `/docs` page) generated from the signatures of the
+    /// handlers registered UP TO here. Call it after registering the routes.
     void serveOpenApi(OpenApiInfo info = OpenApiInfo.init)
     {
         auto records = ops.dup;
@@ -190,8 +190,8 @@ final class App
         }
     }
 
-    /// Registra todos os métodos de `controller` anotados com @Get/@Post/...
-    /// Use para handlers com estado (repositórios, conexões, config).
+    /// Registers every method of `controller` annotated with @Get/@Post/...
+    /// Use it for handlers with state (repositories, connections, config).
     void mount(C, string file = __FILE__, size_t line = __LINE__)(C controller) if (is(C == class))
     {
         static foreach (member; __traits(allMembers, C))
@@ -217,12 +217,12 @@ final class App
         }
     }
 
-    /// Árvore de rotas em texto (depuração).
+    /// Route tree as text (debugging).
     string routes() const => router.dump();
 
-    // ---- execução
+    // ---- execution
 
-    /// Processa a requisição já carregada em `ctx`. Nunca lança.
+    /// Processes the request already loaded in `ctx`. Never throws.
     void handle(Context ctx)
     {
         try
@@ -248,10 +248,10 @@ final class App
         ctx.response.body.clear();
         try
             errorHandler(ctx, e);
-        catch (Exception e2) // o handler de erro também falhou: não há mais o que fazer
+        catch (Exception e2) // the error handler failed too: nothing more to do
         {
             logError(ctx, e2);
-            renderError(ctx, 500, "erro interno");
+            renderError(ctx, 500, "internal error");
         }
     }
 
@@ -271,7 +271,7 @@ final class App
             case MatchStatus.found:
                 try
                     handlers[r.handler](ctx);
-                catch (Exception e) // capturado aqui para os middlewares verem o status final
+                catch (Exception e) // caught here so the middlewares see the final status
                     fail(ctx, e);
                 break;
             case MatchStatus.notFound:
@@ -285,16 +285,16 @@ final class App
                         fail(ctx, e);
                 }
                 else
-                    renderError(ctx, 404, "não encontrado");
+                    renderError(ctx, 404, "not found");
                 break;
             case MatchStatus.methodNotAllowed:
                 ctx.setHeader("Allow", allowList(ctx, r.allowed));
-                renderError(ctx, 405, "método não permitido");
+                renderError(ctx, 405, "method not allowed");
                 break;
         }
     }
 
-    /// "/a/b/" <-> "/a/b": se o outro formato existe, redireciona (308 mantém método e corpo).
+    /// "/a/b/" <-> "/a/b": if the other form exists, redirect (308 keeps method and body).
     private bool tryTrailingSlash(Context ctx)
     {
         auto p = ctx.request.path;
@@ -303,7 +303,7 @@ final class App
         PathParams scratch;
         immutable stripped = p.length > 1 && p[$ - 1] == '/';
         auto alt = stripped ? p[0 .. $ - 1] : p;
-        // para "adicionar", monta no scratch do contexto (sem GC no caso comum)
+        // to "add", build in the context's scratch (no GC in the common case)
         char[] buf;
         if (!stripped)
         {
@@ -319,7 +319,7 @@ final class App
         if (stripped)
             loc = ctx.scratch(alt.length + (ctx.request.query.length ? ctx.request.query.length + 1 : 0));
         else
-            loc = buf; // já tem a folga da query
+            loc = buf; // already has the room for the query
         size_t n = alt.length;
         if (stripped)
             loc[0 .. n] = alt;
@@ -368,27 +368,27 @@ final class App
     private static void internalError(Context ctx, Exception e)
     {
         logError(ctx, e);
-        renderError(ctx, 500, "erro interno");
+        renderError(ctx, 500, "internal error");
     }
 
     private static void logError(Context ctx, Exception e) nothrow
     {
         import core.stdc.stdio : fprintf, stderr;
 
-        // detalhes só no log, nunca na resposta
-        fprintf(stderr, "vela: erro em %.*s %.*s: %.*s (%.*s:%d)\n",
+        // details only in the log, never in the response
+        fprintf(stderr, "vela: error in %.*s %.*s: %.*s (%.*s:%d)\n",
             cast(int) methodName(ctx.request.method).length, methodName(ctx.request.method).ptr,
             cast(int) ctx.request.path.length, ctx.request.path.ptr,
             cast(int) e.msg.length, e.msg.ptr, cast(int) e.file.length, e.file.ptr, cast(int) e.line);
     }
 }
 
-// ---- registro de rotas: funções livres chamadas via UFCS (`app.get!(...)`).
-// Livres, e não métodos de App, de propósito: assim um lambda local que
-// captura dependências (`(long id) => repo.find(id)`) vira um closure comum,
-// sem o "dual-context" que o D deprecou. A validação roda aqui, no ponto de
-// chamada do usuário, e o erro de compilação tem só duas linhas.
-// Valem para `App` e para `Group` (`api.get!("/x", fn)`).
+// ---- route registration: free functions called via UFCS (`app.get!(...)`).
+// Free, and not App methods, on purpose: that way a local lambda that
+// captures dependencies (`(long id) => repo.find(id)`) becomes an ordinary closure,
+// without the "dual-context" that D deprecated. Validation runs here, at the
+// user's call site, and the compile error is only two lines.
+// They work for `App` and for `Group` (`api.get!("/x", fn)`).
 
 private enum isRouteTarget(R) = is(R == App) || is(R == Group);
 

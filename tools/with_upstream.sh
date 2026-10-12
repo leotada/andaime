@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Sobe o upstream HTTP/HTTPS de teste (tests/net/upstream.py), exporta
-# VELA_UP_PLAIN / VELA_UP_TLS / VELA_UP_CERT e roda o comando dado.
-# Sem python3 ou openssl, roda o comando sem as variáveis (o teste se declara pulado).
+# Starts the HTTP/HTTPS test upstream (tests/net/upstream.py), exports
+# VELA_UP_PLAIN / VELA_UP_TLS / VELA_UP_CERT and runs the given command.
+# Without python3 or openssl, runs the command without the variables (the test declares itself skipped).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if ! command -v python3 >/dev/null || ! command -v openssl >/dev/null; then
-    echo "(python3/openssl ausentes: teste do cliente HTTP será pulado)" >&2
+    echo "(python3/openssl missing: the HTTP client test will be skipped)" >&2
     exec "$@"
 fi
 dir=$(mktemp -d)

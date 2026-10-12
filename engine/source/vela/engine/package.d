@@ -1,4 +1,4 @@
-/// `vela:engine` — transporte. Conhece sockets e bytes, nunca rotas ou DTOs.
+/// `vela:engine` — transport. Knows sockets and bytes, never routes or DTOs.
 module vela.engine;
 
 public import vela.engine.loop;

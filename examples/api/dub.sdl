@@ -1,5 +1,5 @@
 name "api"
-description "Exemplo de API real: Postgres, API externa, auth, CORS, estáticos e OpenAPI"
+description "Example of a real API: Postgres, external API, auth, CORS, static files and OpenAPI"
 targetType "executable"
 sourcePaths "source"
 dependency "vela" path="../.."

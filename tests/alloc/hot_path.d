@@ -1,5 +1,5 @@
-/// Garante que o caminho quente do framework não aloca no GC:
-/// roteamento + extração de path/query + middleware + JSON de resposta.
+/// Guarantees the framework's hot path does not allocate on the GC:
+/// routing + path/query extraction + middleware + response JSON.
 import vela;
 import vela.http : splitTarget;
 import core.memory : GC;
@@ -27,7 +27,7 @@ void main()
     req.target = "/calc/21?factor=3";
     splitTarget(req.target, req.path, req.query);
 
-    foreach (i; 0 .. 100) // aquecimento: buffers crescem uma vez
+    foreach (i; 0 .. 100) // warm-up: buffers grow once
     {
         ctx.reset(req);
         app.handle(ctx);
@@ -41,6 +41,6 @@ void main()
     immutable after = GC.allocatedInCurrentThread;
 
     assert(ctx.response.body.data == `{"id":21,"doubled":63,"even":false}`);
-    printf("bytes alocados no GC em 100k requisições: %llu\n", cast(ulong)(after - before));
-    assert(after == before, "o caminho quente alocou no GC");
+    printf("bytes allocated on the GC in 100k requests: %llu\n", cast(ulong)(after - before));
+    assert(after == before, "the hot path allocated on the GC");
 }

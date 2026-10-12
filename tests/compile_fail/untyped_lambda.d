@@ -1,3 +1,3 @@
-// EXPECT: o handler não tem tipo concreto. Se for um lambda, declare os tipos dos parâmetros
+// EXPECT: the handler has no concrete type. If it is a lambda, declare the parameter types
 import vela;
 void main() { auto app = new App; app.get!("/users/{id}", (id) => "x"); }

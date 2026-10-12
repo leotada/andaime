@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Fuzzing do parser HTTP com libFuzzer + AddressSanitizer (precisa do LDC).
-# Uso: tools/fuzz.sh [segundos]   (padrão 60). Descobertas ficam em tests/fuzz/crashes/.
+# Fuzzing the HTTP parser with libFuzzer + AddressSanitizer (needs LDC).
+# Usage: tools/fuzz.sh [seconds]   (default 60). Findings go to tests/fuzz/crashes/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 secs="${1:-60}"

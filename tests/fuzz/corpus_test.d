@@ -1,6 +1,6 @@
-/// Corpus de requisições do parser: cada arquivo `nome.<resultado>.http` traz os
-/// bytes de uma requisição e o resultado esperado (`ok`, `incomplete` ou o status
-/// de erro: 400, 413...). Para cobrir um ataque novo, basta colocar um arquivo aqui.
+/// Parser request corpus: each file `name.<result>.http` holds the
+/// bytes of a request and the expected result (`ok`, `incomplete` or the error
+/// status: 400, 413...). To cover a new attack, just drop a file in here.
 module corpus_test;
 
 import vela.http.parser;
@@ -31,10 +31,10 @@ void main()
         if (got != expected)
         {
             bad++;
-            printf("FALHOU %s: esperado %s, obteve %s\n", e.name.ptr, expected.ptr, got.ptr);
+            printf("FAILED %s: expected %s, got %s\n", e.name.ptr, expected.ptr, got.ptr);
         }
     }
-    printf("corpus do parser: %zu casos, %zu falhas\n", n, bad);
+    printf("parser corpus: %zu cases, %zu failures\n", n, bad);
     if (bad || n == 0)
-        throw new Exception("corpus do parser falhou");
+        throw new Exception("parser corpus failed");
 }

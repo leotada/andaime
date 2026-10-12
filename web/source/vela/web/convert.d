@@ -1,4 +1,4 @@
-/// Conversões texto -> escalar sem std.conv (compila rápido, não aloca).
+/// Text -> scalar conversions without std.conv (compiles fast, does not allocate).
 module vela.web.convert;
 
 import vela.web.params : isCharType;
@@ -45,7 +45,7 @@ bool parseFloat(T)(scope const(char)[] s, out T v) nothrow @nogc @trusted
     char[64] tmp = void;
     if (s.length == 0 || s.length >= tmp.length)
         return false;
-    foreach (char c; s) // strtod aceita "inf", "0x1p3"...; JSON e query não
+    foreach (char c; s) // strtod accepts "inf", "0x1p3"...; JSON and query do not
         if (!((c >= '0' && c <= '9') || c == '-' || c == '+' || c == '.' || c == 'e' || c == 'E'))
             return false;
     tmp[0 .. s.length] = s[];
@@ -68,8 +68,8 @@ bool parseBool(scope const(char)[] s, out bool v) pure nothrow @nogc
     }
 }
 
-/// Decodifica %XX (e '+' como espaço, na query). Sem nada a decodificar,
-/// devolve a própria fatia: zero-copy no caso comum.
+/// Decodes %XX (and '+' as space, in the query). With nothing to decode,
+/// returns the slice itself: zero-copy in the common case.
 bool percentDecode(const(char)[] raw, bool plusIsSpace, out const(char)[] result) pure nothrow
 {
     bool needs = false;
@@ -114,8 +114,8 @@ bool percentDecode(const(char)[] raw, bool plusIsSpace, out const(char)[] result
     return true;
 }
 
-/// Texto já decodificado -> T. `string` é copiado (o buffer de rede será
-/// reutilizado); `const(char)[]` é devolvido como fatia (zero-copy).
+/// Already-decoded text -> T. `string` is copied (the network buffer will be
+/// reused); `const(char)[]` is returned as a slice (zero-copy).
 bool parseScalarText(T)(const(char)[] s, out T v)
 {
     static if (is(T == bool))
@@ -145,22 +145,22 @@ bool parseScalarText(T)(const(char)[] s, out T v)
         return true;
     }
     else
-        static assert(0, "vela: '" ~ T.stringof ~ "' não é um escalar suportado");
+        static assert(0, "vela: '" ~ T.stringof ~ "' is not a supported scalar");
 }
 
-/// Mensagem curta de erro de tipo, montada em compilação.
+/// Short type-error message, built at compile time.
 template typeHint(T)
 {
     static if (is(T == bool))
-        enum typeHint = "esperado booleano (true/false)";
+        enum typeHint = "expected a boolean (true/false)";
     else static if (is(T == enum))
-        enum typeHint = "valor fora do enum " ~ T.stringof;
+        enum typeHint = "value outside enum " ~ T.stringof;
     else static if (__traits(isIntegral, T))
-        enum typeHint = "esperado inteiro (" ~ T.stringof ~ ")";
+        enum typeHint = "expected an integer (" ~ T.stringof ~ ")";
     else static if (__traits(isFloating, T))
-        enum typeHint = "esperado número";
+        enum typeHint = "expected a number";
     else
-        enum typeHint = "valor inválido";
+        enum typeHint = "invalid value";
 }
 
 unittest

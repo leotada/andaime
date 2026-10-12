@@ -1,10 +1,10 @@
-/// Middleware de CORS (Cross-Origin Resource Sharing).
+/// CORS (Cross-Origin Resource Sharing) middleware.
 ///
-///     app.use(cors(CorsConfig(["https://app.exemplo.com"])));
-///     app.use(cors(CorsConfig(["*"])));                   // qualquer origem, sem cookies
+///     app.use(cors(CorsConfig(["https://app.example.com"])));
+///     app.use(cors(CorsConfig(["*"])));                   // any origin, no cookies
 ///
-/// Roda antes do roteamento (use `app.use`), então responde também ao preflight
-/// `OPTIONS` de rotas que só existem para GET/POST. Sem `Origin` na requisição, não faz nada.
+/// Runs before routing (use `app.use`), so it also answers the preflight
+/// `OPTIONS` of routes that only exist for GET/POST. Without `Origin` on the request, it does nothing.
 module vela.web.cors;
 
 import vela.http.types : Method, equalsIgnoreCase;
@@ -12,16 +12,16 @@ import vela.web.context;
 
 struct CorsConfig
 {
-    /// Origens aceitas ("https://app.exemplo.com"); ["*"] aceita qualquer uma.
+    /// Accepted origins ("https://app.example.com"); ["*"] accepts any.
     string[] origins;
     string methods = "GET, HEAD, POST, PUT, PATCH, DELETE";
-    /// Headers aceitos no preflight; vazio = devolve o que o navegador pediu.
+    /// Headers accepted in the preflight; empty = returns what the browser asked for.
     string allowHeaders;
-    /// Headers de resposta que o JavaScript pode ler.
+    /// Response headers that JavaScript may read.
     string exposeHeaders;
-    /// Permite cookies/Authorization. Incompatível com origem "*": nesse caso a origem é ecoada.
+    /// Allows cookies/Authorization. Incompatible with origin "*": in that case the origin is echoed.
     bool credentials;
-    /// Quanto o navegador pode guardar o resultado do preflight.
+    /// How long the browser may cache the preflight result.
     uint maxAgeSeconds = 600;
 }
 
@@ -51,12 +51,12 @@ Middleware cors(CorsConfig cfg)
                 }
         if (!allowed)
         {
-            // origem desconhecida: segue sem headers CORS (o navegador bloqueia sozinho)
+            // unknown origin: continue without CORS headers (the browser blocks it by itself)
             next();
             return;
         }
 
-        // com credenciais "*" é proibido pelo navegador: ecoa a origem
+        // with credentials "*" is forbidden by the browser: echo the origin
         if (any && !cfg.credentials)
             ctx.setHeader("Access-Control-Allow-Origin", "*");
         else
@@ -81,7 +81,7 @@ Middleware cors(CorsConfig cfg)
             ctx.response.status = 204;
             ctx.response.contentType = null;
             ctx.response.body.clear();
-            return; // não segue para o roteamento
+            return; // does not continue to routing
         }
 
         if (cfg.exposeHeaders.length)

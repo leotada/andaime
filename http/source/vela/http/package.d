@@ -1,4 +1,4 @@
-/// `vela:http` — tipos e wire format HTTP/1.1. Sem I/O, sem GC no caminho quente.
+/// `vela:http` — HTTP/1.1 types and wire format. No I/O, no GC on the hot path.
 module vela.http;
 
 public import vela.http.types;

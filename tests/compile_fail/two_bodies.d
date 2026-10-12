@@ -1,4 +1,4 @@
-// EXPECT: há mais de um JsonBody; junte os campos num único DTO
+// EXPECT: more than one JsonBody; merge the fields into a single DTO
 import vela;
 struct A { int x; } struct B { int y; }
 string f(JsonBody!A a, JsonBody!B b) => "x";

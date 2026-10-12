@@ -1,5 +1,5 @@
 name "vela"
-description "Micro framework web em D: ergonomia estilo FastAPI, dispatch gerado em compilação"
+description "Micro web framework in D: FastAPI-style ergonomics, dispatch generated at compile time"
 targetType "library"
 sourcePaths "source"
 importPaths "source"

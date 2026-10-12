@@ -1,4 +1,4 @@
-/// Cliente em memória: exercita App + handlers sem sockets.
+/// In-memory client: exercises App + handlers without sockets.
 module vela.web.testing;
 
 import vela.http.types;

@@ -1,4 +1,4 @@
-// EXPECT: o parâmetro 'body' é JsonBody, mas GET não tem corpo; use POST, PUT ou PATCH
+// EXPECT: parameter 'body' is JsonBody, but GET has no body; use POST, PUT or PATCH
 import vela;
 struct Dto { string name; }
 string create(JsonBody!Dto body) => body.name;

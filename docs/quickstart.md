@@ -1,71 +1,71 @@
 # Quickstart
 
-Do zero a uma API com validação, middleware, OpenAPI e arquivos estáticos em poucos minutos.
-Tudo aqui foi compilado e testado com DMD 2.113 e LDC 1.43 em Linux x86_64.
+From zero to an API with validation, middleware, OpenAPI and static files in a few minutes.
+Everything here was compiled and tested with DMD 2.113 and LDC 1.43 on Linux x86_64.
 
-> O código usa o nome provisório **vela** (`import vela;`); o repositório se chama `dapi`.
+> The code uses the provisional name **vela** (`import vela;`); the repository is called `dapi`.
 
-## 1. Pré-requisitos
+## 1. Prerequisites
 
-- Um compilador D (DMD ou LDC) e o DUB.
-- Linux para o servidor de produção (epoll). Em outros sistemas, `serve` cai num servidor de desenvolvimento bloqueante.
-- Nada mais. Banco de dados é um pacote opcional (veja a seção 8).
+- A D compiler (DMD or LDC) and DUB.
+- Linux for the production server (epoll). On other systems, `serve` falls back to a blocking development server.
+- Nothing else. A database is an optional package (see section 8).
 
-## 2. Projeto novo
+## 2. A new project
 
 ```sh
 git clone https://github.com/leotada/dapi
-mkdir minha-api && cd minha-api
+mkdir my-api && cd my-api
 ```
 
 `dub.sdl`:
 
 ```sdl
-name "minha-api"
+name "my-api"
 targetType "executable"
 dependency "vela" path="../dapi"
 ```
 
-## 3. Primeira rota
+## 3. First route
 
 `source/app.d`:
 
 ```d
 import vela;
 
-string ola(string nome = "mundo") => "olá, " ~ nome;
+string hello(string name = "world") => "hello, " ~ name;
 
 void main()
 {
     auto app = new App;
-    app.get!("/ola", ola);
+    app.get!("/hello", hello);
     app.serve(8080);
 }
 ```
 
 ```sh
 dub run
-curl 'localhost:8080/ola?nome=Ana'     # olá, Ana
+curl 'localhost:8080/hello?name=Ana'     # hello, Ana
 ```
 
-Não existe `req.query["nome"]` aqui: a **assinatura da função é o contrato HTTP**. O parâmetro `nome`
-não está na rota, então vem da query string; o valor padrão o torna opcional.
+There is no `req.query["name"]` here: **the function signature is the HTTP contract**. The `name`
+parameter is not in the route, so it comes from the query string; the default value makes it optional.
 
-## 4. De onde vem cada parâmetro
+## 4. Where each parameter comes from
 
-| Na assinatura                         | O vela extrai                                         |
+| In the signature                      | vela extracts                                         |
 |---------------------------------------|-------------------------------------------------------|
-| `long id` com `{id}` na rota          | parâmetro de caminho, convertido e validado           |
-| `int limit = 20` (fora da rota)       | query string; o default a torna opcional              |
-| `JsonBody!UserInput body_`            | corpo JSON tipado, validado pelas anotações do struct |
-| `Header!"Authorization" auth`         | header, sem cópia (fatia do buffer de rede)           |
-| `Optional!X`                          | presente ou ausente, sem erro                         |
-| `Local!T`                             | valor posto por um middleware em `ctx.locals`         |
-| `Context ctx`                         | acesso direto a request/response                      |
+| `long id` with `{id}` in the route    | path parameter, converted and validated               |
+| `int limit = 20` (outside the route)  | query string; the default makes it optional           |
+| `JsonBody!UserInput body_`            | typed JSON body, validated by the struct's annotations |
+| `Header!"Authorization" auth`         | header, without copying (a slice of the network buffer) |
+| `Optional!X`                          | present or absent, no error                           |
+| `Local!T`                             | value put by a middleware in `ctx.locals`             |
+| `Context ctx`                         | direct access to request/response                     |
 
-Falhou a conversão ou a validação? O cliente recebe **422** no formato do FastAPI, e o seu handler nem roda.
+Conversion or validation failed? The client gets a **422** in FastAPI's format, and your handler does not even run.
 
-## 5. Um CRUD pequeno com JSON
+## 5. A small CRUD with JSON
 
 ```d
 import vela;
@@ -79,13 +79,13 @@ struct UserInput
 
 struct User { long id; string name; int age; Optional!string email; }
 
-private User[long] users;     // atenção: variável de módulo é thread-local; veja "Armadilhas" no README
+private User[long] users;     // beware: a module variable is thread-local; see "Pitfalls" in the README
 private long nextId = 1;
 
 User getUser(long id)
 {
     if (auto u = id in users) return *u;
-    throw new HttpError(404, "usuário não encontrado");
+    throw new HttpError(404, "user not found");
 }
 
 WithStatus!User createUser(JsonBody!UserInput body_)      // 201
@@ -97,7 +97,7 @@ WithStatus!User createUser(JsonBody!UserInput body_)      // 201
 
 void deleteUser(long id)                                   // void => 204
 {
-    if (!users.remove(id)) throw new HttpError(404, "usuário não encontrado");
+    if (!users.remove(id)) throw new HttpError(404, "user not found");
 }
 
 void main()
@@ -109,119 +109,119 @@ void main()
 
     ServerConfig cfg;
     cfg.port = 8080;
-    cfg.workers = 1;          // o "banco" é uma variável de módulo; com banco de verdade, deixe 0 (um por núcleo)
+    cfg.workers = 1;          // the "database" is a module variable; with a real database, leave 0 (one per core)
     app.serve(cfg);
 }
 ```
 
 ```sh
 curl -X POST localhost:8080/users -d '{"name":"Ana","age":31}'     # 201 {"id":1,...}
-curl -X POST localhost:8080/users -d '{"name":"A","age":200}'      # 422 com os dois erros
+curl -X POST localhost:8080/users -d '{"name":"A","age":200}'      # 422 with both errors
 curl localhost:8080/users/1
 ```
 
-**O que cada retorno vira:** `void` → 204 · `string` → texto · struct/array → JSON ·
-`WithStatus!T` → JSON com o status escolhido · `Response` → controle total · `throw new HttpError(status, msg)`.
+**What each return becomes:** `void` → 204 · `string` → text · struct/array → JSON ·
+`WithStatus!T` → JSON with the status you choose · `Response` → full control · `throw new HttpError(status, msg)`.
 
-## 6. Middleware, grupos e dados por requisição
+## 6. Middleware, groups and per-request data
 
-Middleware é uma função `void(Context, Next)` em camadas (cebola):
+Middleware is a `void(Context, Next)` function, in onion layers:
 
 ```d
 void logger(Context ctx, Next next)
 {
     next();
-    // depois da resposta: ctx.response.status já está definido
+    // after the response: ctx.response.status is already set
 }
 
 auto api = app.group("/api/v1");
 api.use((Context ctx, Next next) {
     auto token = bearerToken(ctx);
-    if (token.length == 0) throw new HttpError(401, "token ausente");
-    ctx.locals.set(Caller(token.idup));     // guardado, tipado, para esta requisição
+    if (token.length == 0) throw new HttpError(401, "missing token");
+    ctx.locals.set(Caller(token.idup));     // stored, typed, for this request
     next();
 });
 
-string quemSou(Local!Caller c) => c.token;  // o handler recebe o valor pronto
-api.get!("/quem", quemSou);
+string whoAmI(Local!Caller c) => c.token;   // the handler receives the ready value
+api.get!("/whoami", whoAmI);
 ```
 
-Já vêm prontos: `accessLog()`, `requestId()`, `cors(CorsConfig(...))`. Erros: `app.onError(...)`,
-`app.onNotFound(...)`; `app.redirectTrailingSlash = true` liga o 308 para barra final.
+Ready-made: `accessLog()`, `requestId()`, `cors(CorsConfig(...))`. Errors: `app.onError(...)`,
+`app.onNotFound(...)`; `app.redirectTrailingSlash = true` turns on the 308 for a trailing slash.
 
-## 7. Estáticos e documentação automática
+## 7. Static files and automatic documentation
 
 ```d
-app.serveStatic("/assets", "public");                       // ETag/304, index.html, bloqueia traversal
-app.serveOpenApi(OpenApiInfo("Minha API", "1.0.0"));        // /openapi.json e /docs (Swagger UI)
+app.serveStatic("/assets", "public");                       // ETag/304, index.html, blocks traversal
+app.serveOpenApi(OpenApiInfo("My API", "1.0.0"));           // /openapi.json and /docs (Swagger UI)
 ```
 
-O OpenAPI é montado a partir das **mesmas assinaturas** que geram o dispatch: rotas, parâmetros, corpos,
-validações (`@minLength`, `@inRange`...) e `@summary("...")`. Não há segunda fonte de verdade para ficar desatualizada.
+The OpenAPI document is built from the **same signatures** that generate the dispatch: routes, parameters, bodies,
+validations (`@minLength`, `@inRange`...) and `@summary("...")`. There is no second source of truth to go out of date.
 
-## 8. Banco, API externa e trabalho pesado sem travar o servidor
+## 8. Database, external API and heavy work without stalling the server
 
-Cada requisição roda num *fiber*. Esperar rede suspende só aquele fiber, nunca o worker:
+Each request runs in a *fiber*. Waiting on the network suspends only that fiber, never the worker:
 
 ```d
-// dub.sdl:  dependency "vela-pg" path="../dapi/drivers/pg"     (pacote opcional; precisa de libpq5)
+// dub.sdl:  dependency "vela-pg" path="../dapi/drivers/pg"     (optional package; needs libpq5)
 import vela.db;
 
-string usuario(int id)
+string user(int id)
 {
-    auto db = pgPool("host=meu-rds.exemplo.com dbname=app user=app");
-    auto linhas = db.query("select name from users where id = $1", id);   // parâmetros $1..$n: sem SQL injection
-    return linhas.rows ? linhas.get!string(0, 0) : "?";
+    auto db = pgPool("host=my-rds.example.com dbname=app user=app");
+    auto rows = db.query("select name from users where id = $1", id);   // $1..$n parameters: no SQL injection
+    return rows.rows ? rows.get!string(0, 0) : "?";
 }
 
-Response cotacao()
+Response quote()
 {
-    auto r = httpClient().get("https://api.exemplo.com/v1/cotacao");      // HTTPS verificado, keep-alive
+    auto r = httpClient().get("https://api.example.com/v1/quote");      // verified HTTPS, keep-alive
     return Response(r.status, "application/json", r.body);
 }
 
-string pesado() => offload(() => calculoCaro());                         // pool de threads limitado
+string heavy() => offload(() => expensiveComputation());               // bounded thread pool
 ```
 
-Cliente desconectou ou o prazo estourou no meio de uma consulta? O driver cancela no servidor e descarta a conexão.
+Did the client disconnect or the deadline expire midway through a query? The driver cancels on the server and discards the connection.
 
-## 9. Configuração do servidor
+## 9. Server configuration
 
 ```d
 ServerConfig cfg;
 cfg.port = 8080;
-cfg.workers = 0;            // 0 = um por núcleo (SO_REUSEPORT)
-cfg.maxInFlight = 1024;     // acima disso: 503 + Retry-After
+cfg.workers = 0;            // 0 = one per core (SO_REUSEPORT)
+cfg.maxInFlight = 1024;     // above this: 503 + Retry-After
 cfg.requestTimeoutMs = 30_000;
 app.serve(cfg);
 ```
 
-Há prazos para head, ocioso, escrita e requisição; parada graciosa por SIGINT/SIGTERM; e um aviso no log
-quando um handler segura o worker por mais de 50 ms sem ceder (código bloqueante).
+There are deadlines for head, idle, write and request; graceful stop on SIGINT/SIGTERM; and a log warning
+when a handler holds the worker for more than 50 ms without yielding (blocking code).
 
-## 10. Erros de compilação legíveis
+## 10. Readable compile errors
 
-Assinatura inválida vira uma linha explicando o que corrigir, sem *backtrace* de templates:
+An invalid signature becomes one line explaining what to fix, with no template *backtrace*:
 
 ```
-web/source/vela/web/application.d(398): Error: static assert:  "app.d(4): vela: handler 'getUser' em GET /users/{id}: a rota declara {id}, mas a função não tem parâmetro chamado 'id'"
+web/source/vela/web/application.d(398): Error: static assert:  "app.d(4): vela: handler 'getUser' in GET /users/{id}: the route declares {id}, but the function has no parameter named 'id'"
 app.d(4):        instantiated from here: `get!("/users/{id}", getUser, ...)`
 ```
 
-Os casos estão em `tests/compile_fail/` (cada um confere a mensagem e que não passa de 2 linhas de erro).
+The cases live in `tests/compile_fail/` (each one checks the message and that it takes no more than 2 error lines).
 
-## 11. Rodar os testes e os exemplos
+## 11. Running the tests and the examples
 
 ```sh
-tools/check.sh                 # tudo: unittests, rede, Postgres, cliente HTTP, fuzz, e2e, memória, compile-fail
-DC=ldmd2 tools/check.sh        # o mesmo com LDC
-cd examples/hello && dub run   # CRUD em memória
-cd examples/api   && dub run   # API real: Postgres + API externa + CORS + estáticos + OpenAPI
+tools/check.sh                 # everything: unittests, network, Postgres, HTTP client, fuzz, e2e, memory, compile-fail
+DC=ldmd2 tools/check.sh        # the same with LDC
+cd examples/hello && dub run   # in-memory CRUD
+cd examples/api   && dub run   # real API: Postgres + external API + CORS + static files + OpenAPI
 ```
 
-Sem PostgreSQL, Python ou OpenSSL na máquina, os testes que dependem deles se declaram pulados.
+Without PostgreSQL, Python or OpenSSL on the machine, the tests that depend on them declare themselves skipped.
 
-## Próximos passos
+## Next steps
 
-- `examples/api/source/app.d`: a aplicação completa, com autenticação, banco e `onError` mapeando erros.
-- `README.md`: referência de recursos, pacotes e armadilhas.
+- `examples/api/source/app.d`: the complete application, with authentication, a database and `onError` mapping errors.
+- `README.md`: reference for features, packages and pitfalls.

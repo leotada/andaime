@@ -1,7 +1,7 @@
-/// Ligação mínima com a libpq, carregada em tempo de execução (dlopen).
-/// Sem cabeçalhos e sem `-lpq` na compilação: o vela compila em qualquer
-/// máquina, e só quem usa o driver precisa da libpq instalada
-/// (`libpq5` no Debian/Ubuntu, `libpq` no Alpine).
+/// Minimal binding to libpq, loaded at run time (dlopen).
+/// No headers and no `-lpq` at build time: vela builds on any
+/// machine, and only whoever uses the driver needs libpq installed
+/// (`libpq5` on Debian/Ubuntu, `libpq` on Alpine).
 module vela.db.libpq;
 
 import core.sys.posix.dlfcn : dlopen, dlsym, dlerror, RTLD_NOW;
@@ -40,9 +40,9 @@ enum char PG_DIAG_SQLSTATE = 'C';
 
 alias NoticeProc = extern (C) void function(void* arg, const(char)* message) nothrow;
 
-/// Tabela de funções. Fica numa struct de propósito: variáveis `extern (C)` soltas virariam
-/// símbolos globais com o MESMO nome das funções da libpq, e o ligador dinâmico faria a
-/// própria libpq chamar nossos ponteiros em vez do código dela.
+/// Function table. It lives in a struct on purpose: loose `extern (C)` variables would become
+/// global symbols with the SAME name as libpq's functions, and the dynamic linker would make
+/// libpq itself call our pointers instead of its own code.
 struct Api
 {
     extern (C) nothrow @nogc:
@@ -83,7 +83,7 @@ __gshared Api pq;
 private __gshared bool loaded;
 private __gshared string loadError;
 
-/// Carrega a libpq uma vez. Devolve null se deu certo, ou a mensagem de erro.
+/// Loads libpq once. Returns null on success, or the error message.
 string loadLibpq() @trusted
 {
     synchronized (gLock)
@@ -109,14 +109,14 @@ private string loadLocked() @trusted
         if ((h = dlopen(name.ptr, RTLD_NOW)) !is null)
             break;
     if (h is null)
-        return loadError = "vela.db: libpq não encontrada (instale libpq5 / libpq)";
+        return loadError = "vela.db: libpq not found (install libpq5 / libpq)";
 
     static foreach (m; __traits(allMembers, Api))
     {
         {
             auto p = dlsym(h, (m ~ "\0").ptr);
             if (p is null)
-                return loadError = "vela.db: símbolo ausente na libpq: " ~ m;
+                return loadError = "vela.db: missing symbol in libpq: " ~ m;
             __traits(getMember, pq, m) = cast(typeof(__traits(getMember, pq, m))) p;
         }
     }

@@ -1,4 +1,4 @@
-/// Middlewares prontos para o dia a dia: log de acesso, id de requisição e token Bearer.
+/// Ready-made everyday middlewares: access log, request id and Bearer token.
 module vela.web.middleware;
 
 import core.stdc.stdio : fprintf, stderr;
@@ -7,15 +7,15 @@ import core.time : MonoTime;
 import vela.http.types : methodName;
 import vela.web.context;
 
-/// Id da requisição (veja `requestId`). Leia em handlers com `Local!RequestId`.
+/// Request id (see `requestId`). Read it in handlers with `Local!RequestId`.
 struct RequestId
 {
-    const(char)[] value; /// válido durante a requisição
+    const(char)[] value; /// valid during the request
     alias value this;
 }
 
-/// Uma linha por requisição em stderr: `GET /users/7 200 1.3ms`.
-/// Não aloca; escreva o seu se precisar de JSON/estruturado.
+/// One line per request on stderr: `GET /users/7 200 1.3ms`.
+/// Does not allocate; write your own if you need JSON/structured logs.
 Middleware accessLog()
 {
     return (Context ctx, Next next) {
@@ -35,9 +35,9 @@ Middleware accessLog()
     };
 }
 
-/// Garante um id por requisição: reaproveita o `X-Request-Id` recebido (se for curto e
-/// só tiver caracteres seguros) ou gera 16 hex. Devolve o id no header da resposta e
-/// em `ctx.locals` (`Local!RequestId`).
+/// Ensures one id per request: reuses the received `X-Request-Id` (if short and
+/// made only of safe characters) or generates 16 hex digits. Returns the id in the response header and
+/// in `ctx.locals` (`Local!RequestId`).
 Middleware requestId(string header = "X-Request-Id")
 {
     return (Context ctx, Next next) {
@@ -65,7 +65,7 @@ private bool allSafe(const(char)[] s) pure nothrow @nogc @safe
     return true;
 }
 
-private ulong rngState; // thread-local: um gerador por worker
+private ulong rngState; // thread-local: one generator per worker
 
 private void fillRandomHex(char[] out_) nothrow @trusted
 {
@@ -84,7 +84,7 @@ private void fillRandomHex(char[] out_) nothrow @trusted
     }
 }
 
-/// O token de `Authorization: Bearer <token>`, ou null se ausente/malformado.
+/// The token from `Authorization: Bearer <token>`, or null if absent/malformed.
 const(char)[] bearerToken(Context ctx) pure nothrow @nogc @safe
 {
     auto h = ctx.request.header("Authorization");

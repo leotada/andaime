@@ -1,12 +1,12 @@
-/// Vocabulário HTTP compartilhado entre `vela:engine` e `vela:web`.
-/// Nada aqui faz syscalls nem aloca no GC.
+/// HTTP vocabulary shared between `vela:engine` and `vela:web`.
+/// Nothing here makes syscalls or allocates on the GC.
 module vela.http.types;
 
 @safe:
 
 enum Method : ubyte { GET, HEAD, POST, PUT, PATCH, DELETE, OPTIONS, unknown }
 
-/// Quantidade de métodos reais (exclui `unknown`).
+/// Number of real methods (excludes `unknown`).
 enum size_t methodCount = Method.unknown;
 
 Method parseMethod(scope const(char)[] s) pure nothrow @nogc
@@ -31,8 +31,8 @@ string methodName(Method m) pure nothrow @nogc
     return names[m];
 }
 
-/// Par nome/valor. Na requisição, as fatias apontam para o buffer de rede
-/// (zero-copy) e só valem enquanto a requisição está sendo processada.
+/// Name/value pair. In the request, the slices point into the network buffer
+/// (zero-copy) and are only valid while the request is being processed.
 struct HeaderField
 {
     const(char)[] name;
@@ -54,18 +54,18 @@ bool equalsIgnoreCase(scope const(char)[] a, scope const(char)[] b) pure nothrow
     return true;
 }
 
-/// Visão de uma requisição já parseada. Não possui memória própria.
+/// View of an already-parsed request. Owns no memory.
 struct Request
 {
     Method method;
-    const(char)[] target; /// path?query exatamente como recebido
-    const(char)[] path;   /// sem a query, ainda percent-encoded
-    const(char)[] query;  /// sem o '?', ainda percent-encoded
+    const(char)[] target; /// path?query exactly as received
+    const(char)[] path;   /// without the query, still percent-encoded
+    const(char)[] query;  /// without the '?', still percent-encoded
     HeaderField[] headers;
     const(ubyte)[] body;
     bool keepAlive = true;
 
-    /// Primeiro header com esse nome (case-insensitive) ou `null`.
+    /// First header with that name (case-insensitive) or `null`.
     const(char)[] header(scope const(char)[] name) const pure nothrow @nogc
     {
         foreach (ref h; headers)
@@ -74,7 +74,7 @@ struct Request
         return null;
     }
 
-    /// Valor bruto (ainda codificado) do primeiro `name` na query string.
+    /// Raw (still encoded) value of the first `name` in the query string.
     bool rawQueryParam(scope const(char)[] name, out const(char)[] value) const pure nothrow @nogc
     {
         const(char)[] q = query;
@@ -98,7 +98,7 @@ struct Request
     }
 }
 
-/// Divide `target` em path e query (sem alocar).
+/// Splits `target` into path and query (without allocating).
 void splitTarget(const(char)[] target, out const(char)[] path, out const(char)[] query) pure nothrow @nogc
 {
     foreach (i, c; target)

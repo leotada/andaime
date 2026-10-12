@@ -1,4 +1,4 @@
-// EXPECT: handler 'byId' em GET /items/{id}: o parâmetro 'id' vem da rota ({id}) e precisa ser escalar
+// EXPECT: handler 'byId' in GET /items/{id}: parameter 'id' comes from the route ({id}) and must be a scalar
 import vela;
 struct Key { long v; }
 final class Items { @Get("/items/{id}") string byId(Key id) => "x"; }

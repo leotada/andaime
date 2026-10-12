@@ -1,4 +1,4 @@
-/// `vela:db` — drivers cooperativos de banco de dados.
+/// `vela:db` — cooperative database drivers.
 module vela.db;
 
 public import vela.db.pg;

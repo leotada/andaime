@@ -1,5 +1,5 @@
 name "vela-pg"
-description "Driver PostgreSQL cooperativo (fibers) para o vela, sobre libpq assíncrona carregada por dlopen. Pacote separado: o núcleo não depende dele."
+description "Cooperative (fiber-based) PostgreSQL driver for vela, over asynchronous libpq loaded via dlopen. A separate package: the core does not depend on it."
 targetType "library"
 sourcePaths "source"
 importPaths "source"

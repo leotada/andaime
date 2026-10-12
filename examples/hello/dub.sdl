@@ -1,4 +1,4 @@
 name "hello"
-description "Exemplo de ergonomia do vela"
+description "vela ergonomics example"
 targetType "executable"
 dependency "vela" path="../.."

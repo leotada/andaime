@@ -1,6 +1,6 @@
-/// Servidor de DESENVOLVIMENTO: bloqueante, uma conexão por vez.
-/// Existe para dar `curl` no exemplo antes do M2. Será substituído pelo
-/// EpollLoop, mas já usa as peças definitivas: parser, BufferPool, Limits.
+/// DEVELOPMENT server: blocking, one connection at a time.
+/// It exists so you can `curl` the example before M2. It was replaced by
+/// EpollLoop, but it already uses the final pieces: parser, BufferPool, Limits.
 module vela.engine.devserver;
 
 import core.sys.posix.sys.socket;
@@ -30,7 +30,7 @@ void runDevServer(ref const ServerConfig cfg, RequestCallback onRequest)
         return perror("bind");
     if (listen(fd, cfg.backlog) < 0)
         return perror("listen");
-    printf("vela (dev server, bloqueante) em http://localhost:%d\n", cast(int) cfg.port);
+    printf("vela (dev server, blocking) at http://localhost:%d\n", cast(int) cfg.port);
 
     BufferPool pool;
     ByteBuffer output;
@@ -46,11 +46,11 @@ void runDevServer(ref const ServerConfig cfg, RequestCallback onRequest)
             perror("accept");
             continue;
         }
-        timeval tv = timeval(5, 0); // cliente travado não prende o dev server
+        timeval tv = timeval(5, 0); // a stuck client does not hold the dev server
         setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, tv.sizeof);
         serveConnection(c, cfg, pool, output, headerStore[], onRequest);
         close(c);
-        output.shrinkTo(64 << 10); // não segura o pico de uma resposta grande
+        output.shrinkTo(64 << 10); // does not hold on to the peak of a large response
     }
 }
 
@@ -75,7 +75,7 @@ private void serveConnection(int c, ref const ServerConfig cfg, ref BufferPool p
                 return sendError(c, 431);
             auto n = read(c, buf.free_.ptr, buf.free_.length);
             if (n <= 0)
-                return; // EOF, timeout ou erro: fecha sem resposta
+                return; // EOF, timeout or error: close without a response
             buf.len += n;
         }
         if (h.status == ParseStatus.error)
@@ -87,7 +87,7 @@ private void serveConnection(int c, ref const ServerConfig cfg, ref BufferPool p
         {
             if (!pool.grow(buf, total))
                 return sendError(c, 413);
-            // o buffer mudou de lugar: refaz o parse para as fatias apontarem para ele
+            // the buffer moved: redo the parse so the slices point into it
             parseRequestHead(cast(const(char)[]) buf.data, req, headerStore, cfg.limits);
         }
         while (buf.len < total)
@@ -99,14 +99,14 @@ private void serveConnection(int c, ref const ServerConfig cfg, ref BufferPool p
         }
         req.body = buf.mem[h.headLength .. total];
 
-        // ---- resposta
+        // ---- response
         output.clear();
         onRequest(req, output);
         if (!sendAll(c, output.data))
             return;
         if (!req.keepAlive)
             return;
-        buf.compact(total); // pipelining: o que sobrou é a próxima requisição
+        buf.compact(total); // pipelining: what is left over is the next request
     }
 }
 

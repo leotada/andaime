@@ -1,9 +1,9 @@
-/// Roteamento por árvore de prefixos de segmentos (radix sobre segmentos).
+/// Routing by a prefix tree of segments (radix over segments).
 ///
-/// A árvore é montada no startup (microssegundos), não em CTFE, para não
-/// pesar na compilação. O casamento não aloca e é O(profundidade).
-/// Prioridade por segmento: estático > `{param}` > `{*resto}`, com
-/// backtracking, então `/users/me` e `/users/{id}` convivem.
+/// The tree is built at startup (microseconds), not at CTFE, so it does not
+/// weigh on compilation. Matching does not allocate and is O(depth).
+/// Priority per segment: static > `{param}` > `{*rest}`, with
+/// backtracking, so `/users/me` and `/users/{id}` coexist.
 module vela.web.router;
 
 import vela.http.types;
@@ -15,10 +15,10 @@ struct MatchResult
 {
     MatchStatus status;
     int handler = -1;
-    ushort allowed; /// bitmask de métodos quando o path casa mas o método não
+    ushort allowed; /// bitmask of methods when the path matches but the method does not
 }
 
-/// Erro de registro de rota (startup): mensagem de uma linha.
+/// Route registration error (startup): one-line message.
 class RouteError : Exception
 {
     this(string msg, string file = __FILE__, size_t line = __LINE__) @safe pure nothrow
@@ -29,10 +29,10 @@ class RouteError : Exception
 
 private final class Node
 {
-    string segment;     // texto literal, ou nome do parâmetro
-    Node[] statics;     // filhos literais (busca linear; ordenar se crescer)
-    Node param;         // filho `{nome}`
-    Node catchAll;      // filho `{*nome}` (sempre folha)
+    string segment;     // literal text, or the parameter name
+    Node[] statics;     // literal children (linear search; sort if it grows)
+    Node param;         // `{name}` child
+    Node catchAll;      // `{*name}` child (always a leaf)
     int[methodCount] handlers = -1;
     string[methodCount] patterns;
 
@@ -51,11 +51,11 @@ private final class Node
     }
 }
 
-/// Segmentos de um padrão. "/" => []; "/a/" => ["a", ""] (barra final é significativa).
+/// Segments of a pattern. "/" => []; "/a/" => ["a", ""] (the trailing slash is significant).
 private string[] splitPattern(string pattern) @safe pure
 {
     if (pattern.length == 0 || pattern[0] != '/')
-        throw new RouteError("vela: a rota '" ~ pattern ~ "' deve começar com '/'");
+        throw new RouteError("vela: route '" ~ pattern ~ "' must start with '/'");
     string[] segs;
     if (pattern == "/")
         return segs;
@@ -79,7 +79,7 @@ final class Router
         root = new Node("");
     }
 
-    /// Registra `pattern` para `method`. Lança RouteError com mensagem clara.
+    /// Registers `pattern` for `method`. Throws RouteError with a clear message.
     void add(Method method, string pattern, int handlerId) @safe pure
     {
         auto segs = splitPattern(pattern);
@@ -92,12 +92,12 @@ final class Router
                 auto name = seg[1 .. $ - 1];
                 params++;
                 if (params > PathParams.max)
-                    throw new RouteError("vela: a rota '" ~ pattern ~ "' tem mais de 8 parâmetros");
+                    throw new RouteError("vela: route '" ~ pattern ~ "' has more than 8 parameters");
                 if (name.length && name[0] == '*')
                 {
                     if (idx != segs.length - 1)
-                        throw new RouteError("vela: em '" ~ pattern ~ "', {" ~ name
-                            ~ "} captura o resto do caminho e precisa ser o último segmento");
+                        throw new RouteError("vela: in '" ~ pattern ~ "', {" ~ name
+                            ~ "} captures the rest of the path and must be the last segment");
                     if (n.catchAll is null)
                         n.catchAll = new Node(name[1 .. $]);
                     n = n.catchAll;
@@ -106,16 +106,16 @@ final class Router
                 {
                     if (n.param is null)
                         n.param = new Node(name);
-                    n = n.param; // nomes diferentes na mesma posição são permitidos:
-                                 // o binding é por posição, decidido em compilação
+                    n = n.param; // different names at the same position are allowed:
+                                 // binding is by position, decided at compile time
                 }
             }
             else
             {
                 foreach (char c; seg)
                     if (c == '{' || c == '}')
-                        throw new RouteError("vela: segmento '" ~ seg ~ "' em '" ~ pattern
-                            ~ "' mistura texto e parâmetro; use um segmento inteiro como {nome}");
+                        throw new RouteError("vela: segment '" ~ seg ~ "' in '" ~ pattern
+                            ~ "' mixes text and a parameter; use a whole segment such as {name}");
                 Node next;
                 foreach (c; n.statics)
                     if (c.segment == seg)
@@ -132,14 +132,14 @@ final class Router
             }
         }
         if (n.handlers[method] >= 0)
-            throw new RouteError("vela: rota duplicada: " ~ methodName(method) ~ " " ~ pattern
-                ~ " (já registrada como " ~ n.patterns[method] ~ ")");
+            throw new RouteError("vela: duplicate route: " ~ methodName(method) ~ " " ~ pattern
+                ~ " (already registered as " ~ n.patterns[method] ~ ")");
         n.handlers[method] = handlerId;
         n.patterns[method] = pattern;
         routeCount++;
     }
 
-    /// Casa `path` (com '/' inicial, sem query). Preenche `params` na ordem do padrão.
+    /// Matches `path` (with leading '/', without query). Fills `params` in pattern order.
     MatchResult match(Method method, scope const(char)[] path, ref PathParams params) const nothrow @nogc @safe
     {
         MatchResult res;
@@ -161,7 +161,7 @@ final class Router
     {
         int h = n.handlers[m];
         if (h < 0 && m == Method.HEAD)
-            h = n.handlers[Method.GET]; // HEAD cai no GET; o engine descarta o corpo
+            h = n.handlers[Method.GET]; // HEAD falls back to GET; the engine discards the body
         if (h >= 0)
         {
             res.handler = h;
@@ -171,7 +171,7 @@ final class Router
         return false;
     }
 
-    /// `i` = início do próximo segmento; size_t.max = caminho consumido.
+    /// `i` = start of the next segment; size_t.max = path consumed.
     private static bool walk(const Node n, scope const(char)[] path, size_t i, Method m,
         ref PathParams pp, ref MatchResult res) nothrow @nogc @trusted
     {
@@ -208,7 +208,7 @@ final class Router
         return false;
     }
 
-    /// Árvore em texto, para depuração e para testes de snapshot.
+    /// Tree as text, for debugging and snapshot tests.
     string dump() const @safe
     {
         string o;
@@ -254,9 +254,9 @@ unittest
     PathParams pp;
     auto m = r.match(Method.GET, "/users/42", pp);
     assert(m.status == MatchStatus.found && m.handler == 2 && pp.count == 1 && pp[0] == "42");
-    assert(r.match(Method.GET, "/users/me", pp).handler == 4);           // estático vence
-    m = r.match(Method.PUT, "/users/me", pp);                              // sem PUT em /users/me:
-    assert(m.handler == 3 && pp[0] == "me");                               // backtracking p/ {id}
+    assert(r.match(Method.GET, "/users/me", pp).handler == 4);           // static wins
+    m = r.match(Method.PUT, "/users/me", pp);                              // no PUT on /users/me:
+    assert(m.handler == 3 && pp[0] == "me");                               // backtracking to {id}
     m = r.match(Method.GET, "/users/7/posts/9", pp);
     assert(m.handler == 5 && pp.count == 2 && pp[0] == "7" && pp[1] == "9");
     m = r.match(Method.GET, "/static/css/app.css", pp);
@@ -267,10 +267,10 @@ unittest
     assert(m.status == MatchStatus.methodNotAllowed);
     assert(m.allowed == ((1 << Method.GET) | (1 << Method.PUT)));
     assert(r.match(Method.GET, "/nope", pp).status == MatchStatus.notFound);
-    assert(r.match(Method.GET, "/users/", pp).status == MatchStatus.notFound); // barra final é estrita
+    assert(r.match(Method.GET, "/users/", pp).status == MatchStatus.notFound); // trailing slash is strict
 
     bool threw;
     try r.add(Method.GET, "/users/{x}", 9);
-    catch (RouteError e) { threw = true; assert(e.msg == "vela: rota duplicada: GET /users/{x} (já registrada como /users/{id})"); }
+    catch (RouteError e) { threw = true; assert(e.msg == "vela: duplicate route: GET /users/{x} (already registered as /users/{id})"); }
     assert(threw);
 }

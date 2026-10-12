@@ -1,17 +1,17 @@
-/// Tipos que o usuário escreve nas assinaturas dos handlers.
+/// Types the user writes in handler signatures.
 module vela.web.params;
 
 import vela.http.types : HeaderField;
 
-/// Corpo JSON decodificado em `T`. Acesse os campos direto: `body.name`.
+/// JSON body decoded into `T`. Access the fields directly: `body.name`.
 struct JsonBody(T)
 {
     T value;
     alias value this;
 }
 
-/// Valor de um header. É uma fatia zero-copy do buffer de rede:
-/// válida só durante a requisição. Para guardar, use `.idup`.
+/// Value of a header. It is a zero-copy slice of the network buffer:
+/// valid only during the request. To keep it, use `.idup`.
 struct Header(string name)
 {
     enum string headerName = name;
@@ -19,15 +19,15 @@ struct Header(string name)
     alias value this;
 }
 
-/// Valor deixado por um middleware em `ctx.locals`. Se nenhum middleware o
-/// definiu, a requisição falha com 500 (erro de configuração, não do cliente).
+/// Value left by a middleware in `ctx.locals`. If no middleware set it,
+/// the request fails with 500 (a configuration error, not the client's).
 struct Local(T)
 {
     T value;
     alias value this;
 }
 
-/// Parâmetro opcional: `Optional!int page`, `Optional!(Header!"X-Trace")`.
+/// Optional parameter: `Optional!int page`, `Optional!(Header!"X-Trace")`.
 struct Optional(T)
 {
     private T _value;
@@ -43,14 +43,14 @@ struct Optional(T)
 
     ref inout(T) get() inout return
     {
-        assert(_has, "Optional vazio: verifique .has antes de .get");
+        assert(_has, "empty Optional: check .has before .get");
         return _value;
     }
 
     inout(T) getOr(inout(T) fallback) inout => _has ? _value : fallback;
 }
 
-/// Retorno com status diferente de 200: `return withStatus(201, user);`
+/// Return with a status other than 200: `return withStatus(201, user);`
 struct WithStatus(T)
 {
     int status;
@@ -59,7 +59,7 @@ struct WithStatus(T)
 
 WithStatus!T withStatus(T)(int status, T value) => WithStatus!T(status, value);
 
-/// Resposta montada à mão (redirect, content-type próprio, headers extras).
+/// Hand-built response (redirect, custom content-type, extra headers).
 struct Response
 {
     int status = 200;
@@ -76,7 +76,7 @@ struct Response
     }
 }
 
-/// Lançada pelo handler para responder com erro: `throw new HttpError(404, "usuário não encontrado");`
+/// Thrown by the handler to respond with an error: `throw new HttpError(404, "user not found");`
 class HttpError : Exception
 {
     int status;
@@ -88,7 +88,7 @@ class HttpError : Exception
     }
 }
 
-// ---- reconhecimento dos wrappers (rasos, sem recursão)
+// ---- recognition of the wrappers (shallow, no recursion)
 
 enum isJsonBody(T) = is(T == JsonBody!U, U);
 enum isHeader(T) = is(T == Header!n, string n);
@@ -99,7 +99,7 @@ enum isWithStatus(T) = is(T == WithStatus!U, U);
 enum isCharType(T) = is(immutable T == immutable char) || is(immutable T == immutable wchar)
     || is(immutable T == immutable dchar);
 
-/// Escalares extraíveis de path, query ou header.
+/// Scalars extractable from path, query or header.
 enum isScalar(T) = is(T == bool) || is(T == enum)
     || (__traits(isIntegral, T) && !isCharType!T)
     || __traits(isFloating, T)

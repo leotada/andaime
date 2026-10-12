@@ -1,5 +1,5 @@
-/// Testes do driver Postgres contra um servidor real (VELA_PG = conninfo).
-/// Sem VELA_PG o teste se declara ignorado (exit 0 com aviso).
+/// Tests of the Postgres driver against a real server (VELA_PG = conninfo).
+/// Without VELA_PG the test declares itself skipped (exit 0 with a warning).
 module pg_net;
 
 version (linux):
@@ -88,7 +88,7 @@ string slowquery()
         db.query("select pg_sleep(3)");
     catch (PgTimeout)
         return "timeout";
-    return "sem timeout";
+    return "no timeout";
 }
 
 App buildApp()
@@ -104,7 +104,7 @@ App buildApp()
     return app;
 }
 
-// ------------------------------------------------------------ infraestrutura
+// ------------------------------------------------------------ infrastructure
 
 struct Server { EpollLoop loop; Thread thread; ushort port; }
 
@@ -125,7 +125,7 @@ Server start()
             return Server(loop, t, loop.boundPort);
         Thread.sleep(5.msecs);
     }
-    assert(0, "servidor não ficou pronto");
+    assert(0, "server did not become ready");
 }
 
 void stop(ref Server s) { s.loop.stop(); s.thread.join(); }
@@ -206,18 +206,18 @@ bool waitFor(scope bool delegate() cond, int ms)
 
 void ok(string name) { printf("ok  %.*s\n", cast(int) name.length, name.ptr); fflush(stdout); }
 
-/// Conexões do servidor de teste vistas pelo próprio Postgres.
+/// Test-server connections as seen by Postgres itself.
 int backends(PgConn c)
 {
     return c.query("select count(*)::int from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() and application_name = 'vela_test'")
         .get!int(0, 0);
 }
 
-// ------------------------------------------------------------ testes
+// ------------------------------------------------------------ tests
 
 void setup()
 {
-    // conexão avulsa, fora do loop (fallbacks bloqueantes do awaitFd)
+    // standalone connection, outside the loop (blocking fallbacks of awaitFd)
     auto c = PgConn.connect(conninfo, 5.seconds, 10.seconds);
     scope (exit) c.shutdown();
     c.exec("drop table if exists t_users");
@@ -236,15 +236,15 @@ void testPreparados()
     foreach (i; 0 .. 3)
         assert(c.query("select count(*)::int from t_pc where a >= $1", 1).get!int(0, 0) == 2);
     auto n = c.query("select count(*)::int from pg_prepared_statements where statement = $1", "select count(*)::int from t_pc where a >= $1").get!int(0, 0);
-    assert(n == 1, "o mesmo SQL deveria ter virado um único statement preparado");
+    assert(n == 1, "the same SQL should have become a single prepared statement");
 
-    // ALTER TABLE invalida o plano de "select *": o driver esquece o statement e repete
+    // ALTER TABLE invalidates the plan of "select *": the driver forgets the statement and retries
     assert(c.query("select * from t_pc").cols == 1);
     c.exec("alter table t_pc add column b int default 7");
     auto r = c.query("select * from t_pc");
-    assert(r.cols == 2 && r.get!int(0, 1) == 7, "plano velho deveria ser descartado e a consulta repetida");
+    assert(r.cols == 2 && r.get!int(0, 1) == 7, "the old plan should be discarded and the query repeated");
 
-    // passou de 128 SQLs diferentes: os extras rodam sem cache, sem erro
+    // went past 128 different SQLs: the extras run without cache, no error
     foreach (i; 0 .. 150)
     {
         auto q = "select $1::int + " ~ itoa(i);
@@ -252,7 +252,7 @@ void testPreparados()
     }
     assert(c.usable);
     c.exec("drop table t_pc");
-    ok("statements preparados: cache, invalidação por ALTER TABLE, limite de 128");
+    ok("prepared statements: cache, invalidation by ALTER TABLE, limit of 128");
 }
 
 string itoa(int v)
@@ -279,7 +279,7 @@ void testBasico()
     assert(r.body == "unique 23505", r.body);
     r = fetch(s.port, "/tx");
     assert(r.body == "rolled=yes committed=yes", r.body);
-    ok("consultas, parâmetros tipados, Maybe, erro com SQLSTATE, transação com rollback");
+    ok("queries, typed parameters, Maybe, error with SQLSTATE, transaction with rollback");
 }
 
 void testNaoBloqueia()
@@ -300,14 +300,14 @@ void testNaoBloqueia()
     immutable t1 = MonoTime.currTime;
     auto f = fetch(s.port, "/fast");
     immutable fastMs = (MonoTime.currTime - t1).total!"msecs";
-    assert(f.status == 200 && fastMs < 50, "o worker ficou preso esperando o banco");
+    assert(f.status == 200 && fastMs < 50, "the worker got stuck waiting for the database");
     foreach (fd; fds)
     {
         auto r = recv(fd);
         assert(r.status == 200 && r.body == "slept 42", r.body);
     }
     immutable ms = (MonoTime.currTime - t0).total!"msecs";
-    printf("ok  %d consultas de 300 ms com 50 conexões em %ld ms numa thread (/fast durante: %ld ms)\n", N, ms, fastMs);
+    printf("ok  %d queries of 300 ms with 50 connections in %ld ms on one thread (/fast meanwhile: %ld ms)\n", N, ms, fastMs);
     assert(ms < 1500);
 }
 
@@ -330,8 +330,8 @@ void testPoolPequeno()
         assert(r.status == 200 && r.body == "slept 42", r.body);
     }
     immutable ms = (MonoTime.currTime - t0).total!"msecs";
-    assert(ms >= 580 && ms < 1100, "6 consultas de 200 ms em 2 conexões deveriam levar ~600 ms");
-    ok("pool com 2 conexões: 6 consultas esperam a vez sem travar o worker");
+    assert(ms >= 580 && ms < 1100, "6 queries of 200 ms on 2 connections should take ~600 ms");
+    ok("pool with 2 connections: 6 queries wait their turn without stalling the worker");
 }
 
 void testCancelamento()
@@ -344,15 +344,15 @@ void testCancelamento()
     send(fd, "/wait/5000");
     assert(waitFor(() => s.loop.stats().inFlight == 1, 1000));
     Thread.sleep(100.msecs);
-    close(fd); // cliente vai embora com a consulta no ar
-    assert(waitFor(() => s.loop.stats().inFlight == 0, 500), "fiber não foi cancelado");
+    close(fd); // client goes away with the query in the air
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 500), "fiber was not cancelled");
 
-    // o servidor de banco recebeu o cancelamento: nada de pg_sleep de 5 s pendurado
+    // the database server received the cancellation: no 5 s pg_sleep left hanging
     auto c = PgConn.connect(conninfo, 5.seconds, 5.seconds);
     scope (exit) c.shutdown();
     assert(waitFor(() => c.query("select count(*)::int from pg_stat_activity where query like '%pg_sleep%' and pid <> pg_backend_pid() and state = 'active'").get!int(0, 0) == 0, 1500),
-        "a consulta continuou rodando no servidor");
-    ok("cliente some no meio da consulta: fiber cancelado, servidor recebe o cancelamento");
+        "the query kept running on the server");
+    ok("client goes away midway through the query: fiber cancelled, server receives the cancellation");
 }
 
 void testPrazoDaConsulta()
@@ -366,10 +366,10 @@ void testPrazoDaConsulta()
     auto r = fetch(s.port, "/slowquery");
     immutable ms = (MonoTime.currTime - t0).total!"msecs";
     assert(r.status == 200 && r.body == "timeout", r.body);
-    assert(ms < 1500, "o prazo da consulta não foi respeitado");
-    r = fetch(s.port, "/user/1"); // o pool abre outra conexão
+    assert(ms < 1500, "the query deadline was not respected");
+    r = fetch(s.port, "/user/1"); // the pool opens another connection
     assert(r.body == "ana|ana@x.com", r.body);
-    ok("prazo da consulta: PgTimeout, conexão descartada, próxima requisição segue normal");
+    ok("query deadline: PgTimeout, connection discarded, next request carries on normally");
 }
 
 void main()
@@ -377,7 +377,7 @@ void main()
     auto env = getenv("VELA_PG");
     if (env is null)
     {
-        printf("pulado: defina VELA_PG com a conninfo de um Postgres de teste\n");
+        printf("skipped: set VELA_PG to the conninfo of a test Postgres\n");
         return;
     }
     conninfo = cast(string) env[0 .. strlen(env)].idup;
@@ -390,7 +390,7 @@ void main()
     testPoolPequeno();
     testCancelamento();
     testPrazoDaConsulta();
-    printf("todos os testes do Postgres passaram\n");
+    printf("all Postgres tests passed\n");
 }
 
 import core.stdc.string : strlen;

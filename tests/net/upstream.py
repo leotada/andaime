@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Servidor HTTP/HTTPS de apoio aos testes do cliente HTTP do vela.
+"""HTTP/HTTPS helper server for vela's HTTP client tests.
 
 Uso: upstream.py <cert.pem> <key.pem>
-Imprime "PLAIN <porta> TLS <porta>" na saída padrão quando está pronto.
+Prints "PLAIN <port> TLS <port>" on standard output when ready.
 Rotas: /hello, /chunked, /close, /stale, /slow/<ms>, /echo (POST), /big, /stats
 """
 import ssl, sys, threading, time
@@ -50,7 +50,7 @@ class H(BaseHTTPRequestHandler):
             self.close_connection = True
         elif p == "/stale":
             self.send_body(b"stale-ok")
-            self.close_connection = True  # fecha o socket mesmo sem avisar
+            self.close_connection = True  # closes the socket without warning
         elif p.startswith("/slow/"):
             time.sleep(int(p[6:]) / 1000)
             self.send_body(b"slow-done")

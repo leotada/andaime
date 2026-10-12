@@ -1,5 +1,5 @@
-/// Testes do cliente HTTP de saída contra um upstream Python (tests/net/upstream.py).
-/// Variáveis: VELA_UP_PLAIN, VELA_UP_TLS (portas) e VELA_UP_CERT (certificado do upstream).
+/// Tests of the outgoing HTTP client against a Python upstream (tests/net/upstream.py).
+/// Variables: VELA_UP_PLAIN, VELA_UP_TLS (ports) and VELA_UP_CERT (the upstream's certificate).
 module client_net;
 
 version (linux):
@@ -23,7 +23,7 @@ __gshared string plainBase, tlsBase, certFile;
 
 HttpClient cli()
 {
-    static HttpClient c; // por worker (thread-local)
+    static HttpClient c; // per worker (thread-local)
     if (c is null)
     {
         HttpClientConfig cfg;
@@ -42,7 +42,7 @@ string viaTls() => cli().get(tlsBase ~ "/hello").body;
 
 string tlsUntrusted()
 {
-    HttpClientConfig cfg; // sem caFile: o certificado autoassinado deve ser recusado
+    HttpClientConfig cfg; // no caFile: the self-signed certificate must be refused
     cfg.timeout = 2.seconds;
     auto c = new HttpClient(cfg);
     try
@@ -70,7 +70,7 @@ string big()
     try
         return cli().get(plainBase ~ "/big").body;
     catch (HttpClientError e)
-        return "limite";
+        return "limit";
 }
 
 string refused()
@@ -108,7 +108,7 @@ App buildApp()
     return app;
 }
 
-// ------------------------------------------------------------ infraestrutura
+// ------------------------------------------------------------ infrastructure
 
 struct Server { EpollLoop loop; Thread thread; ushort port; }
 
@@ -129,7 +129,7 @@ Server start()
             return Server(loop, t, loop.boundPort);
         Thread.sleep(5.msecs);
     }
-    assert(0, "servidor não ficou pronto");
+    assert(0, "server did not become ready");
 }
 
 void stop(ref Server s) { s.loop.stop(); s.thread.join(); }
@@ -216,7 +216,7 @@ string env(const(char)* name)
     return p is null ? null : p[0 .. strlen(p)].idup;
 }
 
-// ------------------------------------------------------------ testes
+// ------------------------------------------------------------ tests
 
 void testBasico()
 {
@@ -227,7 +227,7 @@ void testBasico()
     assert(fetch(s.port, "/close").body == "until-close");
     assert(fetch(s.port, "/post").body == `echo:application/json:{"a":1}`);
     assert(fetch(s.port, "/refused").body == "recusada");
-    ok("GET, corpo chunked, corpo até fechar, POST JSON, conexão recusada");
+    ok("GET, chunked body, until-close body, JSON POST, connection refused");
 }
 
 void testTls()
@@ -238,35 +238,35 @@ void testTls()
     assert(r.status == 200 && r.body == "hello", r.body);
     r = fetch(s.port, "/untrusted");
     assert(r.body == "recusou", r.body);
-    ok("HTTPS com certificado verificado; certificado autoassinado sem CA é recusado");
+    ok("HTTPS with a verified certificate; a self-signed certificate without a CA is refused");
 }
 
 void testKeepAliveEStale()
 {
     auto s = start();
     scope (exit) stop(s);
-    auto before = fetch(s.port, "/hello"); // abre a conexão
+    auto before = fetch(s.port, "/hello"); // opens the connection
     foreach (_; 0 .. 20)
         assert(fetch(s.port, "/hello").body == "hello");
-    // o upstream conta conexões aceitas: 21 requisições devem ter reutilizado a conexão
+    // the upstream counts accepted connections: 21 requests should have reused the connection
     import std.conv : to;
     auto n0 = cast(int) getUpstreamConns();
     foreach (_; 0 .. 20)
         assert(fetch(s.port, "/hello").body == "hello");
     auto n1 = cast(int) getUpstreamConns();
-    assert(n1 - n0 <= 2, "20 requisições deveriam reutilizar a conexão keep-alive");
+    assert(n1 - n0 <= 2, "20 requests should reuse the keep-alive connection");
 
-    // conexão velha no pool: o upstream fechou o socket depois de responder
+    // stale connection in the pool: the upstream closed the socket after responding
     assert(fetch(s.port, "/stale").body == "stale-ok");
-    assert(fetch(s.port, "/stale").body == "stale-ok", "deveria repetir em conexão nova");
-    ok("keep-alive reaproveita a conexão; conexão velha do pool é repetida sozinha");
+    assert(fetch(s.port, "/stale").body == "stale-ok", "should retry on a new connection");
+    ok("keep-alive reuses the connection; a stale pooled connection is retried automatically");
 }
 
 int getUpstreamConns()
 {
     import std.conv : to;
     import std.string : split;
-    // consulta direta, fora do loop (fallback bloqueante)
+    // direct query, outside the loop (blocking fallback)
     auto c = new HttpClient;
     scope (exit) c.shutdown();
     return c.get(plainBase ~ "/stats").body.to!int;
@@ -289,14 +289,14 @@ void testNaoBloqueia()
     immutable t1 = MonoTime.currTime;
     auto f = fetch(s.port, "/fast");
     immutable fastMs = (MonoTime.currTime - t1).total!"msecs";
-    assert(f.body == "ok" && fastMs < 50, "o worker ficou preso esperando o upstream");
+    assert(f.body == "ok" && fastMs < 50, "the worker got stuck waiting for the upstream");
     foreach (fd; fds)
     {
         auto r = recvResp(fd);
         assert(r.status == 200 && r.body == "slow-done", r.body);
     }
     immutable ms = (MonoTime.currTime - t0).total!"msecs";
-    printf("ok  %d chamadas de 300 ms ao upstream em %ld ms numa thread (/fast durante: %ld ms)\n", N, ms, fastMs);
+    printf("ok  %d calls of 300 ms to the upstream in %ld ms on one thread (/fast meanwhile: %ld ms)\n", N, ms, fastMs);
     assert(ms < 2500);
 }
 
@@ -308,7 +308,7 @@ void testPrazoELimite()
     auto r = fetch(s.port, "/slow/5000");
     immutable ms = (MonoTime.currTime - t0).total!"msecs";
     assert(r.body == "timeout" && ms < 3000, r.body);
-    ok("prazo da requisição de saída: HttpClientTimeout em ~2 s (upstream demorava 5 s)");
+    ok("outgoing request deadline: HttpClientTimeout in ~2 s (the upstream took 5 s)");
 }
 
 void testCancelamento()
@@ -320,9 +320,9 @@ void testCancelamento()
     assert(waitFor(() => s.loop.stats().inFlight == 1, 1000));
     Thread.sleep(100.msecs);
     close(fd);
-    assert(waitFor(() => s.loop.stats().inFlight == 0, 500), "fiber não foi cancelado");
-    assert(fetch(s.port, "/hello").body == "hello"); // o worker segue normal
-    ok("cliente some durante a chamada de saída: fiber cancelado, worker segue normal");
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 500), "fiber was not cancelled");
+    assert(fetch(s.port, "/hello").body == "hello"); // the worker carries on normally
+    ok("client goes away during the outgoing call: fiber cancelled, worker carries on normally");
 }
 
 string replicate(string s, size_t n)
@@ -339,7 +339,7 @@ void main()
     certFile = env("VELA_UP_CERT");
     if (p is null || t is null || certFile is null)
     {
-        printf("pulado: defina VELA_UP_PLAIN, VELA_UP_TLS e VELA_UP_CERT (veja tests/net/upstream.py)\n");
+        printf("skipped: set VELA_UP_PLAIN, VELA_UP_TLS and VELA_UP_CERT (see tests/net/upstream.py)\n");
         return;
     }
     plainBase = "http://127.0.0.1:" ~ p;
@@ -351,5 +351,5 @@ void main()
     testNaoBloqueia();
     testPrazoELimite();
     testCancelamento();
-    printf("todos os testes do cliente HTTP passaram\n");
+    printf("all HTTP client tests passed\n");
 }

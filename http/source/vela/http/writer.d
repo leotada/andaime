@@ -1,4 +1,4 @@
-/// Serialização do head de resposta HTTP/1.1 direto num ByteBuffer.
+/// Serializes the HTTP/1.1 response head straight into a ByteBuffer.
 module vela.http.writer;
 
 import vela.http.types;
@@ -18,7 +18,7 @@ void writeResponseHead(ref ByteBuffer o, int status, scope const(char)[] content
         o.put(contentType);
         o.put("\r\n");
     }
-    // 204 e 304 não levam corpo nem Content-Length (RFC 9110 §8.6)
+    // 204 and 304 carry no body or Content-Length (RFC 9110 §8.6)
     if (status != 204 && status != 304)
     {
         o.put("Content-Length: ");

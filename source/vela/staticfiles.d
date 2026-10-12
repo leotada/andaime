@@ -1,13 +1,13 @@
-/// Arquivos estáticos: `app.serveStatic("/assets", "./public");`
+/// Static files: `app.serveStatic("/assets", "./public");`
 ///
-/// - só GET/HEAD; `/assets/css/app.css` serve `./public/css/app.css`;
-/// - `/assets/` (ou uma pasta) serve o `index` configurado (padrão index.html);
-/// - proteção contra path traversal: `..`, `\`, NUL, segmentos que começam com
-///   ponto (.env, .git) e links simbólicos que saem da pasta raiz são recusados (404);
-/// - ETag fraco (tamanho + mtime) com 304 para `If-None-Match`, `Last-Modified`,
-///   `Cache-Control` configurável e `Content-Type` pela extensão;
-/// - o arquivo é lido para a memória da resposta; arquivos grandes são lidos numa
-///   thread do pool (`offload`) para não segurar o worker.
+/// - GET/HEAD only; `/assets/css/app.css` serves `./public/css/app.css`;
+/// - `/assets/` (or a folder) serves the configured `index` (default index.html);
+/// - path traversal protection: `..`, `\`, NUL, segments starting with a
+///   dot (.env, .git) and symlinks that leave the root folder are refused (404);
+/// - weak ETag (size + mtime) with 304 for `If-None-Match`, `Last-Modified`,
+///   configurable `Cache-Control` and `Content-Type` by extension;
+/// - the file is read into the response memory; large files are read on a
+///   pool thread (`offload`) so they do not hold the worker.
 module vela.staticfiles;
 
 import core.stdc.errno : errno, EINTR;
@@ -27,18 +27,18 @@ import vela.engine.offload : offload;
 struct StaticConfig
 {
     string cacheControl = "public, max-age=3600";
-    string index = "index.html"; /// "" desliga o index de pastas
-    size_t maxFileBytes = 16 << 20; /// maior que isso: 413
-    size_t offloadAbove = 256 << 10; /// leitura de arquivos maiores vai para o pool de threads
+    string index = "index.html"; /// "" turns off the folder index
+    size_t maxFileBytes = 16 << 20; /// larger than this: 413
+    size_t offloadAbove = 256 << 10; /// reading larger files goes to the thread pool
 }
 
-/// Serve `dir` em `urlPrefix` ("" = raiz do site). Chame na montagem do app.
+/// Serves `dir` at `urlPrefix` ("" = site root). Call it while assembling the app.
 void serveStatic(R)(R target, string urlPrefix, string dir, StaticConfig cfg = StaticConfig.init)
     if (is(R == App) || is(R == Group))
 {
     auto root = realPath(dir);
     if (root is null)
-        throw new Exception("vela: a pasta de estáticos não existe: " ~ dir);
+        throw new Exception("vela: the static files folder does not exist: " ~ dir);
     auto srv = new StaticServer(root, cfg);
     target.register(Method.GET, urlPrefix ~ "/{*path}", &srv.serveWildcard);
     target.register(Method.GET, urlPrefix.length ? urlPrefix : "/", &srv.serveIndex);
@@ -64,11 +64,11 @@ private final class StaticServer
     {
         const(char)[] rel;
         if (!percentDecode(ctx.params[0], false, rel))
-            throw new HttpError(404, "não encontrado");
+            throw new HttpError(404, "not found");
         serve(ctx, rel);
     }
 
-    /// Resolve links simbólicos e só abre se o caminho resolved ficar dentro da pasta raiz.
+    /// Resolves symlinks and only opens if the resolved path stays inside the root folder.
     private int openInside(string path, out string found)
     {
         auto resolved = realPath(path);
@@ -83,7 +83,7 @@ private final class StaticServer
     private void serve(Context ctx, const(char)[] rel)
     {
         if (!safeRelative(rel))
-            throw new HttpError(404, "não encontrado");
+            throw new HttpError(404, "not found");
 
         string path = root;
         if (rel.length)
@@ -91,32 +91,32 @@ private final class StaticServer
         string found;
         int fd = openInside(path, found);
         if (fd < 0)
-            throw new HttpError(404, "não encontrado");
+            throw new HttpError(404, "not found");
         scope (exit)
             close(fd);
 
         stat_t st;
         if (fstat(fd, &st) != 0)
-            throw new HttpError(404, "não encontrado");
+            throw new HttpError(404, "not found");
         if (S_ISDIR(st.st_mode))
         {
             if (cfg.index.length == 0)
-                throw new HttpError(404, "não encontrado");
+                throw new HttpError(404, "not found");
             close(fd);
             path = found ~ "/" ~ cfg.index;
             fd = openInside(path, found);
             if (fd < 0 || fstat(fd, &st) != 0)
-                throw new HttpError(404, "não encontrado");
+                throw new HttpError(404, "not found");
         }
         if (!S_ISREG(st.st_mode))
-            throw new HttpError(404, "não encontrado");
+            throw new HttpError(404, "not found");
         if (st.st_size > cfg.maxFileBytes)
-            throw new HttpError(413, "arquivo grande demais");
+            throw new HttpError(413, "file too large");
 
         immutable size = cast(size_t) st.st_size;
         immutable mtime = cast(long) st.st_mtime;
 
-        // ETag fraco: W/"<tamanho em hex>-<mtime em hex>"
+        // weak ETag: W/"<size in hex>-<mtime in hex>"
         auto etag = ctx.scratch(48);
         size_t n = 0;
         n += put(etag[n .. $], `W/"`);
@@ -155,14 +155,14 @@ private final class StaticServer
         else
             got = readFully(fd, dest);
         if (got != size)
-            throw new Exception("vela: arquivo mudou durante a leitura: " ~ path);
+            throw new Exception("vela: file changed while being read: " ~ path);
         ctx.response.body.commit(got);
     }
 }
 
-// ------------------------------------------------------------ auxiliares
+// ------------------------------------------------------------ helpers
 
-/// Caminho relativo seguro: sem "..", sem barra invertida, sem NUL, sem segmentos ocultos.
+/// Safe relative path: no "..", no backslash, no NUL, no hidden segments.
 bool safeRelative(scope const(char)[] rel) pure nothrow @nogc @safe
 {
     size_t i = 0;
@@ -244,7 +244,7 @@ private size_t putHex(char[] dst, ulong v) pure nothrow @nogc @safe
     return len;
 }
 
-/// `If-None-Match` pode ter vários valores separados por vírgula, ou `*`.
+/// `If-None-Match` may hold several comma-separated values, or `*`.
 private bool matchesEtag(scope const(char)[] header, scope const(char)[] etag) pure nothrow @nogc @safe
 {
     size_t i = 0;

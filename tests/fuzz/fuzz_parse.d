@@ -1,5 +1,5 @@
-/// Fuzzer de mutação do parser (roda no CI, determinístico por semente).
-/// Uso: fuzz_parse [iterações] [semente]
+/// Mutation fuzzer for the parser (runs in CI, deterministic per seed).
+/// Usage: fuzz_parse [iterations] [seed]
 module fuzz_parse;
 
 import invariants;
@@ -34,10 +34,10 @@ char[] mutate(ref Rng rng, const(char)[] seed, const(char)[][] pool)
     {
         switch (rng.below(8))
         {
-            case 0: // troca um byte
+            case 0: // replaces one byte
                 if (b.length) b[rng.below(b.length)] = cast(char) rng.below(256);
                 break;
-            case 1: // apaga uma faixa
+            case 1: // deletes a range
                 if (b.length)
                 {
                     auto i = rng.below(b.length);
@@ -46,14 +46,14 @@ char[] mutate(ref Rng rng, const(char)[] seed, const(char)[][] pool)
                     b = b[0 .. i] ~ b[i + n .. $];
                 }
                 break;
-            case 2: // insere um token interessante
+            case 2: // inserts an interesting token
             {
                 auto t = tokens[rng.below(tokens.length)];
                 auto i = rng.below(b.length + 1);
                 b = b[0 .. i] ~ t ~ b[i .. $];
                 break;
             }
-            case 3: // duplica uma faixa
+            case 3: // duplicates a range
                 if (b.length)
                 {
                     auto i = rng.below(b.length);
@@ -62,10 +62,10 @@ char[] mutate(ref Rng rng, const(char)[] seed, const(char)[][] pool)
                     b = b[0 .. i + n] ~ b[i .. i + n] ~ b[i + n .. $];
                 }
                 break;
-            case 4: // corta o fim
+            case 4: // cuts the end
                 if (b.length) b = b[0 .. rng.below(b.length + 1)];
                 break;
-            case 5: // emenda com outra semente
+            case 5: // splices in another seed
             {
                 auto o = pool[rng.below(pool.length)];
                 auto i = rng.below(b.length + 1);
@@ -76,7 +76,7 @@ char[] mutate(ref Rng rng, const(char)[] seed, const(char)[][] pool)
             case 6: // bit flip
                 if (b.length) b[rng.below(b.length)] ^= cast(char)(1 << rng.below(8));
                 break;
-            default: // troca um byte por um caractere de controle ou espaço
+            default: // replaces a byte with a control character or space
                 if (b.length) b[rng.below(b.length)] = "\r\n\t \0:"[rng.below(6)];
                 break;
         }
@@ -99,7 +99,7 @@ void main(string[] args)
     {
         auto input = mutate(rng, pool[rng.below(pool.length)], pool);
         check(input);
-        // contagem só para o relatório
+        // counts only for the report
         import vela.http.types : Request, HeaderField;
         Request r;
         HeaderField[32] st;
@@ -110,6 +110,6 @@ void main(string[] args)
             case ParseStatus.incomplete: incomplete++; break;
         }
     }
-    printf("fuzz do parser: %zu entradas (completas %zu, erro %zu, incompletas %zu), nenhuma violou os invariantes\n",
+    printf("parser fuzz: %zu inputs (complete %zu, error %zu, incomplete %zu), none violated the invariants\n",
         iters, complete, errors, incomplete);
 }

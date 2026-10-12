@@ -1,5 +1,5 @@
-/// `vela:web` — API de alto nível. Não conhece sockets: opera sobre
-/// `Request` (fatias) e escreve num buffer de resposta.
+/// `vela:web` — high-level API. Knows nothing about sockets: operates on
+/// `Request` (slices) and writes into a response buffer.
 module vela.web;
 
 public import vela.web.application;

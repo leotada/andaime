@@ -1,7 +1,7 @@
-/// Testes pela rede do EpollLoop: sobe o servidor numa thread e fala HTTP
-/// cru por sockets bloqueantes. Cobre o que o M2 promete: fibers por
-/// requisição, cancelamento, teto de requisições em voo, prazos, escrita
-/// parcial, encolhimento dos pools e parada graciosa.
+/// Network tests of EpollLoop: starts the server on a thread and speaks raw
+/// HTTP over blocking sockets. Covers what M2 promises: a fiber per
+/// request, cancellation, the in-flight ceiling, deadlines, partial writes,
+/// pool shrinking and graceful stop.
 module epoll_net;
 
 version (linux):
@@ -20,9 +20,9 @@ import core.sys.posix.sys.time : timeval;
 import core.sys.posix.unistd : close, read, write, pipe;
 import core.sys.posix.fcntl : fcntl, F_SETFL, O_NONBLOCK;
 
-// ---------------------------------------------------------------- app de teste
+// ---------------------------------------------------------------- test app
 
-shared int cleanups; // shared: o handler roda na thread do servidor
+shared int cleanups; // shared: the handler runs on the server thread
 __gshared int[2] stuckPipe;
 
 string fast() => "ok";
@@ -38,20 +38,20 @@ string cancelMe()
     scope (exit)
         atomicOp!"+="(cleanups, 1);
     sleep(seconds(10));
-    return "nunca";
+    return "never";
 }
 
 string stuck()
 {
-    awaitFd(stuckPipe[0], IoEvent.readable); // sem prazo: só o prazo da requisição salva
-    return "nunca";
+    awaitFd(stuckPipe[0], IoEvent.readable); // no deadline: only the request deadline saves it
+    return "never";
 }
 
 string block()
 {
     import core.thread : Thread;
 
-    Thread.sleep(120.msecs); // bloqueante de propósito: trava o worker
+    Thread.sleep(120.msecs); // blocking on purpose: stalls the worker
     return "bloqueou";
 }
 
@@ -92,7 +92,7 @@ App buildApp()
     return app;
 }
 
-// ---------------------------------------------------------------- servidor de teste
+// ---------------------------------------------------------------- test server
 
 struct Server
 {
@@ -118,7 +118,7 @@ Server start(ServerConfig cfg, ushort port = 0, bool reusePort = false)
             return Server(loop, t, loop.boundPort);
         Thread.sleep(5.msecs);
     }
-    assert(0, "servidor não ficou pronto");
+    assert(0, "server did not become ready");
 }
 
 void stop(ref Server s)
@@ -127,10 +127,10 @@ void stop(ref Server s)
     s.thread.join();
 }
 
-// ---------------------------------------------------------------- cliente cru
+// ---------------------------------------------------------------- raw client
 
-// O GC do D suspende as threads com sinais, o que interrompe read/send bloqueantes
-// com EINTR. O servidor já trata isso; o cliente de teste também precisa.
+// D's GC suspends threads with signals, which interrupts blocking read/send
+// with EINTR. The server already handles it; the test client has to as well.
 ptrdiff_t rd(int fd, void* p, size_t n)
 {
     import core.stdc.errno : errno, EINTR;
@@ -168,7 +168,7 @@ Client dial(ushort port, int rcvTimeoutMs = 5000)
     a.sin_family = AF_INET;
     a.sin_port = htons(port);
     a.sin_addr.s_addr = htonl(0x7f000001);
-    assert(connect(fd, cast(sockaddr*)&a, a.sizeof) == 0, "connect falhou");
+    assert(connect(fd, cast(sockaddr*)&a, a.sizeof) == 0, "connect failed");
     timeval tv = timeval(rcvTimeoutMs / 1000, (rcvTimeoutMs % 1000) * 1000);
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, tv.sizeof);
     return Client(fd);
@@ -179,7 +179,7 @@ void tx(ref Client c, string s)
     while (s.length)
     {
         auto n = sd(c.fd, s.ptr, s.length);
-        assert(n > 0, "send falhou");
+        assert(n > 0, "send failed");
         s = s[n .. $];
     }
 }
@@ -192,7 +192,7 @@ void hang(ref Client c)
 
 struct Resp
 {
-    int status; /// 0 = conexão fechada/expirada sem resposta
+    int status; /// 0 = connection closed/expired without a response
     string head, body;
     bool closed;
 }
@@ -267,7 +267,7 @@ void ok(string name)
     fflush(stdout);
 }
 
-// ---------------------------------------------------------------- testes
+// ---------------------------------------------------------------- tests
 
 void testBasico()
 {
@@ -275,9 +275,9 @@ void testBasico()
     scope (exit) stop(s);
     auto r = request(s.port, "/fast");
     assert(r.status == 200 && r.body == "ok", r.head);
-    r = request(s.port, "/nao-existe");
+    r = request(s.port, "/does-not-exist");
     assert(r.status == 404, r.head);
-    ok("GET simples e 404");
+    ok("simple GET and 404");
 }
 
 void testKeepAliveEPipelining()
@@ -292,16 +292,16 @@ void testKeepAliveEPipelining()
         auto r = c.rx();
         assert(r.status == 200 && !r.closed, r.head);
     }
-    ok("keep-alive: 3 requisições na mesma conexão");
+    ok("keep-alive: 3 requests on the same connection");
 
-    // pipelining com um handler que suspende no meio: a ordem se mantém
+    // pipelining with a handler that suspends midway: the order is kept
     c.tx("GET /fast HTTP/1.1\r\nHost: t\r\n\r\nGET /nap/50 HTTP/1.1\r\nHost: t\r\n\r\n"
         ~ "GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
     assert(c.rx().body == "ok");
     assert(c.rx().body == "slept");
     assert(c.rx().body == "ok");
     c.hang();
-    ok("pipelining com handler suspenso no meio, ordem preservada");
+    ok("pipelining with a handler suspended midway, order preserved");
 }
 
 void testHeadLento()
@@ -317,7 +317,7 @@ void testHeadLento()
     auto r = c.rx();
     assert(r.status == 200 && r.body == "ok", r.head);
     c.hang();
-    ok("head chegando byte a byte");
+    ok("head arriving byte by byte");
 }
 
 void testConcorrencia()
@@ -341,9 +341,9 @@ void testConcorrencia()
     }
     immutable ms = (MonoTime.currTime - t0).total!"msecs";
     auto st = s.loop.stats();
-    assert(ms < 1500, "300 requisições de 300 ms deveriam levar ~300 ms, levaram mais");
-    assert(st.peakInFlight >= 250, "deveria haver ~300 requisições em voo ao mesmo tempo");
-    printf("ok  %d requisições de 300 ms em %ld ms numa thread (pico em voo: %zu)\n", N, ms, st.peakInFlight);
+    assert(ms < 1500, "300 requests of 300 ms should take ~300 ms, took longer");
+    assert(st.peakInFlight >= 250, "there should be ~300 requests in flight at the same time");
+    printf("ok  %d requests of 300 ms in %ld ms on one thread (peak in flight: %zu)\n", N, ms, st.peakInFlight);
 }
 
 void testCancelamento()
@@ -353,12 +353,12 @@ void testCancelamento()
 
     auto c = dial(s.port);
     c.tx("GET /cancel HTTP/1.1\r\nHost: t\r\n\r\n");
-    assert(waitFor(() => s.loop.stats().inFlight == 1, 1000), "handler não começou");
-    c.hang(); // o cliente vai embora com o fiber suspenso
-    assert(waitFor(() => s.loop.stats().inFlight == 0, 1000), "fiber não foi cancelado");
-    assert(atomicLoad(cleanups) == 1, "scope(exit) do handler não rodou");
+    assert(waitFor(() => s.loop.stats().inFlight == 1, 1000), "handler did not start");
+    c.hang(); // the client goes away with the fiber suspended
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 1000), "fiber was not cancelled");
+    assert(atomicLoad(cleanups) == 1, "the handler's scope(exit) did not run");
     assert(s.loop.stats().cancelled == 1);
-    ok("cliente desconecta com fiber suspenso: RequestCancelled, scope(exit) roda, fiber volta ao pool");
+    ok("client disconnects with a suspended fiber: RequestCancelled, scope(exit) runs, fiber returns to the pool");
 }
 
 void testTetoDeRequisicoes()
@@ -373,7 +373,7 @@ void testTetoDeRequisicoes()
     {
         c = dial(s.port);
         c.tx("GET /nap/400 HTTP/1.1\r\nHost: t\r\n\r\n");
-        Thread.sleep(2.msecs); // chegada em ordem
+        Thread.sleep(2.msecs); // arrival in order
     }
     int n200, n503;
     bool retryAfter;
@@ -385,9 +385,9 @@ void testTetoDeRequisicoes()
         c.hang();
     }
     assert(n200 == 4 && n503 == 2, "esperava 4x200 e 2x503");
-    assert(retryAfter, "503 sem Retry-After");
+    assert(retryAfter, "503 without Retry-After");
     assert(s.loop.stats().rejected == 2);
-    ok("teto de 4 em voo: 4x200 e 2x503 com Retry-After");
+    ok("ceiling of 4 in flight: 4x200 and 2x503 with Retry-After");
 }
 
 bool indexOfS(string h, string needle)
@@ -412,10 +412,10 @@ void testPrazoDaRequisicao()
     auto r = request(s.port, "/stuck");
     immutable ms = (MonoTime.currTime - t0).total!"msecs";
     assert(r.status == 504, r.head);
-    assert(ms >= 250 && ms < 1500, "prazo de 300 ms");
+    assert(ms >= 250 && ms < 1500, "300 ms deadline");
     assert(waitFor(() => s.loop.stats().inFlight == 0, 500));
     assert(s.loop.stats().timedOut == 1);
-    ok("handler preso em awaitFd sem prazo: 504 pelo prazo da requisição");
+    ok("handler stuck in awaitFd with no deadline: 504 by the request deadline");
 }
 
 void testEscritaParcial()
@@ -424,15 +424,15 @@ void testEscritaParcial()
     scope (exit) stop(s);
     auto c = dial(s.port, 10_000);
     c.tx("GET /big HTTP/1.1\r\nHost: t\r\n\r\n");
-    Thread.sleep(300.msecs); // o cliente não lê: o send do servidor enche e dá EAGAIN
-    assert(s.loop.stats().inFlight == 1, "a resposta grande deveria estar pendente (EPOLLOUT)");
+    Thread.sleep(300.msecs); // the client does not read: the server's send fills up and gives EAGAIN
+    assert(s.loop.stats().inFlight == 1, "the large response should be pending (EPOLLOUT)");
     auto r = c.rx();
     assert(r.status == 200 && r.body.length == (8 << 20), "corpo incompleto");
     foreach (ch; r.body)
         assert(ch == 'x');
     c.hang();
     assert(waitFor(() => s.loop.stats().inFlight == 0, 500));
-    ok("resposta de 8 MiB com cliente lento (escrita parcial + EPOLLOUT)");
+    ok("8 MiB response with a slow client (partial write + EPOLLOUT)");
 }
 
 void testEncolherPools()
@@ -456,11 +456,11 @@ void testEncolherPools()
     }
     assert(waitFor(() => s.loop.stats().inFlight == 0, 1000));
     auto st = s.loop.stats();
-    assert(st.workersCreated >= 150, "a rajada deveria ter criado ~200 fibers");
-    assert(st.idleWorkers <= 8, "fibers ociosos acima do teto não foram desfeitos");
+    assert(st.workersCreated >= 150, "the burst should have created ~200 fibers");
+    assert(st.idleWorkers <= 8, "idle fibers above the ceiling were not torn down");
     assert(st.workersRetired >= st.workersCreated - 8);
-    assert(waitFor(() => s.loop.trimCount() == 1, 3500), "a limpeza de memória pós-rajada não rodou");
-    printf("ok  rajada de %d: %zu fibers criados, %zu desfeitos, %zu ociosos no pool\n",
+    assert(waitFor(() => s.loop.trimCount() == 1, 3500), "the post-burst memory cleanup did not run");
+    printf("ok  burst of %d: %zu fibers created, %zu torn down, %zu idle in the pool\n",
         N, st.workersCreated, st.workersRetired, st.idleWorkers);
 }
 
@@ -485,7 +485,7 @@ void testEntradaInvalida()
         assert(r.status == cs.status, cs.raw);
         c.hang();
     }
-    // head maior que o limite
+    // head larger than the limit
     auto c = dial(s.port);
     string h = "GET /fast HTTP/1.1\r\nHost: t\r\nX: ";
     foreach (_; 0 .. 9000)
@@ -493,7 +493,7 @@ void testEntradaInvalida()
     c.tx(h ~ "\r\n\r\n");
     assert(c.rx().status == 431);
     c.hang();
-    // headers demais (acima da tabela de 32 do fiber)
+    // too many headers (above the fiber's table of 32)
     c = dial(s.port);
     string many = "GET /fast HTTP/1.1\r\nHost: t\r\n";
     foreach (i; 0 .. 40)
@@ -501,12 +501,12 @@ void testEntradaInvalida()
     c.tx(many ~ "\r\n");
     assert(c.rx().status == 431);
     c.hang();
-    // corpo maior que o limite (Limits.maxBodyBytes)
+    // body larger than the limit (Limits.maxBodyBytes)
     c = dial(s.port);
     c.tx("POST /fast HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n");
     assert(c.rx().status == 413);
     c.hang();
-    ok("entradas inválidas: 501, 505, 400 (smuggling e obs-fold), 431, 413");
+    ok("invalid inputs: 501, 505, 400 (smuggling and obs-fold), 431, 413");
 }
 
 void testPrazosDeConexao()
@@ -517,20 +517,20 @@ void testPrazosDeConexao()
     auto s = start(cfg);
     scope (exit) stop(s);
 
-    // slowloris: começa o head e para
+    // slowloris: starts the head and stops
     auto c = dial(s.port);
     c.tx("GET /fast HTTP/1.1\r\nHost");
     auto r = c.rx();
-    assert(r.status == 408 || r.closed, "head lento deveria ser cortado");
+    assert(r.status == 408 || r.closed, "slow head should be cut off");
     c.hang();
 
-    // keep-alive ocioso: conecta e não manda nada
+    // idle keep-alive: connects and sends nothing
     c = dial(s.port);
     r = c.rx();
-    assert(r.closed && r.status == 0, "conexão ociosa deveria ser fechada");
+    assert(r.closed && r.status == 0, "idle connection should be closed");
     c.hang();
     assert(waitFor(() => s.loop.stats().connections == 0, 500));
-    ok("prazos: head lento (408) e conexão ociosa fechada");
+    ok("deadlines: slow head (408) and idle connection closed");
 }
 
 void testPararComGentileza()
@@ -539,19 +539,19 @@ void testPararComGentileza()
     auto c = dial(s.port);
     c.tx("GET /nap/300 HTTP/1.1\r\nHost: t\r\n\r\n");
     assert(waitFor(() => s.loop.stats().inFlight == 1, 1000));
-    s.loop.stop(); // pede parada com uma requisição em curso
+    s.loop.stop(); // requests a stop with a request in progress
     auto r = c.rx();
-    assert(r.status == 200 && r.body == "slept", "a requisição em curso deveria terminar");
+    assert(r.status == 200 && r.body == "slept", "the in-progress request should finish");
     char[1] b;
-    assert(rd(c.fd, b.ptr, 1) == 0, "durante a parada, o servidor fecha a conexão depois da resposta");
+    assert(rd(c.fd, b.ptr, 1) == 0, "during the stop, the server closes the connection after the response");
     c.hang();
     s.thread.join();
-    ok("parada graciosa: termina a requisição em curso e encerra o loop");
+    ok("graceful stop: finishes the in-progress request and ends the loop");
 }
 
 void testDoisWorkers()
 {
-    // dois loops na mesma porta (SO_REUSEPORT), compartilhando o mesmo App
+    // two loops on the same port (SO_REUSEPORT), sharing the same App
     auto a = start(ServerConfig.init, 0, true);
     auto b = start(ServerConfig.init, a.port, true);
     scope (exit) { stop(a); stop(b); }
@@ -560,7 +560,7 @@ void testDoisWorkers()
         auto r = request(a.port, "/nap/20");
         assert(r.status == 200 && r.body == "slept");
     }
-    ok("dois workers com SO_REUSEPORT na mesma porta");
+    ok("two workers with SO_REUSEPORT on the same port");
 }
 
 void testDateEDetector()
@@ -572,17 +572,17 @@ void testDateEDetector()
     import std.string : indexOf;
 
     auto d = r.head.indexOf("Date: ");
-    assert(d >= 0, "resposta sem header Date");
+    assert(d >= 0, "response without a Date header");
     auto line = r.head[d + 6 .. d + 6 + 29];
     assert(line[$ - 4 .. $] == " GMT" && line[3] == ',' && line[7] == ' ', line);
 
-    // esperar com sleep NÃO é travar o worker; Thread.sleep é
+    // waiting with sleep does NOT stall the worker; Thread.sleep does
     assert(request(s.port, "/nap/200").status == 200);
-    assert(s.loop.stats().stalls == 0, "sleep cooperativo foi tratado como travamento");
+    assert(s.loop.stats().stalls == 0, "cooperative sleep was treated as a stall");
     assert(request(s.port, "/block").status == 200);
     auto st = s.loop.stats();
-    assert(st.stalls == 1 && st.maxStallMs >= 100, "o handler bloqueante deveria ser detectado");
-    ok("header Date presente; detector de loop travado conta só o handler que bloqueia");
+    assert(st.stalls == 1 && st.maxStallMs >= 100, "the blocking handler should be detected");
+    ok("Date header present; stall detector counts only the handler that blocks");
 }
 
 void testExpectContinue()
@@ -590,7 +590,7 @@ void testExpectContinue()
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
 
-    // o cliente manda só o head e espera o 100 antes de mandar o corpo
+    // the client sends only the head and waits for the 100 before sending the body
     auto c = dial(s.port);
     c.tx("POST /len HTTP/1.1\r\nHost: t\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n");
     auto r = c.rx();
@@ -599,20 +599,20 @@ void testExpectContinue()
     r = c.rx();
     assert(r.status == 200 && r.body == "5", r.head);
 
-    // a mesma conexão (keep-alive) serve outra requisição com Expect
+    // the same connection (keep-alive) serves another request with Expect
     c.tx("POST /len HTTP/1.1\r\nHost: t\r\nContent-Length: 3\r\nExpect: 100-Continue\r\n\r\n");
     assert(c.rx().status == 100);
     c.tx("abc");
     r = c.rx();
     assert(r.status == 200 && r.body == "3");
 
-    // corpo já junto com o head: não precisa do 100
+    // body already together with the head: no 100 needed
     c.tx("POST /len HTTP/1.1\r\nHost: t\r\nContent-Length: 2\r\nExpect: 100-continue\r\n\r\nhi");
     r = c.rx();
     assert(r.status == 200 && r.body == "2", r.head);
     c.hang();
 
-    // outras expectativas: 417; corpo grande demais: 413 sem prometer 100
+    // other expectations: 417; body too large: 413 without promising 100
     c = dial(s.port);
     c.tx("POST /len HTTP/1.1\r\nHost: t\r\nContent-Length: 1\r\nExpect: algo-estranho\r\n\r\n");
     assert(c.rx().status == 417);
@@ -621,12 +621,12 @@ void testExpectContinue()
     c.tx("POST /len HTTP/1.1\r\nHost: t\r\nContent-Length: 99999999\r\nExpect: 100-continue\r\n\r\n");
     assert(c.rx().status == 413);
     c.hang();
-    ok("Expect: 100-continue: aval antes do corpo, 417 para outras expectativas, 413 sem 100");
+    ok("Expect: 100-continue: go-ahead before the body, 417 for other expectations, 413 without 100");
 }
 
 void testOffload()
 {
-    // pool configurado em main: 2 threads, fila de 2
+    // pool configured in main: 2 threads, queue of 2
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
 
@@ -636,16 +636,16 @@ void testOffload()
     {
         c = dial(s.port, 8000);
         c.tx("GET /off/200 HTTP/1.1\r\nHost: t\r\n\r\n");
-        Thread.sleep(20.msecs); // dá tempo de uma thread do pool tirar a tarefa da fila
+        Thread.sleep(20.msecs); // gives a pool thread time to take the task off the queue
     }
     assert(waitFor(() => s.loop.stats().inFlight == 4, 1000));
 
-    // com o pool inteiro ocupado, o worker continua livre
+    // with the whole pool busy, the worker stays free
     immutable t1 = MonoTime.currTime;
     auto f = request(s.port, "/fast");
-    assert(f.status == 200 && (MonoTime.currTime - t1).total!"msecs" < 50, "o worker ficou preso pelo offload");
+    assert(f.status == 200 && (MonoTime.currTime - t1).total!"msecs" < 50, "the worker got stuck on offload");
 
-    // 5ª tarefa: 2 rodando + 2 na fila = cheio
+    // 5th task: 2 running + 2 in the queue = full
     auto sat = request(s.port, "/off/200");
     assert(sat.status == 500, sat.head);
 
@@ -656,19 +656,19 @@ void testOffload()
         c.hang();
     }
     immutable ms = (MonoTime.currTime - t0).total!"msecs";
-    assert(ms >= 380 && ms < 900, "4 tarefas de 200 ms em 2 threads deveriam levar ~400 ms");
-    ok("offload: pool de 2 threads, fila de 2, worker livre durante o trabalho, saturação vira erro");
+    assert(ms >= 380 && ms < 900, "4 tasks of 200 ms on 2 threads should take ~400 ms");
+    ok("offload: pool of 2 threads, queue of 2, worker free during the work, saturation becomes an error");
 
-    // cliente some enquanto o trabalho roda: o fiber é cancelado na hora, o trabalho termina sozinho
+    // client goes away while the work runs: the fiber is cancelled at once, the work finishes by itself
     auto c = dial(s.port);
     c.tx("GET /off/300 HTTP/1.1\r\nHost: t\r\n\r\n");
     assert(waitFor(() => s.loop.stats().inFlight == 1, 1000));
     c.hang();
-    assert(waitFor(() => s.loop.stats().inFlight == 0, 200), "fiber deveria ser cancelado sem esperar o trabalho");
-    Thread.sleep(400.msecs); // o job termina e fecha o eventfd sem estragar nada
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 200), "fiber should be cancelled without waiting for the work");
+    Thread.sleep(400.msecs); // the job finishes and closes the eventfd without breaking anything
     auto again = request(s.port, "/off/10");
     assert(again.status == 200, again.head);
-    ok("offload: cancelamento solta o fiber e o trabalho termina sozinho");
+    ok("offload: cancellation releases the fiber and the work finishes by itself");
 }
 
 void main()
@@ -690,5 +690,5 @@ void main()
     testDateEDetector();
     testOffload();
     testExpectContinue();
-    printf("todos os testes de rede passaram\n");
+    printf("all network tests passed\n");
 }

@@ -1,5 +1,5 @@
-/// Parser incremental e zero-copy do head de uma requisição HTTP/1.1.
-/// Puro (sem I/O): recebe bytes, devolve fatias. Alvo de fuzzing no M3.
+/// Incremental, zero-copy parser for the head of an HTTP/1.1 request.
+/// Pure (no I/O): takes bytes, returns slices. Fuzzing target since M3.
 module vela.http.parser;
 
 import vela.http.types;
@@ -8,9 +8,9 @@ import vela.http.types;
 
 struct Limits
 {
-    size_t maxHeadBytes = 8 * 1024;   /// 431 acima disso
-    size_t maxTargetBytes = 4 * 1024; /// 414 acima disso
-    size_t maxBodyBytes = 1024 * 1024; /// 413 acima disso
+    size_t maxHeadBytes = 8 * 1024;   /// 431 above this
+    size_t maxTargetBytes = 4 * 1024; /// 414 above this
+    size_t maxBodyBytes = 1024 * 1024; /// 413 above this
 }
 
 enum ParseStatus { complete, incomplete, error }
@@ -18,9 +18,9 @@ enum ParseStatus { complete, incomplete, error }
 struct HeadResult
 {
     ParseStatus status;
-    size_t headLength;    /// bytes do head, incluindo o CRLFCRLF final
-    size_t contentLength; /// tamanho do corpo a ler depois do head
-    int errorStatus;      /// código HTTP a responder quando status == error
+    size_t headLength;    /// head bytes, including the final CRLFCRLF
+    size_t contentLength; /// size of the body to read after the head
+    int errorStatus;      /// HTTP status to respond with when status == error
 }
 
 private HeadResult fail(int code) pure nothrow @nogc
@@ -41,7 +41,7 @@ private bool isTchar(char c) pure nothrow @nogc
     }
 }
 
-/// Procura "\r\n\r\n". O M4 troca por busca vetorizada (core.simd).
+/// Finds "\r\n\r\n". M4 replaces it with a vectorized search (core.simd).
 private ptrdiff_t findHeadEnd(scope const(char)[] buf) pure nothrow @nogc
 {
     if (buf.length < 4)
@@ -52,9 +52,9 @@ private ptrdiff_t findHeadEnd(scope const(char)[] buf) pure nothrow @nogc
     return -1;
 }
 
-/// Faz o parse do head em `buf`. Em `complete`, todas as fatias de `req`
-/// apontam para dentro de `buf`; `headerStore` é fornecido pelo chamador
-/// (array fixo da conexão), então nada é alocado.
+/// Parses the head in `buf`. On `complete`, all slices of `req`
+/// point inside `buf`; `headerStore` is supplied by the caller
+/// (the connection's fixed array), so nothing is allocated.
 HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
     return scope HeaderField[] headerStore, in Limits limits = Limits.init) pure nothrow @nogc
 {
@@ -65,10 +65,10 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
     if (end + 4 > limits.maxHeadBytes)
         return fail(431);
 
-    const(char)[] head = buf[0 .. end + 2]; // inclui o CRLF da última linha
+    const(char)[] head = buf[0 .. end + 2]; // includes the CRLF of the last line
     size_t p = 0;
 
-    // ---- linha de requisição: METHOD SP target SP HTTP/1.x CRLF
+    // ---- request line: METHOD SP target SP HTTP/1.x CRLF
     size_t s = p;
     while (p < head.length && head[p] != ' ')
         p++;
@@ -88,14 +88,14 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
     if (req.target.length > limits.maxTargetBytes)
         return fail(414);
     if (req.target[0] != '/' && !(req.method == Method.OPTIONS && req.target == "*"))
-        return fail(400); // só origin-form no MVP
+        return fail(400); // origin-form only in the MVP
     foreach (char c; req.target)
         if (c <= ' ' || c == 0x7f)
             return fail(400);
     splitTarget(req.target, req.path, req.query);
     p++;
 
-    // "HTTP/" digito "." digito CRLF: formato errado = 400; versão que não é 1.0/1.1 = 505
+    // "HTTP/" digit "." digit CRLF: wrong format = 400; a version that is not 1.0/1.1 = 505
     if (p + 10 > head.length || head[p .. p + 5] != "HTTP/" || head[p + 6] != '.'
         || head[p + 5] < '0' || head[p + 5] > '9' || head[p + 7] < '0' || head[p + 7] > '9'
         || head[p + 8 .. p + 10] != "\r\n")
@@ -115,7 +115,7 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
     while (p < head.length)
     {
         if (head[p] == ' ' || head[p] == '\t')
-            return fail(400); // obs-fold é proibido (RFC 9112 §5.2)
+            return fail(400); // obs-fold is forbidden (RFC 9112 §5.2)
         s = p;
         while (p < head.length && head[p] != ':' && head[p] != '\r')
         {
@@ -160,7 +160,7 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
                 v = v * 10 + (c - '0');
             }
             if (sawLength && v != contentLength)
-                return fail(400); // valores divergentes: possível smuggling
+                return fail(400); // conflicting values: possible smuggling
             sawLength = true;
             contentLength = v;
         }
@@ -181,9 +181,9 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
     }
 
     if (sawTE && sawLength)
-        return fail(400); // RFC 9112 §6.1: rejeitar para evitar smuggling
+        return fail(400); // RFC 9112 §6.1: reject to avoid smuggling
     if (sawTE)
-        return fail(501); // corpo chunked na requisição entra no M3
+        return fail(501); // chunked request bodies are not supported yet
     if (contentLength > limits.maxBodyBytes)
         return fail(413);
 
@@ -204,7 +204,7 @@ unittest
     assert(h.contentLength == 7 && raw[h.headLength .. $] == "{\"a\":1}");
     assert(r.keepAlive);
 
-    // incompleto
+    // incomplete
     assert(parseRequestHead("GET / HTTP/1.1\r\nHost: a\r\n", r, store[]).status == ParseStatus.incomplete);
     // smuggling: CL + TE
     auto bad = parseRequestHead("POST / HTTP/1.1\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n",
@@ -212,9 +212,9 @@ unittest
     assert(bad.status == ParseStatus.error && bad.errorStatus == 400);
     // obs-fold
     assert(parseRequestHead("GET / HTTP/1.1\r\nA: b\r\n c\r\n\r\n", r, store[]).errorStatus == 400);
-    // versão
+    // version
     assert(parseRequestHead("GET / HTTP/2.0\r\n\r\n", r, store[]).errorStatus == 505);
-    // HTTP/1.0 sem keep-alive fecha
+    // HTTP/1.0 without keep-alive closes
     parseRequestHead("GET / HTTP/1.0\r\n\r\n", r, store[]);
     assert(!r.keepAlive);
 }

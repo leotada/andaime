@@ -1,4 +1,4 @@
-/// Alvo do libFuzzer (LDC: -fsanitize=fuzzer,address). Veja tools/fuzz.sh.
+/// libFuzzer target (LDC: -fsanitize=fuzzer,address). See tools/fuzz.sh.
 module libfuzzer_parse;
 
 import invariants;

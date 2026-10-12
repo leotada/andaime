@@ -1,31 +1,30 @@
-# Spike do M2: epoll + um fiber por requisição
+# M2 spike: epoll + one fiber per request
 
-Prova de conceito descartável (não faz parte dos pacotes DUB). Um servidor epoll
-edge-triggered de uma thread; cada requisição roda num `Fiber` reaproveitado, e o
-handler "espera uma API externa" com `awaitSleep` (suspende o fiber, nenhuma thread
-bloqueada). Há também um gerador de carga no mesmo arquivo.
+A throwaway proof of concept (not part of the DUB packages). A single-threaded, edge-triggered
+epoll server; each request runs on a reused `Fiber`, and the handler "waits for an external API" with
+`awaitSleep` (the fiber suspends, no thread is blocked). A load generator lives in the same file.
 
 ```sh
 ldmd2 -O3 -release spike.d -ofspike
 ulimit -n 20000
-./spike server 18081 3000 100000 &     # porta, espera simulada (ms), teto de requisições em voo
-./spike client 18081 10000 1500 3000   # porta, conexões, rampa (ms), espera esperada (ms)
+./spike server 18081 3000 100000 &     # port, simulated wait (ms), in-flight request ceiling
+./spike client 18081 10000 1500 3000   # port, connections, ramp (ms), expected wait (ms)
 ```
 
-## Resultados (LDC 1.43 -O3, container de 2 vCPU, loopback, handler mínimo)
+## Results (LDC 1.43 -O3, 2 vCPU container, loopback, minimal handler)
 
-| Cenário                         | RSS do servidor | Sobrecusto sobre a espera (p50 / p99 / máx) |
-|---------------------------------|-----------------|---------------------------------------------|
-| repouso                         | 6,2 MB          | —                                           |
-| 1.000 em voo (espera de 3 s)    | 14,7 MB         | 1,0 / 3,1 / 3,2 ms                          |
-| 10.000 em voo (espera de 3 s)   | 88,5 MB         | 1,1 / 4,8 / 8,2 ms                          |
-| teto de 256 com 1.000 conexões  | 8,7 MB          | 744 respostas 503 imediatas (p50 0,1 ms)    |
+| Scenario                        | Server RSS | Overhead over the wait (p50 / p99 / max)   |
+|---------------------------------|------------|--------------------------------------------|
+| idle                            | 6.2 MB     | —                                          |
+| 1,000 in flight (3 s wait)      | 14.7 MB    | 1.0 / 3.1 / 3.2 ms                         |
+| 10,000 in flight (3 s wait)     | 88.5 MB    | 1.1 / 4.8 / 8.2 ms                         |
+| ceiling of 256 with 1,000 conns | 8.7 MB     | 744 immediate 503 responses (p50 0.1 ms)   |
 
-- Custo por requisição em voo: ~8,2 KiB (4 KiB de buffer + ~4 KiB de fiber).
-- Sem falhas em 10.000 conexões simultâneas, numa única thread.
-- O RSS não volta depois da carga (89,7 MB ao terminar): fibers e buffers ficam em pool.
-  O engine real precisa de uma política para encolher os pools.
-- Não entram na conta: memória do kernel dos sockets (fora do RSS) e a stack real de um handler
-  de verdade (o handler do spike quase não usa stack).
-- Não cobre: cancelamento quando o cliente desconecta com o fiber suspenso, parser HTTP de
-  verdade, mais de uma thread, TLS.
+- Cost per in-flight request: ~8.2 KiB (4 KiB buffer + ~4 KiB fiber).
+- No failures with 10,000 simultaneous connections on a single thread.
+- RSS does not come back after the load (89.7 MB at the end): fibers and buffers stay pooled.
+  The real engine needs a policy to shrink the pools.
+- Not counted: kernel memory for the sockets (outside RSS) and the real stack of an actual handler
+  (the spike's handler barely uses any stack).
+- Not covered: cancellation when the client disconnects with the fiber suspended, a real HTTP parser,
+  more than one thread, TLS.

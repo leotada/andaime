@@ -1,4 +1,4 @@
 name "web"
-description "Roteamento, introspecção de handlers, JSON e middleware. Não conhece sockets."
+description "Routing, handler introspection, JSON and middleware. Knows nothing about sockets."
 targetType "library"
 dependency "vela:http" version="*"

@@ -1,4 +1,4 @@
-/// openapi.json gerado das assinaturas.
+/// openapi.json generated from the signatures.
 module openapi_test;
 
 import vela;
@@ -21,7 +21,7 @@ struct NewUser
 
 struct UserOut { long id; string name; }
 
-@summary("Busca um usuário")
+@summary("Fetch a user")
 UserOut getUser(long id, Header!"X-Trace" trace, bool verbose = false) => UserOut(id, "x");
 UserOut[] list(int limit = 20, Optional!string q = Optional!string.init, Order order = Order.asc) => null;
 UserOut create(JsonBody!NewUser body_, Context ctx) => UserOut(1, body_.name);
@@ -37,7 +37,7 @@ unittest
     api.post!("/users", create);
     api.del!("/users/{id}", remove);
     app.get!("/files/{*rest}", files);
-    app.serveOpenApi(OpenApiInfo("Teste", "9.9.9"));
+    app.serveOpenApi(OpenApiInfo("Test", "9.9.9"));
     auto c = TestClient(app);
 
     auto r = c.get("/openapi.json");
@@ -45,11 +45,11 @@ unittest
     auto j = r.body;
 
     import std.json : parseJSON, JSONType;
-    auto doc = parseJSON(j); // tem que ser JSON válido
-    assert(doc["openapi"].str == "3.0.3" && doc["info"]["title"].str == "Teste");
+    auto doc = parseJSON(j); // must be valid JSON
+    assert(doc["openapi"].str == "3.0.3" && doc["info"]["title"].str == "Test");
 
     auto get = doc["paths"]["/users/{id}"]["get"];
-    assert(get["operationId"].str == "getUser" && get["summary"].str == "Busca um usuário");
+    assert(get["operationId"].str == "getUser" && get["summary"].str == "Fetch a user");
     bool sawPath, sawHeader, sawQuery;
     foreach (p; get["parameters"].array)
     {
@@ -82,12 +82,12 @@ unittest
     assert(props["tags"]["type"].str == "array");
     string[] req;
     foreach (x; nu["required"].array) req ~= x.str;
-    assert(req == ["name", "age", "home", "tags"], j);   // Optional e @optional ficam de fora
+    assert(req == ["name", "age", "home", "tags"], j);   // Optional and @optional are left out
 
-    // Context e Local não aparecem; delete sem corpo documenta 204
+    // Context and Local do not appear; delete without a body documents 204
     auto del = doc["paths"]["/api/users/{id}"]["delete"];
     assert(del["parameters"].array.length == 1 && "204" in del["responses"].object);
-    // {*rest} vira {rest}
+    // {*rest} becomes {rest}
     assert("/files/{rest}" in doc["paths"].object);
 
     auto d = c.get("/docs");

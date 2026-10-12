@@ -23,6 +23,35 @@ void main()
 }
 ```
 
+## Potencial
+
+**Para quem escreve a API**
+- Assinatura é contrato: parâmetros de caminho, query, headers e corpo JSON tipado são extraídos e validados
+  a partir dos tipos e nomes da função. Erro de entrada vira 422 no formato do FastAPI; o handler só roda com dados válidos.
+- Documentação que não desatualiza: o `openapi.json` e o Swagger UI saem das mesmas assinaturas que geram o dispatch.
+- Respostas fluidas: devolva `string`, struct, array, `WithStatus!T` ou `Response`; `throw new HttpError(...)` para falhas.
+- Erros de compilação de uma linha dizendo o que corrigir, bons para humanos e para agentes de IA (sem *backtrace*
+  de templates), e tipos previsíveis que mantêm o `serve-d` responsivo.
+
+**Para quem opera o servidor**
+- Não bloqueia: um fiber por requisição; banco, API externa e DNS suspendem só o fiber, qualquer que seja o número
+  de requisições em voo. Trabalho pesado vai para um pool de threads limitado (`offload`), que recusa com `PoolSaturated`
+  em vez de crescer sem teto.
+- Memória pensada para VPS barata: buffers de rede reaproveitados, tabela de headers por fiber, teto de requisições
+  em voo (503 + `Retry-After`). Medido: 1.000 requisições simultâneas em ~25 MB de RSS; o caminho quente não aloca no GC.
+- Robusto por padrão: prazos de head/ocioso/escrita/requisição, proteção contra slowloris, cancelamento quando o
+  cliente some (o `scope(exit)` do handler roda), parada graciosa, parser HTTP/1.1 zero-copy fuzzado com ASan.
+- Compilação rápida: o `app.d` do exemplo compila em ~250 ms no DMD, porque o dispatch usa `static foreach` e
+  `static if` rasos em vez de cadeias profundas de templates.
+
+**Para crescer**
+- Camadas separadas (`http` sem I/O, `web`, `engine`) e drivers opcionais fora do núcleo (`drivers/pg`): o `vela`
+  não depende de libpq. Novos drivers e backends (kqueue, io_uring) entram sem mexer na camada de aplicação.
+- Middleware em cebola com grupos de rotas, `ctx.locals`, CORS, arquivos estáticos e `onError`, tudo com D idiomático
+  (slices, strings, delegates, DTOs), sem anotações defensivas de `@nogc`.
+
+Comece por [docs/quickstart.md](docs/quickstart.md).
+
 ## Estado
 
 Camada web completa e testada (M1). O M2 está fechado no Linux: `EpollLoop` com epoll

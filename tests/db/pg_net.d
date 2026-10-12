@@ -24,7 +24,9 @@ __gshared PgConfig cfg;
 
 struct User { int id; string name; Maybe!string email; }
 
-PgPool db() => pgPool(cfg);
+PgPool db() @trusted => pgPool(cfg); // `cfg` is __gshared, written once before the workers start
+
+@safe:
 
 // ------------------------------------------------------------ handlers
 
@@ -41,7 +43,7 @@ string user(int id)
 string wait(int ms)
 {
     auto r = db.query("select pg_sleep($1::float8 / 1000)::text, $2::int + 1 as n", ms, 41);
-    return "slept " ~ r.text(0, 1).idup;
+    return "slept " ~ r.get!string(0, 1);
 }
 
 string types()
@@ -105,6 +107,8 @@ App buildApp()
 }
 
 // ------------------------------------------------------------ infrastructure
+
+@system: // test harness: raw sockets, printf, threads
 
 struct Server { EpollLoop loop; Thread thread; ushort port; }
 
@@ -225,7 +229,7 @@ void setup()
     c.exec("insert into t_users values (1, 'ana', 'ana@x.com'), (2, 'bia', null)");
 }
 
-void testPreparados()
+void testPrepared()
 {
     auto c = PgConn.connect(conninfo, 5.seconds, 10.seconds, true);
     scope (exit) c.shutdown();
@@ -263,7 +267,7 @@ string itoa(int v)
     return t[n .. $].idup;
 }
 
-void testBasico()
+void testBasic()
 {
     auto s = start();
     scope (exit) stop(s);
@@ -282,7 +286,7 @@ void testBasico()
     ok("queries, typed parameters, Maybe, error with SQLSTATE, transaction with rollback");
 }
 
-void testNaoBloqueia()
+void testNonBlocking()
 {
     cfg.maxConns = 50;
     auto s = start();
@@ -311,7 +315,7 @@ void testNaoBloqueia()
     assert(ms < 1500);
 }
 
-void testPoolPequeno()
+void testSmallPool()
 {
     cfg.maxConns = 2;
     auto s = start();
@@ -334,7 +338,7 @@ void testPoolPequeno()
     ok("pool with 2 connections: 6 queries wait their turn without stalling the worker");
 }
 
-void testCancelamento()
+void testCancellation()
 {
     cfg.maxConns = 4;
     auto s = start();
@@ -355,7 +359,7 @@ void testCancelamento()
     ok("client goes away midway through the query: fiber cancelled, server receives the cancellation");
 }
 
-void testPrazoDaConsulta()
+void testQueryDeadline()
 {
     cfg.maxConns = 4;
     cfg.queryTimeout = 300.msecs;
@@ -384,12 +388,12 @@ void main()
     cfg.conninfo = conninfo ~ " application_name=vela_test";
     configureOffload(2, 64);
     setup();
-    testPreparados();
-    testBasico();
-    testNaoBloqueia();
-    testPoolPequeno();
-    testCancelamento();
-    testPrazoDaConsulta();
+    testPrepared();
+    testBasic();
+    testNonBlocking();
+    testSmallPool();
+    testCancellation();
+    testQueryDeadline();
     printf("all Postgres tests passed\n");
 }
 

@@ -21,6 +21,12 @@ import core.time;
 
 __gshared string plainBase, tlsBase, certFile;
 
+string plainBase_() @trusted => plainBase; // __gshared: written once before the workers start
+string tlsBase_() @trusted => tlsBase;
+string certFile_() @trusted => certFile;
+
+@safe:
+
 HttpClient cli()
 {
     static HttpClient c; // per worker (thread-local)
@@ -28,17 +34,17 @@ HttpClient cli()
     {
         HttpClientConfig cfg;
         cfg.timeout = 2.seconds;
-        cfg.caFile = certFile;
+        cfg.caFile = certFile_;
         c = httpClient(cfg);
     }
     return c;
 }
 
-string hello() => cli().get(plainBase ~ "/hello").body;
-string chunked() => cli().get(plainBase ~ "/chunked").body;
-string untilClose() => cli().get(plainBase ~ "/close").body;
-string stale() => cli().get(plainBase ~ "/stale").body;
-string viaTls() => cli().get(tlsBase ~ "/hello").body;
+string hello() => cli().get(plainBase_ ~ "/hello").body;
+string chunked() => cli().get(plainBase_ ~ "/chunked").body;
+string untilClose() => cli().get(plainBase_ ~ "/close").body;
+string stale() => cli().get(plainBase_ ~ "/stale").body;
+string viaTls() => cli().get(tlsBase_ ~ "/hello").body;
 
 string tlsUntrusted()
 {
@@ -46,21 +52,21 @@ string tlsUntrusted()
     cfg.timeout = 2.seconds;
     auto c = new HttpClient(cfg);
     try
-        return "aceitou " ~ c.get(tlsBase ~ "/hello").body;
+        return "accepted " ~ c.get(tlsBase_ ~ "/hello").body;
     catch (HttpClientError e)
-        return "recusou";
+        return "refused";
 }
 
 string post()
 {
-    auto r = cli().postJson(plainBase ~ "/echo", `{"a":1}`);
+    auto r = cli().postJson(plainBase_ ~ "/echo", `{"a":1}`);
     return r.body;
 }
 
 string slow(int ms)
 {
     try
-        return cli().get(plainBase ~ "/slow/" ~ itoa(ms)).body;
+        return cli().get(plainBase_ ~ "/slow/" ~ itoa(ms)).body;
     catch (HttpClientTimeout)
         return "timeout";
 }
@@ -68,7 +74,7 @@ string slow(int ms)
 string big()
 {
     try
-        return cli().get(plainBase ~ "/big").body;
+        return cli().get(plainBase_ ~ "/big").body;
     catch (HttpClientError e)
         return "limit";
 }
@@ -109,6 +115,8 @@ App buildApp()
 }
 
 // ------------------------------------------------------------ infrastructure
+
+@system: // test harness: raw sockets, printf, threads
 
 struct Server { EpollLoop loop; Thread thread; ushort port; }
 
@@ -218,7 +226,7 @@ string env(const(char)* name)
 
 // ------------------------------------------------------------ tests
 
-void testBasico()
+void testBasic()
 {
     auto s = start();
     scope (exit) stop(s);
@@ -237,11 +245,11 @@ void testTls()
     auto r = fetch(s.port, "/tls");
     assert(r.status == 200 && r.body == "hello", r.body);
     r = fetch(s.port, "/untrusted");
-    assert(r.body == "recusou", r.body);
+    assert(r.body == "refused", r.body);
     ok("HTTPS with a verified certificate; a self-signed certificate without a CA is refused");
 }
 
-void testKeepAliveEStale()
+void testKeepAliveAndStale()
 {
     auto s = start();
     scope (exit) stop(s);
@@ -272,7 +280,7 @@ int getUpstreamConns()
     return c.get(plainBase ~ "/stats").body.to!int;
 }
 
-void testNaoBloqueia()
+void testNonBlocking()
 {
     auto s = start();
     scope (exit) stop(s);
@@ -300,7 +308,7 @@ void testNaoBloqueia()
     assert(ms < 2500);
 }
 
-void testPrazoELimite()
+void testDeadlineAndLimit()
 {
     auto s = start();
     scope (exit) stop(s);
@@ -311,7 +319,7 @@ void testPrazoELimite()
     ok("outgoing request deadline: HttpClientTimeout in ~2 s (the upstream took 5 s)");
 }
 
-void testCancelamento()
+void testCancellation()
 {
     auto s = start();
     scope (exit) stop(s);
@@ -345,11 +353,11 @@ void main()
     plainBase = "http://127.0.0.1:" ~ p;
     tlsBase = "https://localhost:" ~ t;
     configureOffload(2, 64);
-    testBasico();
+    testBasic();
     testTls();
-    testKeepAliveEStale();
-    testNaoBloqueia();
-    testPrazoELimite();
-    testCancelamento();
+    testKeepAliveAndStale();
+    testNonBlocking();
+    testDeadlineAndLimit();
+    testCancellation();
     printf("all HTTP client tests passed\n");
 }

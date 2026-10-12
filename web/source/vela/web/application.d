@@ -1,6 +1,8 @@
 /// `App`: route registration, middlewares and the per-request entry point.
 module vela.web.application;
 
+@safe:
+
 import vela.http.types;
 import vela.web.context;
 import vela.web.params : HttpError;
@@ -74,7 +76,7 @@ final class Group
         mws ~= mw;
     }
 
-    void use(void function(Context, Next) mw)
+    void use(void function(Context, Next) @safe mw)
     {
         mws ~= (Context c, Next n) => mw(c, n);
     }
@@ -134,7 +136,7 @@ final class App
         middlewares ~= mw;
     }
 
-    void use(void function(Context, Next) mw)
+    void use(void function(Context, Next) @safe mw)
     {
         middlewares ~= (Context c, Next n) => mw(c, n);
     }
@@ -371,7 +373,7 @@ final class App
         renderError(ctx, 500, "internal error");
     }
 
-    private static void logError(Context ctx, Exception e) nothrow
+    private static void logError(Context ctx, Exception e) nothrow @trusted
     {
         import core.stdc.stdio : fprintf, stderr;
 

@@ -1,6 +1,8 @@
 /// Static files: content, ETag/304, index, traversal and symlinks.
 module static_files;
 
+@safe:
+
 import vela;
 import vela.web.testing;
 import core.stdc.stdio : tmpfile;

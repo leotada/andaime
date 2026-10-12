@@ -3,6 +3,8 @@
 /// HTTPS needs libssl.so.3 installed (`libssl3` / `openssl`).
 module vela.engine.tls;
 
+@safe:
+
 version (linux):
 
 import core.sys.posix.dlfcn : dlopen, dlsym, RTLD_NOW, RTLD_GLOBAL;
@@ -63,7 +65,7 @@ private __gshared bool loaded;
 private __gshared string loadError;
 private __gshared Object gLock;
 
-shared static this()
+shared static this() @trusted
 {
     gLock = new Object;
 }

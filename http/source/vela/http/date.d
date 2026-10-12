@@ -2,6 +2,8 @@
 /// Formatting once per second per thread is cheaper than once per response.
 module vela.http.date;
 
+@safe:
+
 import core.stdc.time : time_t, time, tm;
 import core.sys.posix.time : gmtime_r;
 

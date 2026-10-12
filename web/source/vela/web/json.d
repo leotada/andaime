@@ -2,6 +2,8 @@
 /// and reads without an intermediate DOM. Light Phobos only; no std.json.
 module vela.web.json;
 
+@safe:
+
 import vela.http.buffer;
 import vela.web.dto;
 import vela.web.params : Optional, isOptional, isCharType;

@@ -2,6 +2,8 @@
 /// `Request` (slices) and writes into a response buffer.
 module vela.web;
 
+@safe:
+
 public import vela.web.application;
 public import vela.web.context;
 public import vela.web.params;

@@ -1,6 +1,8 @@
 /// Serializes the HTTP/1.1 response head straight into a ByteBuffer.
 module vela.http.writer;
 
+@safe:
+
 import vela.http.types;
 import vela.http.buffer;
 

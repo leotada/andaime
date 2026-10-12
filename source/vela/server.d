@@ -2,6 +2,8 @@
 /// It is the only module that knows both layers.
 module vela.server;
 
+@safe:
+
 import vela.http;
 import vela.web.application : App;
 import vela.web.context : Context;
@@ -20,10 +22,12 @@ void serve(App app, ushort port = 8080)
 
 void serve(App app, ServerConfig cfg)
 {
+    // @trusted: the engine is raw-syscall @system code, but it only ever calls back into
+    // `@safe` handlers (RequestCallback is a @safe delegate) and owns its fds and buffers.
     version (linux)
-        runEpollServer(cfg, handlerFactory(app));
+        () @trusted { runEpollServer(cfg, handlerFactory(app)); }();
     else
-        runDevServer(cfg, handlerFactory(app)());
+        () @trusted { runDevServer(cfg, handlerFactory(app)()); }();
 }
 
 /// Creates, for each engine fiber, its own Context and the callback that uses it.

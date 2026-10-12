@@ -13,6 +13,8 @@
 /// Outside a vela fiber (tests, dev server) the delegate runs inline.
 module vela.engine.offload;
 
+@safe:
+
 import core.atomic : atomicFetchSub, atomicStore, atomicLoad;
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
@@ -28,7 +30,7 @@ final class PoolSaturated : Exception
     this() @safe pure nothrow { super("vela: thread pool saturated (queue full)"); }
 }
 
-private alias Job = void delegate();
+private alias Job = void delegate() @safe;
 
 /// Pool with fixed threads and a fixed-size circular queue.
 final class ThreadPool
@@ -40,7 +42,8 @@ final class ThreadPool
     private bool closing;
     private Thread[] threads;
 
-    this(uint nThreads, uint queueMax)
+    // @trusted: druntime's Thread/Mutex/Condition are @system, but they are used here in the plain, sound way
+    this(uint nThreads, uint queueMax) @trusted
     {
         assert(nThreads > 0 && queueMax > 0, "vela: ThreadPool needs threads and a queue > 0");
         mu = new Mutex;
@@ -56,7 +59,7 @@ final class ThreadPool
     }
 
     /// Enqueues; returns false if the queue is full.
-    bool submit(Job j)
+    bool submit(Job j) @trusted
     {
         synchronized (mu)
         {
@@ -70,14 +73,14 @@ final class ThreadPool
     }
 
     /// Tasks waiting for a free thread (metric).
-    size_t pending()
+    size_t pending() @trusted
     {
         synchronized (mu)
             return count;
     }
 
     /// Finishes the already-enqueued tasks and stops the threads.
-    void shutdown()
+    void shutdown() @trusted
     {
         synchronized (mu)
             closing = true;
@@ -87,7 +90,7 @@ final class ThreadPool
         threads = null;
     }
 
-    private void loop()
+    private void loop() @trusted
     {
         for (;;)
         {
@@ -112,14 +115,14 @@ private __gshared ThreadPool gPool;
 private __gshared Mutex gPoolMu;
 private __gshared uint gThreads = 4, gQueue = 256;
 
-shared static this()
+shared static this() @trusted
 {
     gPoolMu = new Mutex;
 }
 
 /// Sets the size of the default pool. Call it before `serve`; once the pool
 /// exists, the call is ignored (returns false).
-bool configureOffload(uint threads, uint queueMax)
+bool configureOffload(uint threads, uint queueMax) @trusted
 {
     synchronized (gPoolMu)
     {
@@ -132,7 +135,7 @@ bool configureOffload(uint threads, uint queueMax)
 }
 
 /// The default pool (created on first use).
-ThreadPool offloadPool()
+ThreadPool offloadPool() @trusted
 {
     synchronized (gPoolMu)
     {
@@ -152,7 +155,7 @@ private final class Call(T)
     static if (!is(T == void))
         T value;
 
-    void release() nothrow @nogc
+    void release() nothrow @nogc @trusted
     {
         if (atomicFetchSub(refs, 1) == 1)
             close(efd);
@@ -161,7 +164,7 @@ private final class Call(T)
 
 /// Runs `work` on a pool thread and returns the result, suspending only the fiber.
 /// Exceptions from `work` are rethrown here.
-T offload(T)(T delegate() work)
+T offload(T)(T delegate() @safe work) @trusted
 {
     if (currentScheduler is null || !currentScheduler.inRequest)
         return work(); // outside a fiber: inline
@@ -171,7 +174,7 @@ T offload(T)(T delegate() work)
     if (call.efd < 0)
         throw new Exception("vela: eventfd failed in offload");
 
-    auto job = delegate() {
+    auto job = delegate() @trusted {
         try
         {
             static if (is(T == void))
@@ -204,7 +207,7 @@ T offload(T)(T delegate() work)
         return call.value;
 }
 
-unittest
+@trusted unittest
 {
     // outside a fiber: inline
     assert(offload(() => 40 + 2) == 42);

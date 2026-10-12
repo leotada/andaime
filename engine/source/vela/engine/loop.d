@@ -7,6 +7,8 @@
 /// (`vela.engine.fiberio`) suspends the fiber and the loop serves other connections.
 module vela.engine.loop;
 
+@safe:
+
 import vela.http.types : Request;
 import vela.http.buffer : ByteBuffer;
 import vela.http.parser : Limits;
@@ -65,7 +67,9 @@ struct LoopStats
 interface EventLoop
 {
     /// Blocks the current thread serving connections until `stop`.
-    void run(ref const ServerConfig cfg, HandlerFactory factory);
+    /// `@system`: loops are raw-syscall code (epoll_wait, fibers, sockets). The handlers
+    /// they call are `@safe` delegates; `vela.server.serve` is the `@trusted` entry point.
+    void run(ref const ServerConfig cfg, HandlerFactory factory) @system;
 
     /// Requests a graceful stop: stops accepting, drains in-flight requests.
     /// May be called from another thread or from a signal handler.

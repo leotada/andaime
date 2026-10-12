@@ -7,9 +7,9 @@ import core.stdc.stdio : printf;
 
 struct Out { long id; long doubled; bool even; }
 
-Out calc(long id, int factor = 2) => Out(id, id * factor, id % 2 == 0);
+Out calc(long id, int factor = 2) @safe => Out(id, id * factor, id % 2 == 0);
 
-void passThrough(Context ctx, Next next)
+void passThrough(Context ctx, Next next) @safe
 {
     ctx.setHeader("X-Engine", "vela");
     next();

@@ -31,6 +31,8 @@ dependency "vela" path="../dapi"
 `source/app.d`:
 
 ```d
+@safe:
+
 import vela;
 
 string hello(string name = "world") => "hello, " ~ name;
@@ -63,11 +65,20 @@ parameter is not in the route, so it comes from the query string; the default va
 | `Local!T`                             | value put by a middleware in `ctx.locals`             |
 | `Context ctx`                         | direct access to request/response                     |
 
+### Handlers are `@safe`
+
+Handlers and middleware are `@safe` delegates, so put `@safe:` at the top of your module (as above). A `@system`
+handler is rejected at compile time with a one-line message. Code that cannot be proven safe (a C call, a
+`__gshared` variable) goes in a small `@trusted` function with a comment saying why it is sound. The database driver,
+the HTTP client and `offload` are `@safe` to call; the engine's raw-syscall code stays behind them.
+
 Conversion or validation failed? The client gets a **422** in FastAPI's format, and your handler does not even run.
 
 ## 5. A small CRUD with JSON
 
 ```d
+@safe:
+
 import vela;
 
 struct UserInput
@@ -125,7 +136,7 @@ curl localhost:8080/users/1
 
 ## 6. Middleware, groups and per-request data
 
-Middleware is a `void(Context, Next)` function, in onion layers:
+Middleware is a `void(Context, Next) @safe` function, in onion layers:
 
 ```d
 void logger(Context ctx, Next next)
@@ -180,7 +191,7 @@ Response quote()
     return Response(r.status, "application/json", r.body);
 }
 
-string heavy() => offload(() => expensiveComputation());               // bounded thread pool
+string heavy() => offload(() => expensiveComputation());               // bounded thread pool; the delegate must be @safe
 ```
 
 Did the client disconnect or the deadline expire midway through a query? The driver cancels on the server and discards the connection.

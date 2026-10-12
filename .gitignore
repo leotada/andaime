@@ -15,7 +15,7 @@ __dummy.html
 *.dll
 *.exe
 
-# Binários dos exemplos e dos testes
+# Binaries of the examples and tests
 examples/*/hello
 examples/*/api
 /vela-test-*

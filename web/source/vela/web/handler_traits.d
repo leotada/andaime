@@ -15,6 +15,8 @@
 ///   6. scalar outside the route                       -> query (default => optional)
 module vela.web.handler_traits;
 
+@safe:
+
 import vela.http.types;
 import vela.web.context;
 import vela.web.params;
@@ -97,6 +99,15 @@ ptrdiff_t indexOfName(const string[] names, string name) pure nothrow @nogc @saf
 enum isSupportedReturn(R) = is(R == void) || is(R : const(char)[]) || is(R == Response)
     || isWithStatus!R || is(R == struct) || is(R == U[], U) || isScalar!R;
 
+/// True when the handler is `@safe` or `@trusted` (never plain `@system`).
+private bool isSafeHandler(alias fn)()
+{
+    foreach (a; __traits(getFunctionAttributes, fn))
+        if (a == "@safe" || a == "@trusted")
+            return true;
+    return false;
+}
+
 template handlerError(Method method, string path, alias fn, string file, size_t line)
 {
     enum string head = file ~ "(" ~ ctNum(line) ~ "): vela: handler '"
@@ -105,6 +116,9 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
     static if (__traits(isTemplate, fn) || !is(typeof(fn)))
         enum handlerError = head ~ "the handler has no concrete type. If it is a lambda, "
             ~ "declare the parameter types: (int id) => ...";
+    else static if (!isSafeHandler!fn)
+        enum handlerError = head ~ "is not @safe. Mark it @safe (or put `@safe:` at the top of the module) "
+            ~ "and wrap code that cannot be proven safe in @trusted";
     else static if (is(typeof(fn) P == __parameters))
     {
         enum handlerError = () {

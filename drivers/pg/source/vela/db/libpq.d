@@ -4,6 +4,8 @@
 /// (`libpq5` on Debian/Ubuntu, `libpq` on Alpine).
 module vela.db.libpq;
 
+@safe:
+
 import core.sys.posix.dlfcn : dlopen, dlsym, dlerror, RTLD_NOW;
 
 package:
@@ -92,7 +94,7 @@ string loadLibpq() @trusted
 
 private __gshared Object gLock;
 
-shared static this()
+shared static this() @trusted
 {
     gLock = new Object;
 }

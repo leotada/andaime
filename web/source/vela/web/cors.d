@@ -7,6 +7,8 @@
 /// `OPTIONS` of routes that only exist for GET/POST. Without `Origin` on the request, it does nothing.
 module vela.web.cors;
 
+@safe:
+
 import vela.http.types : Method, equalsIgnoreCase;
 import vela.web.context;
 

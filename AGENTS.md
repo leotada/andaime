@@ -25,6 +25,18 @@ one fiber per request on an epoll loop, readable one-line compile errors.
   (see `handlerError` in `web/source/vela/web/handler_traits.d`). Add a case to `tests/compile_fail/` when you add a rule.
 - Error messages from the library start with `vela:` (`vela.db:`, `vela.http:` for the drivers/client).
 
+## Safety model (`@safe`)
+
+- Public delegate types (`Middleware`, `RequestCallback`, `HandlerFactory`, `offload`'s work delegate) are `@safe`.
+  `handlerError` rejects `@system` handlers with a one-line message (`tests/compile_fail/system_handler.d`).
+- Every module starts with `@safe:` except the raw-syscall ones: `engine/.../epoll.d` and `devserver.d` stay `@system`;
+  `EventLoop.run` is `@system` and `vela.server.serve` is the single `@trusted` entry point into them.
+  Their overrides of `@safe` interfaces (`stop`, `awaitFd`, `sleepMs`) are small `@trusted` bodies.
+- FFI modules (`drivers/pg`, `engine/.../httpclient.d`, `tls.d`, `libpq.d`) expose `@trusted` façades; raw pointers never leave them.
+  Anything that hands out a raw view (`PgResult.text`) is `@system`.
+- `__gshared` data is `@system`: read it through a small `@trusted` accessor and say why it is sound (usually "written once before the workers start").
+- A new `@trusted` needs a one-line comment saying why it is sound. When unsure, keep it `@system`.
+
 ## Layout
 
 | Path | Role |

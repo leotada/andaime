@@ -6,6 +6,8 @@
 /// Single-threaded by design (one pool per worker), hence no locks.
 module vela.engine.bufferpool;
 
+@safe:
+
 import core.stdc.stdlib : malloc, free;
 import core.exception : onOutOfMemoryError;
 
@@ -102,7 +104,7 @@ struct BufferPool
     }
 }
 
-unittest
+@trusted unittest // compares raw buffer addresses
 {
     BufferPool pool;
     auto a = pool.acquire(100);

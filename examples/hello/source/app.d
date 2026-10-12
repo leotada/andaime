@@ -3,6 +3,8 @@
 /// parameter names at compile time and generates the extraction and validation.
 module app;
 
+@safe:
+
 import vela;
 import core.time : MonoTime;
 import std.stdio : writefln;
@@ -78,7 +80,7 @@ WithStatus!UserResponse createUser(JsonBody!UserInput body)
 /// PUT /users/{id} — the signature from the project brief
 UserResponse updateUser(long id, JsonBody!UserInput body, Header!"Authorization" auth)
 {
-    if (auth != "Bearer segredo")
+    if (auth != "Bearer secret")
         throw new HttpError(401, "invalid token");
     auto u = id in users;
     if (u is null)
@@ -183,7 +185,7 @@ unittest
     assert(r.status == 422);
     assert(r.body == `{"detail":[{"loc":["header","Authorization"],"msg":"required header missing"}]}`, r.body);
 
-    r = c.put("/users/1", `{"name":"Ana Maria","age":32,"email":"ana@ex.com"}`, hdr("Authorization", "Bearer segredo"));
+    r = c.put("/users/1", `{"name":"Ana Maria","age":32,"email":"ana@ex.com"}`, hdr("Authorization", "Bearer secret"));
     assert(r.status == 200);
     assert(r.body == `{"id":1,"name":"Ana Maria","age":32,"email":"ana@ex.com"}`, r.body);
 

@@ -1,6 +1,8 @@
 /// openapi.json generated from the signatures.
 module openapi_test;
 
+@safe:
+
 import vela;
 import vela.web.testing;
 
@@ -28,7 +30,7 @@ UserOut create(JsonBody!NewUser body_, Context ctx) => UserOut(1, body_.name);
 void remove(long id, Local!UserOut me) {}
 string files(string rest) => rest;
 
-unittest
+@system unittest
 {
     auto app = new App;
     app.get!("/users/{id}", getUser);

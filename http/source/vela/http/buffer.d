@@ -2,6 +2,8 @@
 /// It holds no pointers into the GC, so the collector never scans it.
 module vela.http.buffer;
 
+@safe:
+
 import core.stdc.stdlib : malloc, realloc, free;
 import core.exception : onOutOfMemoryError;
 

@@ -2,6 +2,8 @@
 /// ctx.locals / Local!T, onError, onNotFound, trailing slash and CORS.
 module features;
 
+@safe:
+
 import vela;
 import vela.web.testing;
 
@@ -9,7 +11,7 @@ struct User { int id; string name; }
 
 string hi() => "hi";
 string me(Local!User u) => u.name;
-string boom() { throw new Exception("segredo interno"); }
+string boom() { throw new Exception("internal secret"); }
 string denied() { throw new HttpError(403, "proibido"); }
 string orphan(Local!User u) => u.name;
 string echo(string x) => x;
@@ -127,7 +129,7 @@ unittest
         else
             ctx.text("failure", 500);
     });
-    app.onNotFound((Context ctx) { ctx.text("sumiu", 404); });
+    app.onNotFound((Context ctx) { ctx.text("gone", 404); });
     auto c = TestClient(app);
 
     auto r = c.get("/boom");
@@ -135,7 +137,7 @@ unittest
     r = c.get("/denied");
     assert(r.status == 403 && r.body == "http:proibido");
     r = c.get("/does-not-exist");
-    assert(r.status == 404 && r.body == "sumiu");
+    assert(r.status == 404 && r.body == "gone");
     // an exception thrown by a middleware also goes through onError
     r = c.get("/api/admin/me");
     assert(r.status == 401 && r.body == "http:missing token");

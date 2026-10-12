@@ -1,6 +1,8 @@
 /// Per-request context and onion-style middleware pipeline.
 module vela.web.context;
 
+@safe:
+
 import vela.http.types;
 import vela.http.buffer;
 import vela.web.dto : FieldErrors;
@@ -83,8 +85,8 @@ struct Locals
     /// Stores `value` (replaces the previous one of the same type).
     void set(T)(T value)
     {
-        Slot* free;
-        foreach (ref sl; slots)
+        size_t free = size_t.max;
+        foreach (i, ref sl; slots)
         {
             if (sl.key is typeid(T))
             {
@@ -92,15 +94,15 @@ struct Locals
                 sl.live = true;
                 return;
             }
-            if (free is null && sl.key is null)
-                free = &sl;
+            if (free == size_t.max && sl.key is null)
+                free = i;
         }
-        assert(free !is null, "vela: more than 8 types in ctx.locals");
+        assert(free != size_t.max, "vela: more than 8 types in ctx.locals");
         auto b = new TypedBox!T;
         b.value = value;
-        free.key = typeid(T);
-        free.box = b;
-        free.live = true;
+        slots[free].key = typeid(T);
+        slots[free].box = b;
+        slots[free].live = true;
     }
 
     /// Pointer to the value, or null if no middleware set it in this request.
@@ -173,17 +175,17 @@ final class Context
 }
 
 /// Onion-style middleware: do something, call `next()`, do something after.
-alias Middleware = void delegate(Context ctx, Next next);
+alias Middleware = void delegate(Context ctx, Next next) @safe;
 
 /// Continuation of the pipeline. It is a struct (not a closure): calling `next()`
 /// does not allocate. Not calling `next()` stops the chain (e.g. auth denied).
 struct Next
 {
-    private void delegate(Context, size_t) runner;
+    private void delegate(Context, size_t) @safe runner;
     private size_t index;
     private Context ctx;
 
-    package this(void delegate(Context, size_t) runner, size_t index, Context ctx) nothrow @nogc @safe
+    package this(void delegate(Context, size_t) @safe runner, size_t index, Context ctx) nothrow @nogc @safe
     {
         this.runner = runner;
         this.index = index;

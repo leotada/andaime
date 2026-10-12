@@ -81,7 +81,7 @@ private void serveConnection(int c, ref const ServerConfig cfg, ref BufferPool p
         if (h.status == ParseStatus.error)
             return sendError(c, h.errorStatus);
 
-        // ---- corpo
+        // ---- body
         immutable total = h.headLength + h.contentLength;
         if (total > buf.mem.length)
         {

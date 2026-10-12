@@ -15,6 +15,8 @@
 ///  - `@summary("text")` on the handler fills in the operation summary.
 module vela.web.openapi;
 
+@safe:
+
 import vela.http.types : Method, methodName;
 import vela.web.params;
 import vela.web.context : Context;

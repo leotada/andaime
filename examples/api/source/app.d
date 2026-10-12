@@ -9,6 +9,8 @@
 ///   CORS_ORIGINS   allowed origins, comma-separated (default: none)
 module app;
 
+@safe:
+
 import vela;
 import vela.db;
 
@@ -27,9 +29,13 @@ struct Config
     string[] corsOrigins;
 }
 
-__gshared Config config; // written once in main, read by all workers
+private __gshared Config gConfig; // written once in main before serving, then read-only by all workers
 
-string env(const(char)* name, string fallback = null)
+/// `@trusted` accessor: `__gshared` data is `@system`, but `main` fills it before the
+/// server starts and the workers only read it.
+ref Config config() @trusted => gConfig;
+
+string env(const(char)* name, string fallback = null) @trusted // C string -> copied D string
 {
     auto p = getenv(name);
     return p is null ? fallback : p[0 .. strlen(p)].idup;
@@ -212,10 +218,7 @@ void main()
 
     if (config.databaseUrl.length == 0 || config.apiToken.length == 0)
     {
-        import core.stdc.stdio : fputs, stderr;
-
-        fputs("set DATABASE_URL and API_TOKEN\n", stderr);
-        throw new Exception("incomplete configuration");
+        throw new Exception("incomplete configuration: set DATABASE_URL and API_TOKEN");
     }
     ensureSchema();
 

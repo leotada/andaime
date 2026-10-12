@@ -221,7 +221,9 @@ final class EpollLoop : EventLoop, Scheduler
     /// How many times the loop returned memory to the OS after a burst.
     size_t trimCount() const nothrow @nogc => trims;
 
-    override void stop() nothrow @nogc
+    // @trusted overrides: the interfaces are @safe for callers; the bodies are this loop's own
+    // syscalls and fiber switches, which touch only this worker's state.
+    override void stop() nothrow @nogc @trusted
     {
         atomicStore(stopReq, true);
         ulong one = 1;
@@ -777,7 +779,7 @@ final class EpollLoop : EventLoop, Scheduler
         return cast(Worker) Fiber.getThis() !is null;
     }
 
-    override uint awaitFd(int fd, uint events, long timeoutMs)
+    override uint awaitFd(int fd, uint events, long timeoutMs) @trusted
     {
         auto w = cast(Worker) Fiber.getThis();
         assert(w !is null, "vela: awaitFd outside a request fiber");
@@ -800,7 +802,7 @@ final class EpollLoop : EventLoop, Scheduler
         return w.wakeEvents;
     }
 
-    override void sleepMs(long ms)
+    override void sleepMs(long ms) @trusted
     {
         auto w = cast(Worker) Fiber.getThis();
         assert(w !is null, "vela: sleep outside a request fiber");

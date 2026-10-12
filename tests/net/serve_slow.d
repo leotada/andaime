@@ -5,7 +5,11 @@ module serve_slow;
 import vela;
 import core.time : msecs;
 
-__gshared long waitMs = 3000;
+__gshared long gWaitMs = 3000;
+
+@safe:
+
+long waitMs() @trusted => gWaitMs; // set in main before serving, read-only afterwards
 
 string slow()
 {
@@ -13,12 +17,14 @@ string slow()
     return "ok";
 }
 
+@system:
+
 void main(string[] args)
 {
     import std.conv : to;
 
     if (args.length > 2)
-        waitMs = args[2].to!long;
+        gWaitMs = args[2].to!long;
     auto app = new App;
     app.get!("/slow", slow);
     ServerConfig cfg;

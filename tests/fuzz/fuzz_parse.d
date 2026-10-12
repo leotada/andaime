@@ -92,7 +92,7 @@ void main(string[] args)
     const(char)[][] pool;
     foreach (e; dirEntries("tests/fuzz/corpus", "*.http", SpanMode.shallow))
         pool ~= cast(const(char)[]) read(e.name);
-    assert(pool.length, "corpus vazio");
+    assert(pool.length, "empty corpus");
 
     size_t complete, errors, incomplete;
     foreach (i; 0 .. iters)

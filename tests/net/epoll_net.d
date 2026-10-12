@@ -25,6 +25,10 @@ import core.sys.posix.fcntl : fcntl, F_SETFL, O_NONBLOCK;
 shared int cleanups; // shared: the handler runs on the server thread
 __gshared int[2] stuckPipe;
 
+@safe:
+
+int stuckReadFd() @trusted => stuckPipe[0]; // __gshared: created before the server starts
+
 string fast() => "ok";
 
 string nap(int ms)
@@ -43,7 +47,7 @@ string cancelMe()
 
 string stuck()
 {
-    awaitFd(stuckPipe[0], IoEvent.readable); // no deadline: only the request deadline saves it
+    awaitFd(stuckReadFd, IoEvent.readable); // no deadline: only the request deadline saves it
     return "never";
 }
 
@@ -64,18 +68,16 @@ string off(int ms)
 
 string bodyLen(Context c)
 {
-    import core.stdc.stdio : snprintf;
+    import std.conv : to;
 
-    char[24] t;
-    auto n = snprintf(t.ptr, t.length, "%zu", c.request.body.length);
-    return t[0 .. n].idup;
+    return c.request.body.length.to!string;
 }
 
 string big()
 {
     auto s = new char[8 << 20];
     s[] = 'x';
-    return cast(string) s;
+    return s.idup;
 }
 
 App buildApp()
@@ -93,6 +95,8 @@ App buildApp()
 }
 
 // ---------------------------------------------------------------- test server
+
+@system: // harness: raw sockets, printf, threads
 
 struct Server
 {
@@ -269,7 +273,7 @@ void ok(string name)
 
 // ---------------------------------------------------------------- tests
 
-void testBasico()
+void testBasic()
 {
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
@@ -280,7 +284,7 @@ void testBasico()
     ok("simple GET and 404");
 }
 
-void testKeepAliveEPipelining()
+void testKeepAliveAndPipelining()
 {
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
@@ -304,7 +308,7 @@ void testKeepAliveEPipelining()
     ok("pipelining with a handler suspended midway, order preserved");
 }
 
-void testHeadLento()
+void testSlowHead()
 {
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
@@ -320,7 +324,7 @@ void testHeadLento()
     ok("head arriving byte by byte");
 }
 
-void testConcorrencia()
+void testConcurrency()
 {
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
@@ -346,7 +350,7 @@ void testConcorrencia()
     printf("ok  %d requests of 300 ms in %ld ms on one thread (peak in flight: %zu)\n", N, ms, st.peakInFlight);
 }
 
-void testCancelamento()
+void testCancellation()
 {
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
@@ -361,7 +365,7 @@ void testCancelamento()
     ok("client disconnects with a suspended fiber: RequestCancelled, scope(exit) runs, fiber returns to the pool");
 }
 
-void testTetoDeRequisicoes()
+void testRequestCeiling()
 {
     ServerConfig cfg;
     cfg.maxInFlight = 4;
@@ -397,7 +401,7 @@ bool indexOfS(string h, string needle)
     return h.indexOf(needle) >= 0;
 }
 
-void testPrazoDaRequisicao()
+void testRequestDeadline()
 {
     pipe(stuckPipe);
     fcntl(stuckPipe[0], F_SETFL, O_NONBLOCK);
@@ -418,7 +422,7 @@ void testPrazoDaRequisicao()
     ok("handler stuck in awaitFd with no deadline: 504 by the request deadline");
 }
 
-void testEscritaParcial()
+void testPartialWrite()
 {
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
@@ -427,7 +431,7 @@ void testEscritaParcial()
     Thread.sleep(300.msecs); // the client does not read: the server's send fills up and gives EAGAIN
     assert(s.loop.stats().inFlight == 1, "the large response should be pending (EPOLLOUT)");
     auto r = c.rx();
-    assert(r.status == 200 && r.body.length == (8 << 20), "corpo incompleto");
+    assert(r.status == 200 && r.body.length == (8 << 20), "incomplete body");
     foreach (ch; r.body)
         assert(ch == 'x');
     c.hang();
@@ -435,7 +439,7 @@ void testEscritaParcial()
     ok("8 MiB response with a slow client (partial write + EPOLLOUT)");
 }
 
-void testEncolherPools()
+void testPoolShrink()
 {
     ServerConfig cfg;
     cfg.maxIdleWorkers = 8;
@@ -464,7 +468,7 @@ void testEncolherPools()
         N, st.workersCreated, st.workersRetired, st.idleWorkers);
 }
 
-void testEntradaInvalida()
+void testInvalidInput()
 {
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
@@ -509,7 +513,7 @@ void testEntradaInvalida()
     ok("invalid inputs: 501, 505, 400 (smuggling and obs-fold), 431, 413");
 }
 
-void testPrazosDeConexao()
+void testConnectionDeadlines()
 {
     ServerConfig cfg;
     cfg.headerTimeoutMs = 300;
@@ -533,7 +537,7 @@ void testPrazosDeConexao()
     ok("deadlines: slow head (408) and idle connection closed");
 }
 
-void testPararComGentileza()
+void testGracefulStop()
 {
     auto s = start(ServerConfig.init);
     auto c = dial(s.port);
@@ -549,7 +553,7 @@ void testPararComGentileza()
     ok("graceful stop: finishes the in-progress request and ends the loop");
 }
 
-void testDoisWorkers()
+void testTwoWorkers()
 {
     // two loops on the same port (SO_REUSEPORT), sharing the same App
     auto a = start(ServerConfig.init, 0, true);
@@ -563,7 +567,7 @@ void testDoisWorkers()
     ok("two workers with SO_REUSEPORT on the same port");
 }
 
-void testDateEDetector()
+void testDateAndDetector()
 {
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
@@ -674,20 +678,20 @@ void testOffload()
 void main()
 {
     configureOffload(2, 2);
-    testBasico();
-    testKeepAliveEPipelining();
-    testHeadLento();
-    testConcorrencia();
-    testCancelamento();
-    testTetoDeRequisicoes();
-    testPrazoDaRequisicao();
-    testEscritaParcial();
-    testEncolherPools();
-    testEntradaInvalida();
-    testPrazosDeConexao();
-    testPararComGentileza();
-    testDoisWorkers();
-    testDateEDetector();
+    testBasic();
+    testKeepAliveAndPipelining();
+    testSlowHead();
+    testConcurrency();
+    testCancellation();
+    testRequestCeiling();
+    testRequestDeadline();
+    testPartialWrite();
+    testPoolShrink();
+    testInvalidInput();
+    testConnectionDeadlines();
+    testGracefulStop();
+    testTwoWorkers();
+    testDateAndDetector();
     testOffload();
     testExpectContinue();
     printf("all network tests passed\n");

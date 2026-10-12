@@ -6,6 +6,8 @@
 /// backtracking, so `/users/me` and `/users/{id}` coexist.
 module vela.web.router;
 
+@safe:
+
 import vela.http.types;
 import vela.web.context : PathParams;
 

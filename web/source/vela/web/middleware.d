@@ -1,6 +1,8 @@
 /// Ready-made everyday middlewares: access log, request id and Bearer token.
 module vela.web.middleware;
 
+@safe:
+
 import core.stdc.stdio : fprintf, stderr;
 import core.time : MonoTime;
 
@@ -25,11 +27,14 @@ Middleware accessLog()
             immutable us = (MonoTime.currTime - t0).total!"usecs";
             auto m = methodName(ctx.request.method);
             auto rid = ctx.locals.find!RequestId();
-            fprintf(stderr, "%.*s %.*s %d %ld.%ldms%s%.*s\n", cast(int) m.length, m.ptr,
-                cast(int) ctx.request.target.length, ctx.request.target.ptr, ctx.response.status,
-                cast(long)(us / 1000), cast(long)((us % 1000) / 100),
-                rid is null ? "".ptr : " rid=".ptr, rid is null ? 0 : cast(int) rid.value.length,
-                rid is null ? "".ptr : rid.value.ptr);
+            // sound: every pointer/length pair below comes from a live slice
+            () @trusted {
+                fprintf(stderr, "%.*s %.*s %d %ld.%ldms%s%.*s\n", cast(int) m.length, m.ptr,
+                    cast(int) ctx.request.target.length, ctx.request.target.ptr, ctx.response.status,
+                    cast(long)(us / 1000), cast(long)((us % 1000) / 100),
+                    rid is null ? "".ptr : " rid=".ptr, rid is null ? 0 : cast(int) rid.value.length,
+                    rid is null ? "".ptr : rid.value.ptr);
+            }();
         }
         next();
     };

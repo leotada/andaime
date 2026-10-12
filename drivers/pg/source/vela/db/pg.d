@@ -21,6 +21,8 @@
 ///    by concatenation: never build SQL with user-supplied values.
 module vela.db.pg;
 
+@safe:
+
 import core.stdc.stdio : snprintf;
 import core.stdc.stdlib : strtod;
 import core.time : Duration, MonoTime, msecs, seconds, minutes;
@@ -72,6 +74,12 @@ struct Maybe(T)
 }
 
 // ============================================================ result
+//
+// Safety model: everything below talks to libpq through raw pointers, which never leave
+// this module. Public entry points are therefore `@trusted` façades: callers in `@safe`
+// code cannot reach a libpq pointer, a freed result or an unchecked index (`checkIdx`).
+// The only raw view is `PgResult.text`, which is `@system` because the slice dies on `close()`.
+@trusted:
 
 /// Result of a query. The `text` slices point to libpq's memory
 /// and are valid until `close()` (or until the object is collected): copy with
@@ -103,16 +111,18 @@ final class PgResult
     }
 
     /// Rows affected by INSERT/UPDATE/DELETE ("" for SELECT).
-    const(char)[] affected() const nothrow
+    string affected() const nothrow
     {
         auto p = pq.PQcmdTuples(res);
-        return cstr(p);
+        return cstr(p).idup;
     }
 
     bool isNull(int row, int col) const nothrow => pq.PQgetisnull(res, row, col) != 0;
 
     /// The value as text (zero-copy). Empty for NULL: use `isNull` to tell them apart.
-    const(char)[] text(int row, int col) const nothrow
+    /// `@system`: the slice points into libpq memory and dangles after `close()`;
+    /// from `@safe` code use `get!string` (copies).
+    const(char)[] text(int row, int col) const nothrow @system
     {
         checkIdx(row, col);
         return pq.PQgetvalue(res, row, col)[0 .. pq.PQgetlength(res, row, col)];
@@ -140,7 +150,7 @@ final class PgResult
         else
         {
             if (isNull(row, col))
-                throw new PgError("vela.db: coluna '" ~ cstr(pq.PQfname(res, col)).idup
+                throw new PgError("vela.db: column '" ~ cstr(pq.PQfname(res, col)).idup
                         ~ "' is NULL; use Maybe!" ~ T.stringof ~ " in the field");
             return parseCell!T(text(row, col), cstr(pq.PQfname(res, col)));
         }
@@ -380,7 +390,7 @@ final class PgConn
 
         // PQconnectStart resolves DNS synchronously: on a pool thread.
         auto zinfo = (conninfo ~ '\0');
-        PGconn* c = offload(() => pq.PQconnectStart(zinfo.ptr));
+        PGconn* c = offload(() @trusted => pq.PQconnectStart(zinfo.ptr));
         if (c is null)
             throw new PgError("vela.db: PQconnectStart failed (out of memory)");
         auto conn = new PgConn(c, queryTimeout, cacheStatements);
@@ -824,7 +834,7 @@ final class PgPool
     }
 
     /// Runs `body` inside BEGIN/COMMIT on the same connection; ROLLBACK if it throws.
-    T transaction(T)(T delegate(PgConn) body_)
+    T transaction(T)(T delegate(PgConn) @safe body_)
     {
         auto l = lease();
         l.conn.exec("BEGIN");

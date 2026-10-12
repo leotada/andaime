@@ -1,6 +1,8 @@
 /// Types the user writes in handler signatures.
 module vela.web.params;
 
+@safe:
+
 import vela.http.types : HeaderField;
 
 /// JSON body decoded into `T`. Access the fields directly: `body.name`.

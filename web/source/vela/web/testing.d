@@ -1,6 +1,8 @@
 /// In-memory client: exercises App + handlers without sockets.
 module vela.web.testing;
 
+@safe:
+
 import vela.http.types;
 import vela.web.context;
 import vela.web.application;
@@ -16,7 +18,7 @@ struct TestResponse
     {
         foreach (h; headers)
             if (equalsIgnoreCase(h.name, name))
-                return cast(string) h.value;
+                return h.value.idup;
         return null;
     }
 }

@@ -10,6 +10,8 @@
 ///   pool thread (`offload`) so they do not hold the worker.
 module vela.staticfiles;
 
+@safe:
+
 import core.stdc.errno : errno, EINTR;
 import core.stdc.stdlib : free;
 import core.sys.posix.fcntl : open, O_RDONLY, O_CLOEXEC;
@@ -96,7 +98,7 @@ private final class StaticServer
             close(fd);
 
         stat_t st;
-        if (fstat(fd, &st) != 0)
+        if (!statFd(fd, st))
             throw new HttpError(404, "not found");
         if (S_ISDIR(st.st_mode))
         {
@@ -105,7 +107,7 @@ private final class StaticServer
             close(fd);
             path = found ~ "/" ~ cfg.index;
             fd = openInside(path, found);
-            if (fd < 0 || fstat(fd, &st) != 0)
+            if (fd < 0 || !statFd(fd, st))
                 throw new HttpError(404, "not found");
         }
         if (!S_ISREG(st.st_mode))
@@ -127,7 +129,8 @@ private final class StaticServer
         auto etagv = etag[0 .. n];
 
         auto lm = ctx.scratch(29);
-        formatHttpDate(cast(long) mtime, *cast(char[29]*) lm.ptr);
+        // @trusted: `lm` has exactly 29 bytes (scratch(29)), the size of the fixed array
+        () @trusted { formatHttpDate(cast(long) mtime, *cast(char[29]*) lm.ptr); }();
 
         ctx.setHeader("ETag", etagv);
         ctx.setHeader("Last-Modified", lm);
@@ -182,7 +185,8 @@ bool safeRelative(scope const(char)[] rel) pure nothrow @nogc @safe
     return true;
 }
 
-private int openChecked(string resolved)
+/// @trusted: `z` is a NUL-terminated copy that outlives the call.
+private int openChecked(string resolved) @trusted
 {
     auto z = resolved ~ '\0';
     for (;;)
@@ -193,7 +197,8 @@ private int openChecked(string resolved)
     }
 }
 
-string realPath(string path)
+/// @trusted: the C string from realpath() is copied and freed before returning.
+string realPath(string path) @trusted
 {
     import core.sys.posix.stdlib : realpath;
     import core.stdc.string : strlen;
@@ -206,6 +211,9 @@ string realPath(string path)
         free(r);
     return r[0 .. strlen(r)].idup;
 }
+
+/// @trusted: fstat writes only into `st`, which is a live local.
+private bool statFd(int fd, out stat_t st) @trusted nothrow @nogc => fstat(fd, &st) == 0;
 
 private size_t readFully(int fd, char[] dest) nothrow @nogc @trusted
 {

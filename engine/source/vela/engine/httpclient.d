@@ -45,7 +45,7 @@ class HttpClientError : Exception
 /// The request deadline ended.
 final class HttpClientTimeout : HttpClientError
 {
-    this(string what = "tempo esgotado", string file = __FILE__, size_t line = __LINE__) pure nothrow @safe
+    this(string what = "timed out", string file = __FILE__, size_t line = __LINE__) pure nothrow @safe
     {
         super("vela.http: " ~ what, file, line);
     }
@@ -97,7 +97,7 @@ struct ParsedUrl
     string target; /// path + query, starts with '/'
 }
 
-ParsedUrl parseUrl(string url)
+ParsedUrl parseUrl(string url) @safe
 {
     ParsedUrl u;
     string rest;
@@ -170,7 +170,7 @@ ParsedUrl parseUrl(string url)
     return u;
 }
 
-private ushort parsePort(string s, string url)
+private ushort parsePort(string s, string url) @safe
 {
     if (s.length == 0 || s.length > 5)
         throw new HttpClientError("vela.http: invalid port in URL: " ~ url);
@@ -280,10 +280,10 @@ final class HttpClient
     private Addr[][string] dnsCache;
     private MonoTime[string] dnsExpiry;
 
-    this(HttpClientConfig cfg = HttpClientConfig.init) { this.cfg = cfg; }
+    this(HttpClientConfig cfg = HttpClientConfig.init) @trusted { this.cfg = cfg; }
 
     /// Closes everything and releases the TLS context. (No destructor: a worker's client lives until the end.)
-    void shutdown()
+    void shutdown() @trusted
     {
         closeIdle();
         if (ctx !is null)
@@ -310,23 +310,23 @@ final class HttpClient
         return n;
     }
 
-    ClientResponse get(string url, const(HeaderPair)[] headers = null)
+    ClientResponse get(string url, const(HeaderPair)[] headers = null) @trusted
         => request("GET", url, headers, null);
 
-    ClientResponse post(string url, const(char)[] body_, const(HeaderPair)[] headers = null)
+    ClientResponse post(string url, const(char)[] body_, const(HeaderPair)[] headers = null) @trusted
         => request("POST", url, headers, body_);
 
-    ClientResponse put(string url, const(char)[] body_, const(HeaderPair)[] headers = null)
+    ClientResponse put(string url, const(char)[] body_, const(HeaderPair)[] headers = null) @trusted
         => request("PUT", url, headers, body_);
 
-    ClientResponse del(string url, const(HeaderPair)[] headers = null)
+    ClientResponse del(string url, const(HeaderPair)[] headers = null) @trusted
         => request("DELETE", url, headers, null);
 
     /// POST of already-serialized JSON.
-    ClientResponse postJson(string url, const(char)[] json, const(HeaderPair)[] headers = null)
+    ClientResponse postJson(string url, const(char)[] json, const(HeaderPair)[] headers = null) @trusted
         => request("POST", url, headers ~ HeaderPair("Content-Type", "application/json"), json);
 
-    ClientResponse request(string method, string url, const(HeaderPair)[] headers, const(char)[] body_)
+    ClientResponse request(string method, string url, const(HeaderPair)[] headers, const(char)[] body_) @trusted
     {
         auto u = parseUrl(url);
         immutable deadline = MonoTime.currTime + cfg.timeout;
@@ -450,7 +450,7 @@ final class HttpClient
             if (MonoTime.currTime < *e)
                 return dnsCache[k];
         left(deadline);
-        auto res = offload(() => resolveBlocking(host, port));
+        auto res = offload(() @trusted => resolveBlocking(host, port));
         if (res.length == 0)
             throw new HttpClientError("vela.http: could not resolve host " ~ host);
         dnsCache[k] = res;
@@ -741,7 +741,7 @@ final class HttpClient
         ClientResponse r;
         parseHead(head, r);
 
-        // ---- corpo
+        // ---- body
         bool chunked, hasLen, closeDelim;
         size_t length;
         bool keepAlive = true;
@@ -879,7 +879,7 @@ private size_t findHeadEnd(const(char)[] b) pure nothrow @safe @nogc
     return size_t.max;
 }
 
-private void parseHead(const(char)[] head, ref ClientResponse r)
+private void parseHead(const(char)[] head, ref ClientResponse r) @safe
 {
     // "HTTP/1.1 200 OK"
     if (head.length < 12 || head[0 .. 5] != "HTTP/")
@@ -950,7 +950,7 @@ private string utoa(size_t v) pure nothrow @safe
     return tmp[n .. $].idup;
 }
 
-private size_t parseSize(string s)
+private size_t parseSize(string s) @safe
 {
     if (s.length == 0 || s.length > 18)
         throw new HttpClientError("vela.http: invalid Content-Length");
@@ -964,7 +964,7 @@ private size_t parseSize(string s)
     return v;
 }
 
-private size_t parseHex(const(char)[] s)
+private size_t parseHex(const(char)[] s) @safe
 {
     if (s.length == 0 || s.length > 12)
         throw new HttpClientError("vela.http: invalid chunk size");
@@ -1012,14 +1012,14 @@ private HttpClient tlsClient; // thread-local: one per worker
 
 /// This worker's client (created on first use). For a different configuration,
 /// call `httpClient(cfg)` once when the worker starts.
-HttpClient httpClient()
+HttpClient httpClient() @trusted
 {
     if (tlsClient is null)
         tlsClient = new HttpClient;
     return tlsClient;
 }
 
-HttpClient httpClient(HttpClientConfig cfg)
+HttpClient httpClient(HttpClientConfig cfg) @trusted
 {
     return tlsClient = new HttpClient(cfg);
 }

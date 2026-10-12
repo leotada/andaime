@@ -2,10 +2,12 @@
 /// Used by the mutation fuzzer (CI) and by libFuzzer (tools/fuzz.sh).
 module invariants;
 
+@safe:
+
 import vela.http.parser;
 import vela.http.types;
 
-private bool within(const(char)[] inner, const(char)[] outer)
+private bool within(const(char)[] inner, const(char)[] outer) @trusted // only compares addresses
 {
     if (inner.length == 0)
         return true;

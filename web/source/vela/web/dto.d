@@ -1,6 +1,8 @@
 /// DTO UDAs and the validation error accumulator (FastAPI format).
 module vela.web.dto;
 
+@safe:
+
 /// Field name in the JSON when it differs from the D name: `@jsonKey("user_name") string userName;`
 struct jsonKey { string name; }
 /// Optional field in the JSON (absent => keeps the initial value).

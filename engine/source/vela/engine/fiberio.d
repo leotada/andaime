@@ -10,6 +10,8 @@
 /// `sleep`, a synchronous C lib) stalls the whole worker.
 module vela.engine.fiberio;
 
+@safe:
+
 import core.time : Duration;
 
 /// Thrown INSIDE the handler when the request was cancelled (the client
@@ -80,6 +82,6 @@ uint awaitFd(int fd, uint events, Duration timeout = Duration.max)
     import core.sys.posix.poll : poll, pollfd;
 
     pollfd p = pollfd(fd, cast(short) events, 0);
-    immutable r = poll(&p, 1, cast(int)(ms < 0 ? -1 : ms));
+    immutable r = (() @trusted => poll(&p, 1, cast(int)(ms < 0 ? -1 : ms)))();
     return r > 0 ? cast(uint) p.revents : 0;
 }

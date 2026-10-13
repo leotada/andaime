@@ -3,7 +3,7 @@ module vela;
 
 public import vela.http.types : Method, HeaderField, Request, Protocol;
 public import vela.web;
-public import vela.server : serve;
+public import vela.server : serve, tryServe;
 public import vela.staticfiles : serveStatic, StaticConfig;
 public import vela.engine.loop : ServerConfig, TlsConfig;
 // Cooperative I/O for handlers: wait without blocking the worker

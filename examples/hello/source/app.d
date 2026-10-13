@@ -99,7 +99,7 @@ void deleteUser(long id)
 /// GET /files/{*path} — captures the rest of the path; optional header
 string file(string path, Optional!(Header!"X-Trace-Id") trace)
 {
-    return "file: " ~ path ~ (trace.has ? " trace=" ~ trace.get.idup : "");
+    return "file: " ~ path ~ (trace.has ? " trace=" ~ trace.get.value : "");
 }
 
 // ---------------------------------------------------------------- controller with state
@@ -157,11 +157,11 @@ void main()
 {
     ServerConfig cfg;
     cfg.port = 8080;
-    // This example's "database" is a module variable, which in D is thread-local:
-    // with several workers each would have its own copy. A single worker keeps the example
-    // consistent. With a real database, leave workers = 0 (one per core).
+    // Every worker calls buildApp on its own thread and gets its own App, and this example's "database" is a module
+    // variable, which in D is thread-local: with several workers each would have its own copy. A single worker keeps
+    // the example consistent. With a real database, leave workers = 0 (one per core).
     cfg.workers = 1;
-    buildApp().serve(cfg);
+    serve(&buildApp, cfg);
 }
 
 // ---------------------------------------------------------------- tests without network
@@ -179,11 +179,12 @@ unittest
 
     r = c.get("/users/abc");
     assert(r.status == 422);
-    assert(r.body == `{"detail":[{"loc":["path","id"],"msg":"expected an integer (long)"}]}`, r.body);
+    assert(r.body == `{"detail":[{"type":"int_parsing","loc":["path","id"],`
+        ~ `"msg":"expected an integer between -9223372036854775808 and 9223372036854775807"}]}`, r.body);
 
     r = c.put("/users/1", `{"name":"Ana Maria","age":32}`);
     assert(r.status == 422);
-    assert(r.body == `{"detail":[{"loc":["header","Authorization"],"msg":"required header missing"}]}`, r.body);
+    assert(r.body == `{"detail":[{"type":"missing","loc":["header","Authorization"],"msg":"Field required"}]}`, r.body);
 
     r = c.put("/users/1", `{"name":"Ana Maria","age":32,"email":"ana@ex.com"}`, hdr("Authorization", "Bearer secret"));
     assert(r.status == 200);
@@ -191,16 +192,17 @@ unittest
 
     r = c.post("/users", `{"name":"A","age":200}`);
     assert(r.status == 422);
-    assert(r.body == `{"detail":[{"loc":["body","name"],"msg":"below the minimum length of 2"},`
-        ~ `{"loc":["body","age"],"msg":"outside the allowed range"}]}`, r.body);
+    assert(r.body == `{"detail":[{"type":"string_too_short","loc":["body","name"],"msg":"expected at least 2 characters"},`
+        ~ `{"type":"less_than_equal","loc":["body","age"],"msg":"must be <= 150"}]}`, r.body);
 
     c.post("/users", `{"name":"Bia","age":25}`);
     r = c.get("/users?order=desc&limit=1");
     assert(r.status == 200 && r.body == `[{"id":2,"name":"Bia","age":25,"email":null}]`, r.body);
 
-    r = c.get("/users?limit=muitos");
+    r = c.get("/users?limit=many");
     assert(r.status == 422);
-    assert(r.body == `{"detail":[{"loc":["query","limit"],"msg":"expected an integer (int)"}]}`, r.body);
+    assert(r.body == `{"detail":[{"type":"int_parsing","loc":["query","limit"],`
+        ~ `"msg":"expected an integer between -2147483648 and 2147483647"}]}`, r.body);
 
     r = c.del("/users/1");
     assert(r.status == 204);

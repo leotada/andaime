@@ -31,9 +31,15 @@ struct Config
 
 private __gshared Config gConfig; // written once in main before serving, then read-only by all workers
 
-/// `@trusted` accessor: `__gshared` data is `@system`, but `main` fills it before the
-/// server starts and the workers only read it.
-ref Config config() @trusted => gConfig;
+/// `@trusted` accessor: `__gshared` data is `@system`, but `main` fills it before the server starts and the workers
+/// only read it. It hands out `const`, never a mutable ref: `@safe` code can then not write what other threads read.
+ref const(Config) config() @trusted => gConfig;
+
+/// The only writer; `main` calls it once, before `serve`.
+void setConfig(Config c) @system
+{
+    gConfig = c;
+}
 
 string env(const(char)* name, string fallback = null) @trusted // C string -> copied D string
 {
@@ -162,7 +168,7 @@ App buildApp()
     app.use(requestId());
     app.use(accessLog());
     if (config.corsOrigins.length)
-        app.use(cors(CorsConfig(config.corsOrigins, "GET, POST, PUT, DELETE", "Authorization, Content-Type")));
+        app.use(cors(CorsConfig(config.corsOrigins.dup, "GET, POST, PUT, DELETE", "Authorization, Content-Type")));
 
     // database errors become HTTP responses
     app.onError((Context ctx, Exception e) {
@@ -208,24 +214,26 @@ App buildApp()
 
 void main()
 {
-    config.port = cast(ushort) parsePort(env("PORT", "8080"));
-    config.databaseUrl = env("DATABASE_URL");
-    config.apiToken = env("API_TOKEN");
-    config.ratesUrl = env("RATES_URL", config.ratesUrl);
+    Config c;
+    c.port = cast(ushort) parsePort(env("PORT", "8080"));
+    c.databaseUrl = env("DATABASE_URL");
+    c.apiToken = env("API_TOKEN");
+    c.ratesUrl = env("RATES_URL", c.ratesUrl);
     foreach (o; split(env("CORS_ORIGINS", ""), ','))
         if (o.length)
-            config.corsOrigins ~= o;
+            c.corsOrigins ~= o;
 
-    if (config.databaseUrl.length == 0 || config.apiToken.length == 0)
+    if (c.databaseUrl.length == 0 || c.apiToken.length == 0)
     {
         throw new Exception("incomplete configuration: set DATABASE_URL and API_TOKEN");
     }
+    (() @trusted => setConfig(c))(); // sound: runs once on the main thread, before any worker exists
     ensureSchema();
 
     ServerConfig sc;
     sc.port = config.port;
     sc.requestTimeoutMs = 20_000;
-    buildApp().serve(sc);
+    serve(&buildApp, sc);
 }
 
 uint parsePort(string s)

@@ -30,6 +30,7 @@ import core.time : Duration, MonoTime, msecs, seconds, minutes;
 import core.sys.linux.sys.eventfd : eventfd;
 import core.sys.posix.unistd : close, write;
 
+import vela.http.texttype : isTextType, textFromString, textToString;
 import vela.engine.fiberio : awaitFd, currentScheduler, IoEvent, RequestCancelled;
 import vela.engine.offload : offload, offloadPool;
 import vela.db.libpq;
@@ -63,15 +64,9 @@ final class PgTimeout : PgError
 
 // ============================================================ values
 
-/// Column/parameter that may be NULL.
-struct Maybe(T)
-{
-    T value;
-    bool has;
-
-    this(T v) { value = v; has = true; }
-    static Maybe none() { return Maybe.init; }
-}
+/// A column or parameter that may be NULL is an `Optional!T`: an empty one is SQL NULL (the same type the web layer uses,
+/// so a row serializes to JSON `null` with no conversion). Re-exported here for convenience.
+public import vela.http.optional : Optional;
 
 // ============================================================ result
 //
@@ -137,11 +132,11 @@ final class PgResult
         return -1;
     }
 
-    /// Converts a cell to `T` (integers, bool, double, string, Maybe!X).
+    /// Converts a cell to `T` (integers, bool, double, string, Optional!X).
     T get(T)(int row, int col) const
     {
         checkIdx(row, col);
-        static if (is(T == Maybe!U, U))
+        static if (is(T == Optional!U, U))
         {
             if (isNull(row, col))
                 return T.init;
@@ -151,7 +146,7 @@ final class PgResult
         {
             if (isNull(row, col))
                 throw new PgError("vela.db: column '" ~ cstr(pq.PQfname(res, col)).idup
-                        ~ "' is NULL; use Maybe!" ~ T.stringof ~ " in the field");
+                        ~ "' is NULL; use Optional!" ~ T.stringof ~ " in the field");
             return parseCell!T(text(row, col), cstr(pq.PQfname(res, col)));
         }
     }
@@ -254,9 +249,17 @@ private T parseCell(T)(const(char)[] s, const(char)[] col)
     }
     else static if (isSomeString!T)
         return s.idup;
+    else static if (isTextType!T)
+    {
+        // your own type (a Uuid, a timestamp...): `fromString` reads the column's text
+        T v;
+        if (!textFromString(s, v))
+            throw badCell(col, T.stringof, s);
+        return v;
+    }
     else
         static assert(0, "vela.db: unsupported field type in rowsAs/get: " ~ T.stringof
-                ~ " (use integers, bool, double, string or Maybe!X)");
+                ~ " (use integers, bool, double, string, a text type with fromString/toString, or Optional!X)");
 }
 
 private PgError badCell(const(char)[] col, string type, const(char)[] val)
@@ -288,8 +291,8 @@ private struct Encoded(size_t N)
         alias U = Unqual!A;
         static if (is(U == typeof(null)))
             return -1;
-        else static if (is(U == Maybe!X, X))
-            return a.has ? put(a.value) : -1;
+        else static if (is(U == Optional!X, X))
+            return a.has ? put(a.get) : -1;
         else static if (is(U == bool))
             return append(a ? "t" : "f");
         else static if (isIntegral!U)
@@ -316,9 +319,16 @@ private struct Encoded(size_t N)
         }
         else static if (isSomeString!U || is(U : const(char)[]))
             return append(a);
+        else static if (isTextType!U)
+        {
+            // your own type: `toString` writes the text the server will parse ($1::uuid)
+            string text;
+            textToString(a, (scope const(char)[] piece) { text ~= piece; });
+            return append(text);
+        }
         else
             static assert(0, "vela.db: unsupported parameter type: " ~ A.stringof
-                    ~ " (use integers, bool, double, string, null or Maybe!X)");
+                    ~ " (use integers, bool, double, string, a text type with fromString/toString, null or Optional!X)");
     }
 
     private ptrdiff_t append(const(char)[] s)

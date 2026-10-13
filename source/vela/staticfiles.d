@@ -6,8 +6,9 @@
 ///   dot (.env, .git) and symlinks that leave the root folder are refused (404);
 /// - weak ETag (size + mtime) with 304 for `If-None-Match`, `Last-Modified`,
 ///   configurable `Cache-Control` and `Content-Type` by extension;
-/// - the file is read into the response memory; large files are read on a
-///   pool thread (`offload`) so they do not hold the worker.
+/// - small files are read into the response memory; files above `offloadAbove` (256 KiB) are streamed in 64 KiB pieces
+///   read on a pool thread (`offload`), with a Content-Length, so memory does not grow with the file and a slow client
+///   only makes the write wait.
 module vela.staticfiles;
 
 @safe:
@@ -15,13 +16,14 @@ module vela.staticfiles;
 import core.stdc.errno : errno, EINTR;
 import core.stdc.stdlib : free;
 import core.sys.posix.fcntl : open, O_RDONLY, O_CLOEXEC;
-import core.sys.posix.sys.stat : fstat, stat_t, S_ISDIR, S_ISREG;
+import core.sys.posix.sys.stat : fstat, stat_t, S_ISDIR, S_ISREG, mode_t;
 import core.sys.posix.unistd : close, read;
 
 import vela.http.types : Method, equalsIgnoreCase;
 import vela.http.date : formatHttpDate;
 import vela.web.application : App, Group;
 import vela.web.context : Context;
+import vela.web.stream : Stream, StreamWriter, runStream;
 import vela.web.params : HttpError;
 import vela.web.convert : percentDecode;
 import vela.engine.offload : offload;
@@ -30,8 +32,9 @@ struct StaticConfig
 {
     string cacheControl = "public, max-age=3600";
     string index = "index.html"; /// "" turns off the folder index
-    size_t maxFileBytes = 16 << 20; /// larger than this: 413
-    size_t offloadAbove = 256 << 10; /// reading larger files goes to the thread pool
+    size_t maxFileBytes = 1 << 30; /// larger than this: 413 (a safety cap: big files are streamed, memory does not grow with them)
+    size_t offloadAbove = 256 << 10; /// larger files are streamed in `chunkBytes` pieces, each read on the thread pool
+    size_t chunkBytes = 64 << 10;
 }
 
 /// Serves `dir` at `urlPrefix` ("" = site root). Call it while assembling the app.
@@ -100,7 +103,7 @@ private final class StaticServer
         stat_t st;
         if (!statFd(fd, st))
             throw new HttpError(404, "not found");
-        if (S_ISDIR(st.st_mode))
+        if (isDirMode(st.st_mode))
         {
             if (cfg.index.length == 0)
                 throw new HttpError(404, "not found");
@@ -110,7 +113,7 @@ private final class StaticServer
             if (fd < 0 || !statFd(fd, st))
                 throw new HttpError(404, "not found");
         }
-        if (!S_ISREG(st.st_mode))
+        if (!isRegMode(st.st_mode))
             throw new HttpError(404, "not found");
         if (st.st_size > cfg.maxFileBytes)
             throw new HttpError(413, "file too large");
@@ -148,15 +151,31 @@ private final class StaticServer
         ctx.response.status = 200;
         ctx.response.contentType = contentTypeFor(path);
         ctx.response.body.clear();
-        auto dest = ctx.response.body.writable(size);
-        size_t got;
         if (size > cfg.offloadAbove)
         {
-            int f = fd;
-            got = offload(() => readFully(f, dest));
+            // A big file is sent in pieces, each read on a pool thread: memory does not grow with the file, a slow
+            // client just makes `write` wait, and the worker keeps serving others meanwhile.
+            immutable f = fd;
+            immutable chunk = cfg.chunkBytes;
+            immutable name = path;
+            auto body_ = Stream(ctx.response.contentType, (scope StreamWriter w) @system {
+                auto buf = new char[chunk];
+                size_t left = size;
+                while (left)
+                {
+                    auto piece = buf[0 .. left < chunk ? left : chunk];
+                    immutable got = offload(() => readFully(f, piece));
+                    if (got != piece.length)
+                        throw new Exception("vela: file changed while being read: " ~ name);
+                    w.write(piece);
+                    left -= got;
+                }
+            }, cast(long) size);
+            runStream(ctx, body_); // `fd` stays open until serve() returns, i.e. until the last byte was written
+            return;
         }
-        else
-            got = readFully(fd, dest);
+        auto dest = ctx.response.body.writable(size);
+        immutable got = readFully(fd, dest);
         if (got != size)
             throw new Exception("vela: file changed while being read: " ~ path);
         ctx.response.body.commit(got);
@@ -214,6 +233,10 @@ string realPath(string path) @trusted
 
 /// @trusted: fstat writes only into `st`, which is a live local.
 private bool statFd(int fd, out stat_t st) @trusted nothrow @nogc => fstat(fd, &st) == 0;
+
+// Older druntime declares S_ISDIR/S_ISREG @system (and impure). Sound: each is a bit test on an integer.
+private bool isDirMode(mode_t m) @trusted nothrow @nogc => S_ISDIR(m);
+private bool isRegMode(mode_t m) @trusted nothrow @nogc => S_ISREG(m);
 
 private size_t readFully(int fd, char[] dest) nothrow @nogc @trusted
 {

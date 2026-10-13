@@ -347,8 +347,11 @@ void main()
     certFile = env("VELA_UP_CERT");
     if (p is null || t is null || certFile is null)
     {
-        printf("skipped: set VELA_UP_PLAIN, VELA_UP_TLS and VELA_UP_CERT (see tests/net/upstream.py)\n");
-        return;
+        import core.stdc.stdio : fprintf, stderr;
+        import core.stdc.stdlib : exit;
+
+        fprintf(stderr, "skip: set VELA_UP_PLAIN, VELA_UP_TLS and VELA_UP_CERT (see tests/net/upstream.py)\n");
+        exit(77);
     }
     plainBase = "http://127.0.0.1:" ~ p;
     tlsBase = "https://localhost:" ~ t;

@@ -31,6 +31,10 @@ int stuckReadFd() @trusted => stuckPipe[0]; // __gshared: created before the ser
 
 string fast() => "ok";
 
+string myIp(ClientIp ip) => ip.toString;
+
+string echoBody(Context c) => (cast(const(char)[]) c.request.body).idup;
+
 string nap(int ms)
 {
     sleep(msecs(ms));
@@ -80,10 +84,58 @@ string big()
     return s.idup;
 }
 
+// Slices kept past the request, to prove they are memory-safe (see testKeptSlices). __gshared: the handler runs on the
+// server thread and the test reads them afterwards.
+__gshared const(char)[][] keptPath, keptHeaderA, keptBody, keptResponse;
+__gshared string[] keptHeaderB;
+
+void keep(const(char)[] path, const(char)[] a, string b, const(char)[] body_) @trusted
+{
+    keptPath ~= path;      // a const(char)[] path parameter: a zero-copy view
+    keptHeaderA ~= a;      // ctx.request.header(...): a zero-copy view
+    keptHeaderB ~= b;      // Header!"X-B": a copy
+    keptBody ~= body_;     // the raw body: a zero-copy view (the 200 KiB ones are above the pool's classes)
+}
+
+void keepResponse(const(char)[] r) @trusted { keptResponse ~= r; }
+
+string keepAll(const(char)[] tag, Header!"X-B" b, Context ctx)
+{
+    keep(tag, ctx.request.header("X-A"), b.value, cast(const(char)[]) ctx.request.body);
+    return ("kept " ~ tag).idup;
+}
+
+string oob(int i)
+{
+    int[] a = [1, 2, 3];
+    return a[i] > 0 ? "positive" : "zero"; // i >= 3: a RangeError (an Error, not an Exception), thrown from @safe code
+}
+
+string boomException() { throw new Exception("plain exception"); }
+
+Response owned()
+{
+    return Response(200, "text/plain", "hello", [HeaderField("Content-Length", "999"),
+        HeaderField("Connection", "upgrade"), HeaderField("Set-Cookie", "a=1"), HeaderField("Set-Cookie", "b=2")]);
+}
+
+Response splitting(string to) => Response.redirect(to);
+
 App buildApp()
 {
     auto app = new App;
+    app.use((Context c, Next n) {
+        n();
+        if (c.request.path.length >= 5 && c.request.path[0 .. 5] == "/keep")
+            keepResponse(c.response.body.data); // a view of the response buffer, kept after the handler returned
+    });
+    app.post!("/keep/{tag}", keepAll);
+    app.get!("/oob/{i}", oob);
+    app.get!("/boom", boomException);
+    app.get!("/owned", owned);
+    app.get!("/redirect", splitting);
     app.get!("/fast", fast);
+    app.get!("/ip", myIp);
     app.get!("/nap/{ms}", nap);
     app.get!("/cancel", cancelMe);
     app.get!("/stuck", stuck);
@@ -91,6 +143,7 @@ App buildApp()
     app.get!("/block", block);
     app.get!("/off/{ms}", off);
     app.post!("/len", bodyLen);
+    app.post!("/echo", echoBody);
     return app;
 }
 
@@ -281,7 +334,9 @@ void testBasic()
     assert(r.status == 200 && r.body == "ok", r.head);
     r = request(s.port, "/does-not-exist");
     assert(r.status == 404, r.head);
-    ok("simple GET and 404");
+    r = request(s.port, "/ip");
+    assert(r.status == 200 && r.body == "127.0.0.1", "the client's address: " ~ r.body);
+    ok("simple GET and 404; the peer address is visible to handlers");
 }
 
 void testKeepAliveAndPipelining()
@@ -306,6 +361,284 @@ void testKeepAliveAndPipelining()
     assert(c.rx().body == "ok");
     c.hang();
     ok("pipelining with a handler suspended midway, order preserved");
+}
+
+void testResponseHeaders()
+{
+    import std.algorithm : canFind, count;
+
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+    // vela owns Content-Length and Connection; two Set-Cookie both reach the wire; no stray bytes follow the body
+    auto c = dial(s.port);
+    c.tx("GET /owned HTTP/1.1\r\nHost: t\r\n\r\n");
+    auto r = c.rx();
+    assert(r.status == 200 && r.body == "hello", r.head);
+    assert(r.head.canFind("Content-Length: 5\r\n") && !r.head.canFind("999"), r.head);
+    assert(!r.head.canFind("upgrade") && !r.head.canFind("Connection:"), r.head);
+    assert(r.head.count("Set-Cookie: ") == 2, r.head);
+    assert(r.head.canFind("Date: "), r.head);
+    c.hang();
+    // response splitting: the injected header never appears, the client gets a plain 500
+    c = dial(s.port);
+    c.tx("GET /redirect?to=/x%0d%0aSet-Cookie:%20pwned=1 HTTP/1.1\r\nHost: t\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 500 && !r.head.canFind("pwned") && !r.head.canFind("Location"), r.head);
+    c.hang();
+    ok("response headers: vela-owned ones dropped, duplicates kept, CR/LF injection answered with 500");
+}
+
+/// Request data handed to user code lives in GC memory: whatever a handler or middleware keeps after the request is
+/// still readable (never freed or unmapped), and `Header!"X"` is a copy that keeps its content.
+void testKeptSlices()
+{
+    import std.conv : to;
+
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+    keptPath = keptHeaderA = keptBody = keptResponse = null;
+    keptHeaderB = null;
+    enum connections = 20, perConnection = 100; // 2,000 requests
+    size_t[] sentBodyLen;
+    string[] sentB;
+    foreach (ci; 0 .. connections)
+    {
+        auto c = dial(s.port);
+        foreach (ri; 0 .. perConnection)
+        {
+            immutable n = ci * perConnection + ri;
+            // a few 200 KiB bodies (above the 64 KiB pool classes), the rest small
+            immutable len = (n % 67 == 0) ? 200 * 1024 : 50 + n % 300;
+            auto body_ = new char[len];
+            body_[] = cast(char)('a' + n % 26);
+            immutable b = "b-" ~ n.to!string;
+            c.tx("POST /keep/t" ~ n.to!string ~ " HTTP/1.1\r\nHost: t\r\nX-A: a-" ~ n.to!string ~ "\r\nX-B: " ~ b
+                ~ "\r\nContent-Length: " ~ len.to!string ~ "\r\n\r\n" ~ body_.idup);
+            auto r = c.rx();
+            assert(r.status == 200 && r.body == "kept t" ~ n.to!string, r.head);
+            sentBodyLen ~= len;
+            sentB ~= b;
+        }
+        c.hang();
+    }
+    // every kept slice is still readable: touch each byte; nothing crashed, nothing changed length
+    assert(keptPath.length == 2000 && keptHeaderA.length == 2000 && keptBody.length == 2000 && keptResponse.length == 2000);
+    size_t sum;
+    foreach (k; 0 .. 2000)
+    {
+        foreach (ch; keptPath[k]) sum += ch;
+        foreach (ch; keptHeaderA[k]) sum += ch;
+        foreach (ch; keptBody[k]) sum += ch;
+        foreach (ch; keptResponse[k]) sum += ch;
+        assert(keptBody[k].length == sentBodyLen[k], "a kept body slice must keep its length");
+        assert(keptHeaderB[k] == sentB[k], "Header!\"X-B\" is a copy: it must still equal what was sent");
+    }
+    assert(sum > 0);
+    ok("kept views are memory-safe (2,000 keep-alive requests, 200 KiB bodies included); Header!\"X\" keeps its content");
+}
+
+/// Runs `work` with stderr redirected to a file and returns what was written.
+string captureStderr(scope void delegate() work)
+{
+    import core.sys.posix.unistd : dup, dup2;
+    import core.stdc.stdio : tmpfile, fileno, rewind, fread, fflush, stderr;
+
+    auto f = tmpfile();
+    fflush(stderr);
+    immutable saved = dup(2);
+    dup2(fileno(f), 2);
+    work();
+    fflush(stderr);
+    dup2(saved, 2);
+    close(saved);
+    rewind(f);
+    char[] text;
+    char[4096] tmp;
+    for (;;)
+    {
+        auto n = fread(tmp.ptr, 1, tmp.length, f);
+        if (n == 0)
+            break;
+        text ~= tmp[0 .. n];
+    }
+    return text.idup;
+}
+
+void testHandlerErrors()
+{
+    import std.algorithm : canFind, count;
+
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+
+    // an Error inside @safe code: 500, the connection is closed, the fiber is thrown away, the server carries on
+    string log;
+    Resp r;
+    log = captureStderr({
+        auto c = dial(s.port);
+        c.tx("GET /oob/10 HTTP/1.1\r\nHost: t\r\n\r\n");
+        r = c.rx();
+        c.hang();
+    });
+    assert(r.status == 500 && r.closed, r.head);
+    assert(log.canFind("unhandled core.exception.") && log.canFind("out of bounds") && log.canFind("epoll_net.d("), log); // type, message, file:line
+    assert(log.canFind("GET /oob/10"), log);
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 1000));
+    auto st = s.loop.stats();
+    assert(st.handlerErrors == 1 && st.fibersPoisoned == 1, "the poisoned fiber must not go back to the pool");
+    assert(st.idleWorkers == 0);
+    // the next request runs on a new fiber
+    auto c = dial(s.port);
+    c.tx("GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 200 && r.body == "ok");
+    c.hang();
+    assert(waitFor(() => s.loop.stats().workersCreated == 2, 1000));
+
+    // an ordinary Exception is caught by the app (500 with the app's own logging), and its fiber is reused
+    log = captureStderr({ r = request(s.port, "/boom"); });
+    assert(r.status == 500 && log.canFind("plain exception"), log);
+    assert(s.loop.stats().fibersPoisoned == 1);
+
+    // a burst of failures: at most 5 full traces in the second, then a summary line
+    log = captureStderr({
+        Client[50] cs;
+        foreach (ref cl; cs)
+        {
+            cl = dial(s.port);
+            cl.tx("GET /oob/9 HTTP/1.1\r\nHost: t\r\n\r\n");
+        }
+        foreach (ref cl; cs)
+        {
+            assert(cl.rx().status == 500);
+            cl.hang();
+        }
+        Thread.sleep(1500.msecs); // the sweep reports what was suppressed
+    });
+    assert(log.count("unhandled core.exception.") <= 5, "traces are limited per second");
+    assert(log.canFind("more handler failures in the last second (traces suppressed)"), log);
+    assert(s.loop.stats().handlerErrors == 51 && s.loop.stats().fibersPoisoned == 51);
+    ok("an Error in a handler: 500 and close, full trace logged (rate-limited), the fiber is retired, the server keeps serving");
+}
+
+string chunkify(string data, size_t piece)
+{
+    import std.conv : to;
+    import std.format : format;
+
+    string r;
+    for (size_t i = 0; i < data.length; i += piece)
+    {
+        auto p = data[i .. (i + piece < data.length ? i + piece : data.length)];
+        r ~= format("%x\r\n", p.length) ~ p ~ "\r\n";
+    }
+    return r ~ "0\r\n\r\n";
+}
+
+void testChunkedUploads()
+{
+    import std.algorithm : canFind;
+
+    ServerConfig cfg;
+    cfg.limits.maxBodyBytes = 1 << 20;
+    cfg.headerTimeoutMs = 400;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+    enum head = "POST /echo HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n\r\n";
+
+    // basic: the body is the concatenation of the chunks; extensions and trailers are accepted and dropped
+    auto c = dial(s.port);
+    c.tx(head ~ "5;ext=1\r\nhello\r\n6\r\n world\r\n0\r\nX-Trailer: v\r\n\r\n");
+    auto r = c.rx();
+    assert(r.status == 200 && r.body == "hello world", r.head ~ r.body);
+
+    // keep-alive and a pipelined request right behind the body, in one write
+    c.tx(head ~ chunkify("abc", 1) ~ "GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 200 && r.body == "abc", r.body);
+    r = c.rx();
+    assert(r.status == 200 && r.body == "ok", "the request after a chunked body must be served: " ~ r.head);
+
+    // byte by byte
+    auto raw = head ~ chunkify("slow and steady", 4);
+    foreach (ch; raw)
+    {
+        c.tx([ch].idup);
+    }
+    r = c.rx();
+    assert(r.status == 200 && r.body == "slow and steady", r.body);
+
+    // a big upload (above the pool classes) in 16 KiB chunks
+    auto big = new char[700_000];
+    foreach (i, ref x; big)
+        x = cast(char)('a' + i % 23);
+    c.tx(head ~ chunkify(big.idup, 16 << 10));
+    r = c.rx();
+    assert(r.status == 200 && r.body == big.idup, "a 700 KB chunked body arrives intact");
+    c.hang();
+
+    // Expect: 100-continue is answered before the chunks are sent
+    c = dial(s.port);
+    c.tx("POST /echo HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\nExpect: 100-continue\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 100, r.head);
+    c.tx(chunkify("go", 2));
+    r = c.rx();
+    assert(r.status == 200 && r.body == "go");
+    c.hang();
+
+    // slow chunks keep the request alive: 8 chunks, 120 ms apart (960 ms) with a 400 ms limit that counts without progress
+    c = dial(s.port);
+    c.tx(head);
+    foreach (i; 0 .. 8)
+    {
+        c.tx("1\r\nx\r\n");
+        Thread.sleep(120.msecs);
+    }
+    c.tx("0\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 200 && r.body == "xxxxxxxx", "progress must extend the deadline: " ~ r.head);
+    c.hang();
+
+    // ... but a stall does not
+    c = dial(s.port);
+    c.tx(head ~ "5\r\nhel");
+    r = c.rx(); // no progress for 400 ms: 408
+    assert(r.status == 408, r.head);
+    c.hang();
+
+    // too big: refused as soon as a chunk announces more than the limit allows
+    c = dial(s.port);
+    c.tx(head ~ "200000\r\n");
+    r = c.rx();
+    assert(r.status == 413 && r.closed, r.head);
+    c.hang();
+    c = dial(s.port);
+    c.tx(head ~ chunkify(new char[2 << 20].idup, 64 << 10));
+    r = c.rx();
+    assert(r.status == 413, r.head);
+    c.hang();
+
+    // malformed framing: 400 and the connection is closed
+    foreach (bad; ["zz\r\nhi\r\n0\r\n\r\n", "5\r\nhelloXX0\r\n\r\n", "5\nhello\r\n0\r\n\r\n", "-1\r\n"])
+    {
+        c = dial(s.port);
+        c.tx(head ~ bad);
+        r = c.rx();
+        assert(r.status == 400 && r.closed, bad ~ " -> " ~ r.head);
+        c.hang();
+    }
+
+    // anything but plain `chunked` is refused before the body
+    foreach (te; ["gzip, chunked", "chunked, identity", "identity"])
+    {
+        c = dial(s.port);
+        c.tx("POST /echo HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: " ~ te ~ "\r\n\r\n");
+        r = c.rx();
+        assert(r.status == 501, te ~ " -> " ~ r.head);
+        c.hang();
+    }
+    ok("chunked request bodies: decoded in place, pipelining, 100-continue, progress deadline, limits, malformed framing");
 }
 
 void testSlowHead()
@@ -478,7 +811,7 @@ void testInvalidInput()
         Case("FOO / HTTP/1.1\r\nHost: t\r\n\r\n", 501),
         Case("GET / HTTP/2.0\r\nHost: t\r\n\r\n", 505),
         Case("POST /x HTTP/1.1\r\nContent-Length: 1\r\nTransfer-Encoding: chunked\r\n\r\n", 400),
-        Case("POST /x HTTP/1.1\r\nTransfer-Encoding: chunked\r\n\r\n", 501),
+        Case("POST /x HTTP/1.1\r\nTransfer-Encoding: gzip\r\n\r\n", 501), // chunked itself is supported now
         Case("GET /x HTTP/1.1\r\nA: b\r\n c\r\n\r\n", 400),
     ];
     foreach (cs; cases)
@@ -708,6 +1041,10 @@ void main()
     configureOffload(2, 2);
     testBasic();
     testKeepAliveAndPipelining();
+    testResponseHeaders();
+    testChunkedUploads();
+    testHandlerErrors();
+    testKeptSlices();
     testSlowHead();
     testConcurrency();
     testCancellation();

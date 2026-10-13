@@ -63,8 +63,10 @@ private void feed(H2Session s, scope const(ubyte)[] more)
             || st.req.target == "*");
         static ByteBuffer o;
         o.clear();
-        o.put("HTTP/1.1 200 OK\r\nContent-Length: 3\r\nX-A: b\r\n\r\nabc");
-        s.respond(st, o);
+        o.put("abc");
+        static immutable HeaderField[1] extra = [HeaderField("X-A", "b")];
+        const ResponseHead head = ResponseHead(200, null, extra[], 3);
+        s.respond(st, head, o);
     }
     checkOutput(s);
 }

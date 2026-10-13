@@ -22,6 +22,7 @@ void main()
     auto app = new App;
     app.get!("/calc/{id}", calc);
     auto cb = handlerFactory(app)();
+    auto sink = new BufferedSink;
 
     ByteBuffer blk;
     encodeField(blk, ":method", "GET");
@@ -37,7 +38,6 @@ void main()
     s.sent(s.pendingOutput.length);
 
     ubyte[64 << 10] frame;
-    ByteBuffer output;
     uint sid = 1;
     size_t outBytes;
 
@@ -50,9 +50,9 @@ void main()
         H2Stream st;
         while (s.popReady(st))
         {
-            output.clear();
-            cb(st.req, output);
-            s.respond(st, output);
+            sink.reset();
+            cb(st.req, sink);
+            s.respond(st, sink.head, sink.body);
         }
         outBytes = s.pendingOutput.length;
         s.sent(outBytes);

@@ -1,4 +1,4 @@
-// EXPECT: more than one JsonBody; merge the fields into a single DTO
+// EXPECT: more than one body parameter (JsonBody or Form); merge the fields into a single DTO
 import vela;
 @safe:
 struct A { int x; } struct B { int y; }

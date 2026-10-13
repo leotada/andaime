@@ -1,5 +1,5 @@
 /// Tests of the Postgres driver against a real server (VELA_PG = conninfo).
-/// Without VELA_PG the test declares itself skipped (exit 0 with a warning).
+/// Without VELA_PG the test declares itself skipped (prints `skip: <reason>` and exits 77).
 module pg_net;
 
 version (linux):
@@ -22,7 +22,28 @@ import core.time;
 __gshared string conninfo;
 __gshared PgConfig cfg;
 
-struct User { int id; string name; Maybe!string email; }
+struct User { int id; string name; Optional!string email; }
+
+/// A text type: a UUID travels to and from a `uuid` column as text.
+struct Uuid
+{
+    string text; // kept as validated text, enough for the test
+
+    static bool fromString(scope const(char)[] t, out Uuid v)
+    {
+        if (t.length != 36)
+            return false;
+        v.text = t.idup;
+        return true;
+    }
+
+    void toString(scope void delegate(scope const(char)[]) @safe sink) const
+    {
+        sink(text);
+    }
+}
+
+struct Doc { Uuid id; string title; }
 
 PgPool db() @trusted => pgPool(cfg); // `cfg` is __gshared, written once before the workers start
 
@@ -37,8 +58,10 @@ string user(int id)
     auto u = db.query("select id, name, email from t_users where id = $1", id).rowsAs!User;
     if (u.length == 0)
         return "none";
-    return u[0].name ~ "|" ~ (u[0].email.has ? u[0].email.value : "-");
+    return u[0].name ~ "|" ~ u[0].email.getOr("-");
 }
+
+User userJson(int id) => db.query("select id, name, email from t_users where id = $1", id).rowsAs!User[0];
 
 string wait(int ms)
 {
@@ -54,7 +77,16 @@ string types()
     assert(r.get!double(0, 2) == 2.5);
     assert(r.get!string(0, 3) == "a'b\"c");
     assert(r.isNull(0, 4));
-    assert(r.get!(Maybe!string)(0, 4).has == false);
+    assert(r.get!(Optional!string)(0, 4).has == false);
+
+    // a text type goes in as text and comes out of a uuid column through fromString
+    enum id = "123e4567-e89b-12d3-a456-426614174000";
+    auto u = db.query("select $1::uuid as id, 'doc' as title", Uuid(id));
+    assert(u.get!Uuid(0, 0).text == id);
+    auto docs = u.rowsAs!Doc;
+    assert(docs.length == 1 && docs[0].id.text == id && docs[0].title == "doc");
+    auto none = db.query("select $1::uuid as id", Optional!Uuid.none);
+    assert(none.isNull(0, 0) && !none.get!(Optional!Uuid)(0, 0).has);
     return "types ok";
 }
 
@@ -98,6 +130,7 @@ App buildApp()
     auto app = new App;
     app.get!("/fast", fast);
     app.get!("/user/{id}", user);
+    app.get!("/userjson/{id}", userJson);
     app.get!("/wait/{ms}", wait);
     app.get!("/types", types);
     app.get!("/dup", dup);
@@ -275,6 +308,11 @@ void testBasic()
     assert(r.status == 200 && r.body == "ana|ana@x.com", r.body);
     r = fetch(s.port, "/user/2");
     assert(r.status == 200 && r.body == "bia|-", r.body);
+    // a NULL column is an empty Optional, which the JSON layer writes as null (not as a {"value":..,"has":..} object)
+    r = fetch(s.port, "/userjson/1");
+    assert(r.status == 200 && r.body == `{"id":1,"name":"ana","email":"ana@x.com"}`, r.body);
+    r = fetch(s.port, "/userjson/2");
+    assert(r.status == 200 && r.body == `{"id":2,"name":"bia","email":null}`, r.body);
     r = fetch(s.port, "/user/9");
     assert(r.body == "none", r.body);
     r = fetch(s.port, "/types");
@@ -283,7 +321,7 @@ void testBasic()
     assert(r.body == "unique 23505", r.body);
     r = fetch(s.port, "/tx");
     assert(r.body == "rolled=yes committed=yes", r.body);
-    ok("queries, typed parameters, Maybe, error with SQLSTATE, transaction with rollback");
+    ok("queries, typed parameters, Optional, error with SQLSTATE, transaction with rollback");
 }
 
 void testNonBlocking()
@@ -381,8 +419,11 @@ void main()
     auto env = getenv("VELA_PG");
     if (env is null)
     {
-        printf("skipped: set VELA_PG to the conninfo of a test Postgres\n");
-        return;
+        import core.stdc.stdio : fprintf, stderr;
+        import core.stdc.stdlib : exit;
+
+        fprintf(stderr, "skip: set VELA_PG to the conninfo of a test Postgres\n");
+        exit(77);
     }
     conninfo = cast(string) env[0 .. strlen(env)].idup;
     cfg.conninfo = conninfo ~ " application_name=vela_test";

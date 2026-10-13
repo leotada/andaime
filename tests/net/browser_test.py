@@ -2,8 +2,8 @@
 """Real browser against vela (Chromium through Playwright): loads a page over HTTPS with 26 static
 assets and three API calls, checks the protocol Chromium negotiated for every resource (h2 by
 default, http/1.1 with HTTP/2 disabled), follows the redirect from the cleartext port, and checks a
-2 MiB script arrives intact. Usage: browser_test.py <server binary>. Exits 0 with a warning when
-Playwright or Chromium is not available."""
+2 MiB script arrives intact. Usage: browser_test.py <server binary>. Prints "skip: <reason>" and exits 77
+when Playwright or Chromium is not available."""
 import os
 import socket
 import subprocess
@@ -28,8 +28,8 @@ def fail(msg):
 try:
     from playwright.sync_api import sync_playwright
 except ImportError:
-    print("warning: python playwright not installed; skipping the real-browser test")
-    sys.exit(0)
+    print("skip: python playwright not installed", file=sys.stderr)
+    sys.exit(77)
 
 work = tempfile.mkdtemp(prefix="vela_browser_")
 pub = os.path.join(work, "public")
@@ -48,8 +48,8 @@ r = subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_
                     "-keyout", key, "-out", cert, "-days", "2", "-subj", "/CN=localhost",
                     "-addext", "subjectAltName=DNS:localhost,IP:127.0.0.1"], capture_output=True)
 if r.returncode != 0:
-    print("warning: the openssl command failed; skipping the real-browser test")
-    sys.exit(0)
+    print("skip: the openssl command failed", file=sys.stderr)
+    sys.exit(77)
 
 port, rport = free_port(), free_port()
 srv = subprocess.Popen([sys.argv[1], str(port), str(rport), cert, key, pub],
@@ -94,8 +94,8 @@ try:
         try:
             browser = p.chromium.launch()
         except Exception as e:  # no browser binary
-            print("warning: Chromium could not start (%s); skipping the real-browser test" % str(e).splitlines()[0])
-            sys.exit(0)
+            print("skip: Chromium could not start (%s)" % str(e).splitlines()[0], file=sys.stderr)
+            sys.exit(77)
         version = browser.version
 
         resp, result, protos, failed, _ = load(browser, "https://localhost:%d/" % port)

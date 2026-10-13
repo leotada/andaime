@@ -33,13 +33,6 @@ void main(string[] args) @system
 {
     import std.conv : to;
 
-    auto app = new App;
-    app.get!("/", root);
-    app.post!("/", echo);
-    app.post!("/echo", echo);
-    app.get!("/big/{kib}", big);
-    app.get!("/nap/{ms}", nap);
-    app.get!("/proto", proto);
     ServerConfig cfg;
     cfg.port = args.length > 1 ? args[1].to!ushort : 8080;
     cfg.host = "127.0.0.1";
@@ -49,5 +42,14 @@ void main(string[] args) @system
         cfg.tls.certFile = args[2];
         cfg.tls.keyFile = args[3];
     }
-    serve(app, cfg);
+    serve(() {
+        auto app = new App;
+        app.get!("/", root);
+        app.post!("/", echo);
+        app.post!("/echo", echo);
+        app.get!("/big/{kib}", big);
+        app.get!("/nap/{ms}", nap);
+        app.get!("/proto", proto);
+        return app;
+    }, cfg);
 }

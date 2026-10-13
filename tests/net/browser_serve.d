@@ -59,12 +59,7 @@ void main(string[] args) @system
 {
     import std.conv : to;
 
-    auto app = new App;
-    app.get!("/", page);
-    app.get!("/api/items/{id}", getItem);
-    app.post!("/api/items", createItem);
-    app.get!("/api/proto", proto);
-    app.serveStatic("/static", args[5]);
+    immutable staticDir = args[5];
     ServerConfig cfg;
     cfg.port = args[1].to!ushort;
     cfg.host = "127.0.0.1";
@@ -72,5 +67,13 @@ void main(string[] args) @system
     cfg.tls.certFile = args[3];
     cfg.tls.keyFile = args[4];
     cfg.tls.redirectPort = args[2].to!ushort;
-    serve(app, cfg);
+    serve(() {
+        auto app = new App;
+        app.get!("/", page);
+        app.get!("/api/items/{id}", getItem);
+        app.post!("/api/items", createItem);
+        app.get!("/api/proto", proto);
+        app.serveStatic("/static", staticDir);
+        return app;
+    }, cfg);
 }

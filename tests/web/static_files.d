@@ -69,4 +69,16 @@ unittest
     // large file (offload path, inline in the TestClient)
     r = c.get("/assets/big.bin");
     assert(r.status == 200 && r.body.length == 600_000 && r.contentType == "application/octet-stream");
+
+    // a file above offloadAbove (256 KiB) is streamed in 64 KiB pieces, with its Content-Length
+    assert(r.contentLength == 600_000, "the length is announced up front");
+    assert(r.chunks.length == 10 && r.chunks[0].length == 64 << 10 && r.chunks[$ - 1].length == 600_000 - 9 * (64 << 10));
+    assert(r.header("ETag").length > 4 && r.header("Last-Modified").length == 29);
+    // ETag/304 and HEAD still work for a streamed file
+    r = c.get("/assets/big.bin", hdr("If-None-Match", r.header("ETag")));
+    assert(r.status == 304 && r.body.length == 0);
+    r = c.head("/assets/big.bin");
+    assert(r.status == 200 && r.contentLength == 600_000 && r.body.length == 0 && r.chunks.length == 0);
+    // a small file is still one chunk
+    assert(c.get("/assets/css/app.css").chunks == ["body{}"]);
 }

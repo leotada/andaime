@@ -63,6 +63,90 @@ string proto(Context c) => c.request.protocol == Protocol.http2 ? "h2" : "http/1
 
 string host(Header!"Host" h) => h.value.idup;
 
+string myIp(ClientIp ip) => ip.toString;
+
+// ---- streamed responses
+shared int streamCleanups;
+
+Stream sChunks()
+{
+    return Stream("text/plain", (scope StreamWriter w) @system {
+        w.write("hello");
+        w.write(" ");
+        w.write("world");
+    });
+}
+
+EventStream sEvents()
+{
+    return EventStream((scope EventWriter w) @system {
+        w.send("first");
+        sleep(msecs(400));
+        w.send("second");
+    });
+}
+
+Stream sBig(int mib)
+{
+    return Stream("application/octet-stream", (scope StreamWriter w) @system {
+        auto piece = new char[64 << 10];
+        piece[] = 'z';
+        foreach (i; 0 .. mib * 16)
+            w.write(piece);
+    });
+}
+
+Stream sForever()
+{
+    return Stream("text/plain", (scope StreamWriter w) @system {
+        scope (exit)
+            atomicOp!"+="(streamCleanups, 1);
+        for (;;)
+        {
+            w.write("tick\n");
+            w.flush();
+            sleep(msecs(20));
+        }
+    });
+}
+
+Stream sFail()
+{
+    return Stream("text/plain", (scope StreamWriter w) @system {
+        w.write("abc");
+        w.flush();
+        throw new Exception("boom after the head");
+    });
+}
+
+// Slices kept past the request (see testKeptSlicesOverH2); __gshared because the handler runs on the server thread.
+__gshared const(char)[][] keptPath, keptHeaderA, keptBody, keptResponse;
+__gshared string[] keptHeaderB;
+
+void keep(const(char)[] path, const(char)[] a, string b, const(char)[] body_) @trusted
+{
+    keptPath ~= path;
+    keptHeaderA ~= a;
+    keptHeaderB ~= b;
+    keptBody ~= body_;
+}
+
+void keepResponse(const(char)[] r) @trusted { keptResponse ~= r; }
+
+string keepAll(const(char)[] tag, Header!"X-B" b, Context ctx)
+{
+    keep(tag, ctx.request.header("X-A"), b.value, cast(const(char)[]) ctx.request.body);
+    return ("kept " ~ tag).idup;
+}
+
+string oob(int i)
+{
+    int[] a = [1, 2, 3];
+    return a[i] > 0 ? "positive" : "zero"; // an Error from @safe code when i >= 3
+}
+
+Response cookies() => Response(200, "text/plain", "c", [HeaderField("Set-Cookie", "a=1"), HeaderField("Set-Cookie", "b=2")]);
+
 App buildApp()
 {
     auto app = new App;
@@ -73,6 +157,20 @@ App buildApp()
     app.post!("/len", bodyLen);
     app.get!("/proto", proto);
     app.get!("/host", host);
+    app.get!("/ip", myIp);
+    app.get!("/cookies", cookies);
+    app.use((Context c, Next n) {
+        n();
+        if (c.request.path.length >= 5 && c.request.path[0 .. 5] == "/keep")
+            keepResponse(c.response.body.data);
+    });
+    app.post!("/keep/{tag}", keepAll);
+    app.get!("/oob/{i}", oob);
+    app.get!("/s/chunks", sChunks);
+    app.get!("/s/events", sEvents);
+    app.get!("/s/big/{mib}", sBig);
+    app.get!("/s/forever", sForever);
+    app.get!("/s/fail", sFail);
     return app;
 }
 
@@ -373,6 +471,9 @@ final class H2Client
         }
     }
 
+    /// True if no complete frame is waiting in the local buffer (used to assert that nothing more arrived).
+    bool inbufDrain() => inbuf.length < 9;
+
     bool closedByPeer()
     {
         while (step())
@@ -396,6 +497,7 @@ void testBasics()
     assert(r.headers.startsWith(":status=200;content-type=text/plain; charset=utf-8;content-length=2;date="), r.headers);
     assert(c.get("/proto").body == "h2");
     assert(c.get("/host").body == "test.local", "the :authority should be visible as Host");
+    assert(c.get("/ip").body == "127.0.0.1", "the peer address is visible on an HTTP/2 stream");
     assert(c.get("/nope").status == 404);
     auto sid = c.request("HEAD", "/big/4");
     c.wait(sid);
@@ -420,6 +522,188 @@ void testBasics()
     assert(all.indexOf("HTTP/1.1 200") == 0 && all[$ - 8 .. $] == "http/1.1", all);
     assert(s.loop.stats().http2Connections == 1);
     ok("h2c prior knowledge: GET/HEAD/404, :authority as Host, HTTP/1.1 still served on the same port");
+}
+
+void testRepeatedResponseHeaders()
+{
+    import std.algorithm : canFind;
+
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+    auto c = new H2Client(s.port);
+    auto r = c.get("/cookies");
+    assert(r.status == 200 && r.headers.canFind("set-cookie=a=1;") && r.headers.canFind("set-cookie=b=2;"), r.headers);
+    c.hang();
+    ok("two Set-Cookie headers reach the client as two header fields");
+}
+
+void testKeptSlicesOverH2()
+{
+    import std.conv : to;
+
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+    keptPath = keptHeaderA = keptBody = keptResponse = null;
+    keptHeaderB = null;
+    auto c = new H2Client(s.port);
+    enum N = 400;
+    size_t[] sentLen;
+    string[] sentB;
+    foreach (n; 0 .. N)
+    {
+        immutable len = (n % 50 == 0) ? 200 * 1024 : 40 + n % 200;
+        auto body_ = new ubyte[len];
+        body_[] = cast(ubyte)('a' + n % 26);
+        immutable b = "b-" ~ n.to!string;
+        auto sid = c.request("POST", "/keep/t" ~ n.to!string, body_, [["x-a", "a-" ~ n.to!string], ["x-b", b]]);
+        c.wait(sid);
+        assert(c.resp[sid].status == 200 && c.resp[sid].body == "kept t" ~ n.to!string, c.resp[sid].headers);
+        sentLen ~= len;
+        sentB ~= b;
+    }
+    c.hang();
+    assert(keptPath.length == N && keptBody.length == N && keptResponse.length == N);
+    size_t sum;
+    foreach (k; 0 .. N)
+    {
+        foreach (ch; keptPath[k]) sum += ch;
+        foreach (ch; keptHeaderA[k]) sum += ch;
+        foreach (ch; keptBody[k]) sum += ch;
+        foreach (ch; keptResponse[k]) sum += ch;
+        assert(keptBody[k].length == sentLen[k]);
+        assert(keptHeaderB[k] == sentB[k]);
+    }
+    assert(sum > 0);
+    ok("HTTP/2: kept views are memory-safe (400 streams, 200 KiB bodies included); Header!\"X\" keeps its content");
+}
+
+/// Streamed responses over HTTP/2.
+void testStreams()
+{
+    import std.conv : to;
+
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+
+    // DATA frames carry the chunks, END_STREAM ends the body; HEAD is HEADERS only
+    auto c = new H2Client(s.port);
+    auto r = c.get("/s/chunks");
+    assert(r.status == 200 && r.body == "hello world" && r.done, r.headers);
+    import std.algorithm : canFind;
+    assert(!r.headers.canFind("content-length="), "a streamed body has no content-length: " ~ r.headers);
+    auto head = c.request("HEAD", "/s/chunks");
+    c.wait(head);
+    assert(c.resp[head].status == 200 && c.resp[head].body.length == 0 && c.resp[head].done);
+    assert(c.get("/fast").body == "ok", "the connection keeps working");
+
+    // an event is delivered when it is flushed
+    immutable t0 = MonoTime.currTime;
+    auto ev = c.request("GET", "/s/events");
+    while (c.resp[ev].body.length == 0 && c.step()) {}
+    immutable firstMs = (MonoTime.currTime - t0).total!"msecs";
+    assert(c.resp[ev].body == "data: first\n\n" && firstMs < 300, c.resp[ev].body ~ " after " ~ firstMs.to!string ~ " ms");
+    c.wait(ev);
+    assert(c.resp[ev].body == "data: first\n\ndata: second\n\n" && c.resp[ev].done);
+
+    // a failure after the head resets the stream (INTERNAL_ERROR); the connection survives
+    auto bad = c.request("GET", "/s/fail");
+    c.wait(bad);
+    assert(c.resp[bad].body == "abc" && c.resp[bad].rst == H2Error.internal, "rst=" ~ c.resp[bad].rst.to!string);
+    assert(c.get("/fast").body == "ok");
+    c.hang();
+    ok("HTTP/2 streams: DATA frames per chunk, HEAD, early events, a failure after the head resets only that stream");
+}
+
+/// A slow reader: one stream stops because its window is not opened; another stream on the same connection is not held up.
+void testStreamBackpressure()
+{
+    import std.conv : to;
+
+    ServerConfig cfg;
+    cfg.writeTimeoutMs = 20_000;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+    auto c = new H2Client(s.port);
+    c.autoWindow = false;
+    auto big = c.request("GET", "/s/big/8");
+    // read until the stream window (65,535 bytes) is used up; open only the CONNECTION window
+    size_t got;
+    while (got < 65_535 && c.step())
+    {
+        got = c.resp[big].body.length;
+        if (got)
+            txAll(c.fd, frame(8, 0, 0, u32(65_535)));
+    }
+    assert(got == 65_535, "the server sends exactly one window: " ~ got.to!string);
+    // the handler is suspended with at most the high-water mark buffered: memory is bounded
+    assert(waitFor(() => s.loop.stats().inFlight == 1, 1000));
+    Thread.sleep(150.msecs);
+    assert(c.resp[big].body.length == 65_535 || c.inbufDrain(), "no more DATA without window");
+    // another stream on the same connection completes while the big one is stalled
+    auto other = c.request("GET", "/fast");
+    while (!c.resp[other].done && c.step()) {}
+    assert(c.resp[other].body == "ok", "a stalled stream must not hold up the others");
+    // opening the stream window lets it finish
+    c.autoWindow = true;
+    txAll(c.fd, frame(8, 0, big, u32(1 << 30)));
+    c.wait(big);
+    assert(c.resp[big].done && c.resp[big].body.length == 8 << 20, c.resp[big].body.length.to!string);
+    c.hang();
+    ok("HTTP/2 backpressure: a stalled stream suspends its handler and does not block the connection");
+}
+
+void testStreamCancelled()
+{
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+    atomicOp!"-="(streamCleanups, atomicLoad(streamCleanups));
+    auto c = new H2Client(s.port);
+    auto sid = c.request("GET", "/s/forever");
+    while (c.resp[sid].body.length < 5 && c.step()) {}
+    c.reset(sid); // RST_STREAM(CANCEL) mid-stream
+    assert(waitFor(() => atomicLoad(streamCleanups) == 1, 2000), "the handler must be cancelled and scope(exit) must run");
+    assert(c.get("/fast").body == "ok");
+    c.hang();
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 1000));
+    ok("RST_STREAM mid-stream cancels the streaming handler");
+}
+
+void testStopWithOpenStreamOverH2()
+{
+    import std.conv : to;
+
+    ServerConfig cfg;
+    cfg.shutdownGraceMs = 300;
+    auto s = start(cfg);
+    atomicOp!"-="(streamCleanups, atomicLoad(streamCleanups));
+    auto c = new H2Client(s.port);
+    auto sid = c.request("GET", "/s/forever");
+    while (c.resp[sid].body.length < 5 && c.step()) {}
+    immutable t0 = MonoTime.currTime;
+    stop(s);
+    immutable ms = (MonoTime.currTime - t0).total!"msecs";
+    assert(ms < 1500, "stop must not wait for an open stream (" ~ ms.to!string ~ " ms)");
+    assert(atomicLoad(streamCleanups) == 1);
+    c.hang();
+    ok("HTTP/2: graceful stop sends GOAWAY and cancels a stream that never ends after shutdownGraceMs");
+}
+
+void testHandlerErrorOverH2()
+{
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+    auto c = new H2Client(s.port);
+    auto bad = c.request("GET", "/oob/10");
+    auto good = c.request("GET", "/fast");
+    c.wait(bad, good);
+    assert(c.resp[bad].status == 500, c.resp[bad].headers);
+    assert(c.resp[good].status == 200 && c.resp[good].body == "ok", "other streams are not affected");
+    assert(c.get("/fast").body == "ok", "the connection keeps working");
+    c.hang();
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 1000));
+    auto st = s.loop.stats();
+    assert(st.handlerErrors == 1 && st.fibersPoisoned == 1);
+    ok("an Error in a handler over HTTP/2: that stream gets a 500, the fiber is retired, the connection lives");
 }
 
 void testMultiplexing()
@@ -625,6 +909,38 @@ void testProtocolErrorClosesOnlyThatConnection()
     ok("a connection error closes that connection only");
 }
 
+/// A peer that sends GOAWAY and then more bytes (h2spec 7/1 sends a PING) must see a clean end of stream, never a
+/// reset: closing a socket with unread input makes the kernel send RST. The server lingers (FIN first, then discards).
+/// This exercises the lingering path and checks that such connections go away. The original race (the PING landing
+/// between the read of GOAWAY and close(), a window of microseconds) cannot be forced from a test; h2spec found it
+/// (about 1 run in 20 before the fix, 0 in 80 after), so tools/h2_interop.sh is the statistical check.
+void testNoResetAfterPeerGoAway()
+{
+    import core.stdc.errno : errno, ECONNRESET;
+
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+    foreach (round; 0 .. 20)
+    {
+        auto c = new H2Client(s.port); // no streams: the session is finished as soon as GOAWAY arrives
+        txAll(c.fd, frame(7, 0, 0, u32(0) ~ u32(0xdeadbeef))); // GOAWAY with an unknown error code
+        Thread.sleep(20.msecs);                                // the server has now decided to close
+        txAll(c.fd, frame(6, 0, 0, cast(const(ubyte)[]) "h2spec!!"));
+        Thread.sleep(30.msecs); // a reset (if the server sent one) has arrived; Linux reports it before the FIN
+        ubyte[512] tmp;
+        for (;;)
+        {
+            auto n = rd(c.fd, tmp.ptr, tmp.length);
+            assert(n >= 0 || errno != ECONNRESET, "the server reset the connection instead of closing it");
+            if (n <= 0)
+                break;
+        }
+        c.hang();
+    }
+    assert(waitFor(() => s.loop.stats().connections == 0, 2000), "lingering connections must go away");
+    ok("a peer GOAWAY followed by more bytes ends with a clean close, not a reset");
+}
+
 void testManyConnections()
 {
     auto s = start(ServerConfig.init);
@@ -649,6 +965,13 @@ void testManyConnections()
 void main()
 {
     testBasics();
+    testRepeatedResponseHeaders();
+    testHandlerErrorOverH2();
+    testStreams();
+    testStreamBackpressure();
+    testStreamCancelled();
+    testStopWithOpenStreamOverH2();
+    testKeptSlicesOverH2();
     testMultiplexing();
     testCancellation();
     testDeadlineAndCeiling();
@@ -658,6 +981,7 @@ void main()
     testGracefulStop();
     testDisabled();
     testProtocolErrorClosesOnlyThatConnection();
+    testNoResetAfterPeerGoAway();
     testManyConnections();
     printf("all HTTP/2 network tests passed\n");
 }

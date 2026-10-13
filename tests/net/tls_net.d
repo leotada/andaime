@@ -6,7 +6,7 @@
 ///
 /// The module sits in the `vela.engine` package only to reach the raw OpenSSL table, which is
 /// package-protected (`vela.engine.tls`); nothing outside tests does this.
-/// Skips itself (exit 0 with a warning) when OpenSSL 3 or the `openssl` command is missing.
+/// Skips itself (prints `skip: <reason>` and exits 77) when OpenSSL 3 or the `openssl` command is missing.
 module vela.engine.tls_net;
 
 version (linux):
@@ -66,6 +66,8 @@ string bodyLen(Context c) => c.request.body.length.to!string;
 
 string proto(Context c) => c.request.protocol == Protocol.http2 ? "h2" : "http/1.1";
 
+string myIp(ClientIp ip) => ip.toString;
+
 App buildApp()
 {
     auto app = new App;
@@ -75,6 +77,7 @@ App buildApp()
     app.get!("/big/{kib}", big);
     app.post!("/len", bodyLen);
     app.get!("/proto", proto);
+    app.get!("/ip", myIp);
     return app;
 }
 
@@ -448,6 +451,7 @@ void testHttp1OverTls()
     auto c = new TlsClient(s.port, ca, ["http/1.1"]);
     foreach (i; 0 .. 3)
         assert(get1(c, "/fast").body == "ok", "keep-alive over TLS");
+    assert(get1(c, "/ip").body == "127.0.0.1", "the peer address is visible over TLS");
     // pipelining: three requests in one write, a slow one in the middle
     c.send("GET /fast HTTP/1.1\r\nHost: l\r\n\r\nGET /nap/50 HTTP/1.1\r\nHost: l\r\n\r\nGET /fast HTTP/1.1\r\nHost: l\r\n\r\n");
     assert(rx(c).body == "ok" && rx(c).body == "slept" && rx(c).body == "ok");
@@ -487,6 +491,8 @@ void testHttp2OverTls()
     foreach (i, sid; ids[0 .. $ - 1])
         assert(got[sid] == (i % 2 ? "slept" : "h2"), got[sid]);
     assert(got[ids[$ - 1]].length == 2048 * 1024);
+    c.send(frame(1, 0x5, 61, getBlock("/ip")));
+    assert(h2Collect(c, [61])[61] == "127.0.0.1", "the peer address is visible on an HTTP/2 stream over TLS");
     c.hang();
     assert(s.loop.stats().http2Connections == 1);
     ok("HTTP/2 over TLS (ALPN h2): 30 multiplexed streams, 2 MiB response");
@@ -944,18 +950,21 @@ void main()
     import std.file : tempDir, mkdirRecurse, rmdirRecurse;
     import std.process : thisProcessID;
 
+    import core.stdc.stdio : fprintf, stderr;
+    import core.stdc.stdlib : exit;
+
     if (auto e = loadOpenSsl())
     {
-        printf("warning: %.*s; skipping the TLS tests\n", cast(int) e.length, e.ptr);
-        return;
+        fprintf(stderr, "skip: %.*s\n", cast(int) e.length, e.ptr);
+        exit(77);
     }
     dir = tempDir ~ "/vela_tls_" ~ thisProcessID.to!string;
     mkdirRecurse(dir);
     scope (exit) rmdirRecurse(dir);
     if (!makeCert("a") || !makeCert("b", "other"))
     {
-        printf("warning: the openssl command is missing; skipping the TLS tests\n");
-        return;
+        fprintf(stderr, "skip: the openssl command is missing\n");
+        exit(77);
     }
     testAlpn();
     testHttp1OverTls();

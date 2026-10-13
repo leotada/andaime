@@ -11,6 +11,17 @@ __gshared long gWaitMs = 3000;
 
 long waitMs() @trusted => gWaitMs; // set in main before serving, read-only afterwards
 
+/// Holds the request for the configured wait (like /slow), so all the bodies are in memory at the same time.
+string bodyLen(Context c)
+{
+    import core.stdc.stdio : snprintf;
+
+    sleep(msecs(waitMs));
+    char[24] t;
+    auto n = (() @trusted => snprintf(t.ptr, t.length, "%zu", c.request.body.length))();
+    return t[0 .. n].idup;
+}
+
 string slow()
 {
     sleep(msecs(waitMs));
@@ -25,8 +36,6 @@ void main(string[] args)
 
     if (args.length > 2)
         gWaitMs = args[2].to!long;
-    auto app = new App;
-    app.get!("/slow", slow);
     ServerConfig cfg;
     cfg.port = args.length > 1 ? args[1].to!ushort : 18090;
     cfg.workers = 1;
@@ -37,5 +46,10 @@ void main(string[] args)
         cfg.tls.certFile = args[3];
         cfg.tls.keyFile = args[4];
     }
-    app.serve(cfg);
+    serve(() {
+        auto app = new App;
+        app.get!("/slow", slow);
+        app.post!("/len", bodyLen);
+        return app;
+    }, cfg);
 }

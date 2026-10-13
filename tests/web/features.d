@@ -12,7 +12,7 @@ struct User { int id; string name; }
 string hi() => "hi";
 string me(Local!User u) => u.name;
 string boom() { throw new Exception("internal secret"); }
-string denied() { throw new HttpError(403, "proibido"); }
+string denied() { throw new HttpError(403, "forbidden"); }
 string orphan(Local!User u) => u.name;
 string echo(string x) => x;
 string id(int n) => "id=" ~ (n < 10 ? "0" : "") ~ "x";
@@ -97,6 +97,7 @@ unittest
     // without Origin: no CORS headers
     auto r = c.get("/hi");
     assert(r.header("Access-Control-Allow-Origin") is null);
+    assert(r.headers("Vary") == ["Origin"], "a cache must not reuse the no-CORS variant for an allowed origin");
 
     // allowed origin
     r = c.get("/hi", hdr("Origin", ori));
@@ -108,6 +109,7 @@ unittest
     // unknown origin: no headers (the browser blocks it)
     r = c.get("/hi", hdr("Origin", "https://mal.com"));
     assert(r.status == 200 && r.header("Access-Control-Allow-Origin") is null);
+    assert(r.headers("Vary") == ["Origin"]);
 
     // preflight of a route that only exists for GET: 204 without going through the router
     r = c.send(Method.OPTIONS, "/hi", null, [hdr("Origin", ori), hdr("Access-Control-Request-Method", "POST"),
@@ -117,6 +119,34 @@ unittest
     assert(r.header("Access-Control-Allow-Headers") == "content-type,authorization");
     assert(r.header("Access-Control-Max-Age") == "600");
     assert(r.body.length == 0);
+    assert(r.headers("Vary") == ["Origin, Access-Control-Request-Method, Access-Control-Request-Headers"], r.header("Vary"));
+
+    // a preflight that asks for no particular headers does not vary on them
+    r = c.send(Method.OPTIONS, "/hi", null, [hdr("Origin", ori), hdr("Access-Control-Request-Method", "POST")]);
+    assert(r.status == 204 && r.headers("Vary") == ["Origin, Access-Control-Request-Method"], r.header("Vary"));
+}
+
+unittest
+{
+    // `*` without credentials: the answer never depends on the origin, so only a preflight varies
+    auto app = new App;
+    app.use(cors(CorsConfig(["*"])));
+    app.get!("/hi", hi);
+    auto c = TestClient(app);
+    auto r = c.get("/hi", hdr("Origin", "https://any.example"));
+    assert(r.header("Access-Control-Allow-Origin") == "*" && r.header("Vary") is null);
+    r = c.get("/hi");
+    assert(r.header("Vary") is null);
+    r = c.send(Method.OPTIONS, "/hi", null, [hdr("Origin", "https://any.example"), hdr("Access-Control-Request-Method", "GET")]);
+    assert(r.status == 204 && r.headers("Vary") == ["Access-Control-Request-Method"], r.header("Vary"));
+
+    // `*` with credentials echoes the origin, so it varies on it
+    auto app2 = new App;
+    app2.use(cors(CorsConfig(["*"], "GET", null, null, true)));
+    app2.get!("/hi", hi);
+    auto c2 = TestClient(app2);
+    r = c2.get("/hi", hdr("Origin", "https://x.example"));
+    assert(r.header("Access-Control-Allow-Origin") == "https://x.example" && r.headers("Vary") == ["Origin"]);
 }
 
 unittest
@@ -135,7 +165,7 @@ unittest
     auto r = c.get("/boom");
     assert(r.status == 500 && r.body == "failure", "internal details must not leak");
     r = c.get("/denied");
-    assert(r.status == 403 && r.body == "http:proibido");
+    assert(r.status == 403 && r.body == "http:forbidden");
     r = c.get("/does-not-exist");
     assert(r.status == 404 && r.body == "gone");
     // an exception thrown by a middleware also goes through onError

@@ -109,10 +109,38 @@ class Peer
 
     void respond(H2Stream st, string h1)
     {
-        ByteBuffer b;
-        b.put(h1);
-        s.respond(st, b);
+        respondH1(s, st, h1);
     }
+}
+
+/// The tests describe responses as HTTP/1.1 text, which is easy to read; this turns the text into the structured head
+/// plus body that `H2Session.respond` takes.
+void respondH1(H2Session s, H2Stream st, string text)
+{
+    import std.string : indexOf, split, strip;
+
+    auto he = text.indexOf("\r\n\r\n");
+    assert(he > 0, "no end of head");
+    auto lines = text[0 .. he].split("\r\n");
+    ResponseHead head;
+    head.status = lines[0][9 .. 12].to!int;
+    HeaderField[] extra;
+    foreach (l; lines[1 .. $])
+    {
+        auto c = l.indexOf(':');
+        auto name = l[0 .. c];
+        auto value = l[c + 1 .. $].strip;
+        if (equalsIgnoreCase(name, "content-type"))
+            head.contentType = value;
+        else if (equalsIgnoreCase(name, "content-length"))
+            head.contentLength = value.to!long;
+        else
+            extra ~= HeaderField(name, value);
+    }
+    head.headers = extra;
+    ByteBuffer body_;
+    body_.put(text[he + 4 .. $]);
+    s.respond(st, head, body_);
 }
 
 Frame only(Frame[] fs, ubyte type)
@@ -488,9 +516,7 @@ unittest // the peer resets a stream whose handler is running: the engine gets i
     H2Stream r;
     assert(p.s.popReset(r) && r is st && r.resetByPeer);
     assert(p.s.busy == 1);
-    ByteBuffer late;
-    late.put("HTTP/1.1 200 OK\r\n\r\nlate");
-    p.s.respond(r, late); // the cancelled handler still finishes: nothing goes out
+    respondH1(p.s, r, "HTTP/1.1 200 OK\r\n\r\nlate"); // the cancelled handler still finishes: nothing goes out
     assert(p.frames().length == 0 && p.s.busy == 0);
 }
 

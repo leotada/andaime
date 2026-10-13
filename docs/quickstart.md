@@ -65,12 +65,16 @@ parameter is not in the route, so it comes from the query string; the default va
 | `Local!T`                             | value put by a middleware in `ctx.locals`             |
 | `Context ctx`                         | direct access to request/response                     |
 
-### Handlers are `@safe`
+### `@safe` is recommended, not required
 
-Handlers and middleware are `@safe` delegates, so put `@safe:` at the top of your module (as above). A `@system`
-handler is rejected at compile time with a one-line message. Code that cannot be proven safe (a C call, a
-`__gshared` variable) goes in a small `@trusted` function with a comment saying why it is sound. The database driver,
-the HTTP client and `offload` are `@safe` to call; the engine's raw-syscall code stays behind them.
+Handlers and middleware may be `@safe` or `@system`, so you can call a C library straight from a handler.
+The framework itself is `@safe` and calls your code through one small `@trusted` call site. We recommend putting
+`@safe:` at the top of your module (as above): the compiler then proves your handlers cannot corrupt memory, and
+the few lines that cannot be proven safe (a C call, a `__gshared` variable) go in a small `@trusted` function with a
+comment saying why it is sound. The database driver, the HTTP client and `offload` are `@safe` to call.
+
+To make the whole app `@safe`-only, add `versions "VelaStrictSafe"` to your `dub.sdl` (or compile with
+`-version=VelaStrictSafe`): a `@system` handler then fails with a one-line compile error.
 
 Conversion or validation failed? The client gets a **422** in FastAPI's format, and your handler does not even run.
 
@@ -136,7 +140,7 @@ curl localhost:8080/users/1
 
 ## 6. Middleware, groups and per-request data
 
-Middleware is a `void(Context, Next) @safe` function, in onion layers:
+Middleware is a `void(Context, Next)` function, in onion layers:
 
 ```d
 void logger(Context ctx, Next next)
@@ -191,7 +195,7 @@ Response quote()
     return Response(r.status, "application/json", r.body);
 }
 
-string heavy() => offload(() => expensiveComputation());               // bounded thread pool; the delegate must be @safe
+string heavy() => offload(() => expensiveComputation());               // bounded thread pool; the delegate must be @safe (wrap C calls in @trusted)
 ```
 
 Did the client disconnect or the deadline expire midway through a query? The driver cancels on the server and discards the connection.

@@ -26,9 +26,16 @@ Route Delete(string path) => Route(Method.DELETE, path);
 
 alias HandlerFn = void delegate(Context);
 
+/// A handler written by the user (`onNotFound`); may be `@safe` or `@system`.
+alias UserHandler = void delegate(Context) @system;
+
 /// Called instead of the default handling when a handler or middleware throws.
 /// Write the response into `ctx` (`ctx.text(...)`, `ctx.response.status = ...`).
-alias ErrorHandler = void delegate(Context ctx, Exception e);
+alias ErrorHandler = void delegate(Context ctx, Exception e) @system;
+
+// @trusted: single entry points for user callbacks (their safety is the user's business)
+private void callUser(UserHandler h, Context ctx) @trusted { h(ctx); }
+private void callUser(ErrorHandler h, Context ctx, Exception e) @trusted { h(ctx, e); }
 
 /// Runs a group's middlewares and, at the end, the route's handler.
 private final class Chain
@@ -39,7 +46,7 @@ private final class Chain
     void run(Context ctx, size_t i)
     {
         if (i < mws.length)
-            mws[i](ctx, Next(&run, i + 1, ctx));
+            callMiddleware(mws[i], ctx, Next(&run, i + 1, ctx));
         else
             handler(ctx);
     }
@@ -76,9 +83,9 @@ final class Group
         mws ~= mw;
     }
 
-    void use(void function(Context, Next) @safe mw)
+    void use(void function(Context, Next) @system mw)
     {
-        mws ~= (Context c, Next n) => mw(c, n);
+        mws ~= (Context c, Next n) @trusted => mw(c, n);
     }
 
     /// Subgroup: inherits the current prefix and middlewares.
@@ -118,7 +125,7 @@ final class App
     private HandlerFn[] handlers;
     private Middleware[] middlewares;
     private ErrorHandler errorHandler;
-    private HandlerFn notFoundHandler;
+    private UserHandler notFoundHandler;
     private OpRecord[] ops;
 
     /// If the route does not exist but exists with/without the trailing slash, answers 308 to it.
@@ -136,9 +143,9 @@ final class App
         middlewares ~= mw;
     }
 
-    void use(void function(Context, Next) @safe mw)
+    void use(void function(Context, Next) @system mw)
     {
-        middlewares ~= (Context c, Next n) => mw(c, n);
+        middlewares ~= (Context c, Next n) @trusted => mw(c, n);
     }
 
     /// Creates a route group with its own prefix and middlewares.
@@ -155,7 +162,7 @@ final class App
     }
 
     /// Response for nonexistent routes (replaces the default JSON 404).
-    void onNotFound(HandlerFn h)
+    void onNotFound(UserHandler h)
     {
         notFoundHandler = h;
     }
@@ -249,7 +256,7 @@ final class App
         ctx.response.contentType = null;
         ctx.response.body.clear();
         try
-            errorHandler(ctx, e);
+            callUser(errorHandler, ctx, e);
         catch (Exception e2) // the error handler failed too: nothing more to do
         {
             logError(ctx, e2);
@@ -260,7 +267,7 @@ final class App
     private void runFrom(Context ctx, size_t i)
     {
         if (i < middlewares.length)
-            middlewares[i](ctx, Next(&runFrom, i + 1, ctx));
+            callMiddleware(middlewares[i], ctx, Next(&runFrom, i + 1, ctx));
         else
             endpoint(ctx);
     }
@@ -282,7 +289,7 @@ final class App
                 if (notFoundHandler !is null)
                 {
                     try
-                        notFoundHandler(ctx);
+                        callUser(notFoundHandler, ctx);
                     catch (Exception e)
                         fail(ctx, e);
                 }

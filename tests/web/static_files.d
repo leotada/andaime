@@ -16,11 +16,11 @@ unittest
         rmdirRecurse(base);
     mkdirRecurse(buildPath(base, "pub", "css"));
     mkdirRecurse(buildPath(base, "pub", ".git"));
-    write(buildPath(base, "pub", "index.html"), "<h1>oi</h1>");
+    write(buildPath(base, "pub", "index.html"), "<h1>hi</h1>");
     write(buildPath(base, "pub", "css", "app.css"), "body{}");
     write(buildPath(base, "pub", "css", "index.html"), "css-index");
     write(buildPath(base, "pub", ".git", "config"), "secret");
-    write(buildPath(base, "pub", "a b.txt"), "com espaco");
+    write(buildPath(base, "pub", "a b.txt"), "with space");
     write(buildPath(base, "outside.txt"), "OUTSIDE");
     symlink(buildPath(base, "outside.txt"), buildPath(base, "pub", "link.txt"));
     write(buildPath(base, "pub", "big.bin"), new ubyte[600_000]);
@@ -47,14 +47,14 @@ unittest
     assert(r.status == 200);
 
     // folder index
-    assert(c.get("/assets").body == "<h1>oi</h1>");
+    assert(c.get("/assets").body == "<h1>hi</h1>");
     assert(c.get("/assets/").status == 404 || c.get("/assets/").status == 200);
     assert(c.get("/assets/css").body == "css-index");
-    assert(c.get("/").body == "<h1>oi</h1>");
+    assert(c.get("/").body == "<h1>hi</h1>");
     assert(c.get("/api").body == "api"); // an ordinary route coexists with the static root
 
     // percent-encoding
-    assert(c.get("/assets/a%20b.txt").body == "com espaco");
+    assert(c.get("/assets/a%20b.txt").body == "with space");
 
     // attacks
     foreach (bad; ["/assets/../outside.txt", "/assets/%2e%2e/outside.txt", "/assets/css/../../outside.txt",

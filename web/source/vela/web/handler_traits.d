@@ -100,6 +100,7 @@ enum isSupportedReturn(R) = is(R == void) || is(R : const(char)[]) || is(R == Re
     || isWithStatus!R || is(R == struct) || is(R == U[], U) || isScalar!R;
 
 /// True when the handler is `@safe` or `@trusted` (never plain `@system`).
+/// Only enforced with `-version=VelaStrictSafe` (dub: `versions "VelaStrictSafe"`).
 private bool isSafeHandler(alias fn)()
 {
     foreach (a; __traits(getFunctionAttributes, fn))
@@ -107,6 +108,11 @@ private bool isSafeHandler(alias fn)()
             return true;
     return false;
 }
+
+version (VelaStrictSafe)
+    private enum strictSafe = true;
+else
+    private enum strictSafe = false;
 
 template handlerError(Method method, string path, alias fn, string file, size_t line)
 {
@@ -116,8 +122,8 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
     static if (__traits(isTemplate, fn) || !is(typeof(fn)))
         enum handlerError = head ~ "the handler has no concrete type. If it is a lambda, "
             ~ "declare the parameter types: (int id) => ...";
-    else static if (!isSafeHandler!fn)
-        enum handlerError = head ~ "is not @safe. Mark it @safe (or put `@safe:` at the top of the module) "
+    else static if (strictSafe && !isSafeHandler!fn)
+        enum handlerError = head ~ "is not @safe (VelaStrictSafe is on). Mark it @safe (or put `@safe:` at the top of the module) "
             ~ "and wrap code that cannot be proven safe in @trusted";
     else static if (is(typeof(fn) P == __parameters))
     {
@@ -280,14 +286,16 @@ void dispatch(Method method, string path, alias fn, Self...)(Context ctx, Self s
         else
             enum call = "fn(args)";
 
-        static if (is(typeof(mixin(call)) == void))
+        // @trusted: the one place where the user's handler is called from @safe framework code.
+        // A @safe handler is still checked by the compiler; a @system one is its author's responsibility.
+        static if (is(typeof(() @trusted { return mixin(call); }()) == void))
         {
-            mixin(call ~ ";");
+            () @trusted { mixin(call ~ ";"); }();
             ctx.response.status = 204;
         }
         else
         {
-            auto result = mixin(call);
+            auto result = () @trusted { return mixin(call); }();
             writeResult(ctx, result);
         }
     }

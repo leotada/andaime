@@ -32,8 +32,9 @@ void main()
   from the function's types and names. Bad input becomes a 422 in FastAPI's format; the handler only runs with valid data.
 - Documentation that does not go stale: `openapi.json` and the Swagger UI come from the same signatures that generate the dispatch.
 - Fluent responses: return `string`, a struct, an array, `WithStatus!T` or `Response`; `throw new HttpError(...)` for failures.
-- `@safe` end to end: handlers and middleware are `@safe` delegates (a `@system` handler is a one-line compile error),
-  the driver, HTTP client and `offload` are `@safe` to call, and `@trusted` is confined to small, commented façades.
+- `@safe` by default, never in your way: the framework is `@safe`, the driver, HTTP client and `offload` are `@safe` to call,
+  and `@trusted` is confined to small, commented façades. Your handlers may be `@safe` (recommended: `@safe:` at the top of the module)
+  or `@system` when they call C; `versions "VelaStrictSafe"` makes `@system` handlers a one-line compile error.
 - One-line compile errors that say what to fix, good for humans and for AI agents (no template *backtrace*),
   and predictable types that keep `serve-d` responsive.
 
@@ -190,8 +191,9 @@ Requirements: a D compiler (DMD or LDC) and DUB. The core (`vela`) needs no data
 - D's GC interrupts blocking `read`/`send` calls (test clients, tools) with `EINTR`; handle it.
 - `Header!"X"` and `const(char)[]` are slices of the network buffer, valid only during the
   request. Use `string` (copied) or `.idup` to keep them.
-- Handlers and middleware must be `@safe` (`@safe:` at the top of the module); wrap C calls and `__gshared` access in `@trusted`.
-  `epoll.d` and `devserver.d` stay `@system` by design (raw syscalls) behind the `@trusted` `serve`.
+- Handlers and middleware may be `@safe` (recommended) or `@system`; `-version=VelaStrictSafe` requires `@safe`.
+  Wrap C calls and `__gshared` access in a small `@trusted` function. `epoll.d` and `devserver.d` stay `@system`
+  by design (raw syscalls) behind the `@trusted` `serve`.
 - Handlers are module functions, lambdas (which may capture local variables) or
   controller methods with `@Get(...)` mounted through `app.mount(obj)`.
 

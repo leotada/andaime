@@ -175,7 +175,17 @@ final class Context
 }
 
 /// Onion-style middleware: do something, call `next()`, do something after.
-alias Middleware = void delegate(Context ctx, Next next) @safe;
+/// The type is `@system` on purpose: it accepts `@safe` and `@system` delegates alike, so user code may
+/// call C libraries without ceremony. `@safe` code converts to it implicitly and stays checked by the
+/// compiler (put `@safe:` at the top of your module). The framework calls it through `callMiddleware`.
+alias Middleware = void delegate(Context ctx, Next next) @system;
+
+/// The single place where a user middleware is invoked from `@safe` framework code.
+/// @trusted: the callee's own safety is the user's business; nothing here touches its memory.
+package void callMiddleware(Middleware mw, Context ctx, Next next) @trusted
+{
+    mw(ctx, next);
+}
 
 /// Continuation of the pipeline. It is a struct (not a closure): calling `next()`
 /// does not allocate. Not calling `next()` stops the chain (e.g. auth denied).

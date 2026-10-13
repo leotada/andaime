@@ -67,7 +67,8 @@ rm -rf "$tmp"
 echo "== compile-error tests (expected message + at most 2 error lines)"
 for f in tests/compile_fail/*.d; do
     expect=$(sed -n 's#^// EXPECT: ##p' "$f")
-    out=$($DC $I -o- -c -verrors=simple "$f" 2>&1 || true)
+    flags=$(sed -n 's#^// FLAGS: ##p' "$f")
+    out=$($DC $I $flags -o- -c -verrors=simple "$f" 2>&1 || true)
     errlines=$(printf '%s\n' "$out" | grep -c . || true)
     if [[ "$out" != *"$expect"* ]]; then
         echo "FAILED $f: message not found"; printf '%s\n' "$out" | head -5; fail=1

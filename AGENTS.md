@@ -27,8 +27,13 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 
 ## Safety model (`@safe`)
 
-- Public delegate types (`Middleware`, `RequestCallback`, `HandlerFactory`, `offload`'s work delegate) are `@safe`.
-  `handlerError` rejects `@system` handlers with a one-line message (`tests/compile_fail/system_handler.d`).
+- Framework-internal delegate types (`RequestCallback`, `HandlerFactory`, `HandlerFn`, `offload`'s work delegate) are `@safe`.
+- **User-facing callbacks accept `@system`** (`Middleware`, `ErrorHandler`, `UserHandler`, route handlers): user code may call C
+  libraries without ceremony, and `@safe` code converts to them implicitly. The framework invokes user code only through
+  `callMiddleware`, `callUser` and the `@trusted` lambda in `dispatch`; add no other call sites.
+- `-version=VelaStrictSafe` (dub: `versions "VelaStrictSafe"`) makes `handlerError` reject `@system` handlers with a one-line
+  message (`tests/compile_fail/system_handler.d`, which declares its flag with a `// FLAGS:` line). `tests/web/system_code.d`
+  proves that `@system` handlers, middleware and error handlers work by default.
 - Every module starts with `@safe:` except the raw-syscall ones: `engine/.../epoll.d` and `devserver.d` stay `@system`;
   `EventLoop.run` is `@system` and `vela.server.serve` is the single `@trusted` entry point into them.
   Their overrides of `@safe` interfaces (`stop`, `awaitFd`, `sleepMs`) are small `@trusted` bodies.

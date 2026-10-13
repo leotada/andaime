@@ -157,9 +157,16 @@ cfg.http2MaxStreams = 100;      // SETTINGS_MAX_CONCURRENT_STREAMS per connectio
 cfg.http2WindowBytes = 1 << 20; // connection receive window (request bodies in flight)
 ```
 
-- Cleartext only: HTTP/2 to browsers needs TLS with ALPN, which the server does not terminate. Use it behind a
-  proxy or load balancer that speaks h2c to its upstreams (Caddy, Envoy, HAProxy, AWS ALB, Google Cloud
-  load balancers), for gRPC-style clients, or service to service.
+- Cleartext only: HTTP/2 to browsers needs TLS with ALPN, which the server does not terminate. Use it service to
+  service, or behind a proxy that speaks h2c to its upstreams (configuration checked against each one's docs):
+  - Caddy: `reverse_proxy h2c://127.0.0.1:8080`.
+  - HAProxy 1.9+: `server app 127.0.0.1:8080 proto h2`.
+  - Envoy: an upstream cluster with `explicit_http_config.http2_protocol_options` and no TLS transport socket.
+  - Google Cloud: Cloud Run with end-to-end HTTP/2 (container port named `h2c`); the Application Load Balancer with
+    backend service protocol `H2C` (not on the classic Application Load Balancer; its `HTTP2` protocol requires TLS).
+  - AWS ALB: HTTP/2 target groups (protocol version `HTTP2`) only work behind an HTTPS listener. AWS does not document
+    whether the hop to the target may be cleartext; users report h2c working, but it is untested here.
+- Not for gRPC yet: gRPC needs response trailers (`grpc-status`) and streamed bodies, which vela does not support.
 - Each stream runs in its own fiber, exactly like an HTTP/1.1 request: `maxInFlight` counts streams (above it the
   stream is refused with `REFUSED_STREAM`, safe to retry), `requestTimeoutMs` applies per stream (504), a
   `RST_STREAM` from the client cancels only that handler, and closing the connection cancels all of them.

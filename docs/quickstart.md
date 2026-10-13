@@ -221,8 +221,8 @@ curl --http2-prior-knowledge http://localhost:8080/users   # or --http2 to upgra
 ```
 
 Each stream gets its own fiber, so one slow request does not hold up the others on the connection. Browsers only
-use HTTP/2 over TLS, which vela does not terminate: put it behind a proxy that speaks h2c to its upstreams, or use
-it between services. `cfg.http2 = false` turns it off; the README has the details and limits.
+use HTTP/2 over TLS, which vela does not terminate: put it behind a proxy that speaks h2c to its upstreams (Caddy,
+HAProxy, Envoy, Cloud Run; the README lists the configuration for each), or use it between services. `cfg.http2 = false` turns it off; the README has the details and limits.
 
 ## 10. Readable compile errors
 

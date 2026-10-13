@@ -4,3 +4,5 @@ targetType "library"
 sourcePaths "source"
 importPaths "source"
 dependency "vela:engine" path="../.."
+
+toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

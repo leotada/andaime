@@ -1,0 +1,120 @@
+name: check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "17 3 * * *" # nightly fuzzing (job "fuzz"); the other jobs also run, which is cheap insurance
+  workflow_dispatch:
+
+env:
+  # tools/check.sh: a skipped section fails the run, except the browser test (own job below).
+  VELA_STRICT: "1"
+  VELA_ALLOW_SKIP: "browser"
+  # Shared runners are noisy: the compile-time budget is printed but does not fail the run.
+  VELA_CI: "1"
+  H2SPEC_VERSION: "2.6.0"
+  H2SPEC_SHA256: "157ee0de702e01ad40e752dbf074b366027e550c8e7504f9450da2809e279318"
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # the minimum versions (see toolchainRequirements in dub.sdl) and the latest releases
+          - { name: "DMD 2.109.1", compiler: dmd, version: "2.109.1", dc: dmd }
+          - { name: "DMD latest", compiler: dmd, version: latest, dc: dmd }
+          - { name: "LDC 1.40.1", compiler: ldc, version: "1.40.1", dc: ldmd2 }
+          - { name: "LDC latest", compiler: ldc, version: latest, dc: ldmd2 }
+    name: check (${{ matrix.name }})
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          # "trust", not a password: with SCRAM, libpq computes PBKDF2 synchronously while a connection opens,
+          # which stalls the single-threaded worker in tests/db/pg_net.d ("the worker got stuck").
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_PASSWORD: unused
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      VELA_PG: "host=127.0.0.1 port=5432 user=postgres dbname=postgres"
+      DC: ${{ matrix.dc }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ${{ matrix.compiler }}-${{ matrix.version }}
+
+      - name: System packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpq5 libssl3 openssl curl python3 python3-h2
+
+      - name: OpenAPI validator
+        run: pip install --user --break-system-packages openapi-spec-validator
+
+      - name: h2spec
+        run: |
+          curl -sSL -o h2spec.tgz "https://github.com/summerwind/h2spec/releases/download/v${H2SPEC_VERSION}/h2spec_linux_amd64.tar.gz"
+          echo "${H2SPEC_SHA256}  h2spec.tgz" | sha256sum -c -
+          tar xzf h2spec.tgz -C "$RUNNER_TEMP"
+          echo "H2SPEC=$RUNNER_TEMP/h2spec" >> "$GITHUB_ENV"
+
+      - name: tools/check.sh
+        run: tools/check.sh
+
+  # The real-browser test needs Chromium (a large download), so it has its own job: weekly and on demand.
+  browser:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    env:
+      DC: dmd
+      VELA_STRICT: "1"
+      VELA_ALLOW_SKIP: ""
+      VELA_ONLY: "browser"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: dmd-latest
+      - name: Playwright and Chromium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libssl3 openssl
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install playwright
+          "$RUNNER_TEMP/venv/bin/playwright" install --with-deps chromium
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+      - name: tools/check.sh (browser section)
+        run: tools/check.sh
+
+  # Nightly fuzzing with libFuzzer + AddressSanitizer on LDC.
+  fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [parse, h2]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
+      - name: tools/fuzz.sh 600 ${{ matrix.target }}
+        run: tools/fuzz.sh 600 ${{ matrix.target }}
+      - name: Findings
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ matrix.target }}
+          path: tests/fuzz/crashes/

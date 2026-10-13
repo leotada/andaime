@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 DC="${DC:-dmd}"
 I="-Isource -Ihttp/source -Iweb/source -Iengine/source -Idrivers/pg/source"
 if [ -z "${VELA_PG:-}" ] || [ -z "${VELA_UP_PLAIN:-}" ] || ! command -v python3 >/dev/null; then
-    echo "(skipped: needs PostgreSQL, the test upstream and python3)"; exit 0
+    echo "skip: needs PostgreSQL, the test upstream and python3" >&2; exit 77
 fi
 tmp=$(mktemp -d)
 trap 'kill $srv 2>/dev/null || true; rm -rf "$tmp"' EXIT

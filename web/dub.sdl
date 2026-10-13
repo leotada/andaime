@@ -2,3 +2,5 @@ name "web"
 description "Routing, handler introspection, JSON and middleware. Knows nothing about sockets."
 targetType "library"
 dependency "vela:http" version="*"
+
+toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

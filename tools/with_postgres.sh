@@ -2,13 +2,26 @@
 # Starts a throwaway PostgreSQL, exports VELA_PG and runs the given command.
 # Usage: tools/with_postgres.sh command args...
 # - VELA_PG already set: uses that database and starts nothing.
-# - no PostgreSQL installed (initdb): runs the command without VELA_PG (the test declares itself skipped).
+# - no PostgreSQL server installed (initdb not found): runs the command without VELA_PG (the test declares
+#   itself skipped with exit 77).
+# initdb is looked up in `pg_config --bindir`, on PATH and in the usual per-distribution locations
+# (Debian/Ubuntu /usr/lib/postgresql/N/bin, openSUSE /usr/lib/postgresqlN/bin, Fedora/RHEL /usr/pgsql-N/bin).
 set -euo pipefail
 if [ -n "${VELA_PG:-}" ]; then exec "$@"; fi
 
-bin=$(ls -d /usr/lib/postgresql/*/bin 2>/dev/null | sort -V | tail -1 || true)
-if [ -z "$bin" ] || [ ! -x "$bin/initdb" ]; then
-    echo "(PostgreSQL not installed: the driver test will be skipped)" >&2
+find_bin() {
+    local d
+    if command -v pg_config > /dev/null && d=$(pg_config --bindir 2> /dev/null) && [ -x "$d/initdb" ]; then
+        echo "$d"; return
+    fi
+    if d=$(command -v initdb 2> /dev/null); then dirname "$d"; return; fi
+    for d in $(ls -d /usr/lib/postgresql/*/bin /usr/lib/postgresql*/bin /usr/pgsql-*/bin /usr/local/pgsql/bin 2> /dev/null | sort -V -r); do
+        if [ -x "$d/initdb" ]; then echo "$d"; return; fi
+    done
+}
+bin=$(find_bin || true)
+if [ -z "$bin" ]; then
+    echo "(PostgreSQL server not found: the database tests will be skipped)" >&2
     exec "$@"
 fi
 

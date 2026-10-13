@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Starts the HTTP/HTTPS test upstream (tests/net/upstream.py), exports
 # VELA_UP_PLAIN / VELA_UP_TLS / VELA_UP_CERT and runs the given command.
-# Without python3 or openssl, runs the command without the variables (the test declares itself skipped).
+# Without python3 or openssl, runs the command without the variables (the test declares itself skipped, exit 77).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if ! command -v python3 >/dev/null || ! command -v openssl >/dev/null; then

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # HTTP/2 and HTTPS against independent implementations: h2spec (conformance), curl (nghttp2,
 # OpenSSL) and python-h2 (with Python's ssl module), on a cleartext server (h2c) and on a TLS
-# server (ALPN). Each tool skips itself with a warning when it is not installed.
+# server (ALPN). A tool that is not installed is skipped; the script then exits 77 (after running the rest).
 # Usage: DC=dmd tools/h2_interop.sh   (H2SPEC=/path/to/h2spec when it is not on PATH)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -12,6 +12,17 @@ pids=()
 trap 'kill "${pids[@]}" 2>/dev/null || true; rm -rf "$tmp"' EXIT
 $DC $I -i -of"$tmp/h2_serve" tests/net/h2_serve.d > /dev/null
 fail=0
+skips=()
+# finish: a failure wins; otherwise any missing tool makes the whole run "skipped" (exit 77, see tools/check.sh)
+finish() {
+    (( fail )) && exit 1
+    if (( ${#skips[@]} )); then
+        local IFS=,
+        echo "skip: ${skips[*]} not available" >&2
+        exit 77
+    fi
+    exit 0
+}
 h2spec_bin="${H2SPEC:-$(command -v h2spec || true)}"
 have_curl=0; curl -V 2>/dev/null | grep -q HTTP2 && have_curl=1
 have_py=0; python3 -c "import h2" 2>/dev/null && have_py=1
@@ -33,20 +44,21 @@ h2spec_run() {
     local label=$1 known=$2; shift 2
     "$h2spec_bin" "$@" -o 3 > "$tmp/h2spec.log" 2>&1 || true
     local summary failures
-    summary=$(grep -E '^[0-9]+ tests,' "$tmp/h2spec.log" || true)
-    failures=$(grep -c '×' "$tmp/h2spec.log" || true)
+    # -a: the log has control characters, and without it grep answers "binary file matches" instead of the line
+    summary=$(grep -a -E '^[0-9]+ tests,' "$tmp/h2spec.log" || true)
+    failures=$(grep -a -c '×' "$tmp/h2spec.log" || true)
     if [[ -z "$summary" ]]; then
         echo "FAILED h2spec ($label) did not run"; tail -5 "$tmp/h2spec.log"; fail=1
     elif [[ "$known" == "preface" ]]; then
         # 3.5/2 cannot pass on a port that also serves HTTP/1.1: an invalid preface is just a
         # malformed HTTP/1.1 request there, and it gets a 400 (h2spec expects GOAWAY)
-        if (( failures != $(grep -c '× 2: Sends invalid connection preface' "$tmp/h2spec.log" || true) )); then
-            echo "FAILED h2spec ($label): $summary"; grep -A6 '×' "$tmp/h2spec.log" | head -60; fail=1
+        if (( failures != $(grep -a -c '× 2: Sends invalid connection preface' "$tmp/h2spec.log" || true) )); then
+            echo "FAILED h2spec ($label): $summary"; grep -a -A6 '×' "$tmp/h2spec.log" | head -60; fail=1
         else
             echo "ok  h2spec ($label): $summary (the only failure is 3.5/2, expected on a mixed HTTP/1.1 + h2c port)"
         fi
     elif (( failures != 0 )); then
-        echo "FAILED h2spec ($label): $summary"; grep -A6 '×' "$tmp/h2spec.log" | head -60; fail=1
+        echo "FAILED h2spec ($label): $summary"; grep -a -A6 '×' "$tmp/h2spec.log" | head -60; fail=1
     else
         echo "ok  h2spec ($label): $summary"
     fi
@@ -70,17 +82,17 @@ if (( have_curl )); then
     [[ "$out" == "http/1.1" ]] || { echo "FAILED HTTP/1.1 on the same port: $out"; f=1; }
     (( f )) && fail=1 || echo "ok  curl (h2c): prior knowledge, Upgrade: h2c, upload, 4 MiB download, HTTP/1.1 alongside"
 else
-    echo "warning: curl without HTTP/2 support; skipping the curl checks"
+    skips+=("curl with HTTP/2")
 fi
 if (( have_py )); then python3 tests/net/h2_client.py "$port" || fail=1
-else echo "warning: python3 module h2 not found (pip install h2); skipping the python-h2 checks"; fi
+else skips+=("python module h2 (pip install h2)"); fi
 if [[ -n "$h2spec_bin" ]]; then h2spec_run "h2c" preface -h 127.0.0.1 -p "$port"
-else echo "warning: h2spec not found (set H2SPEC=/path/to/h2spec); skipping the conformance suite"; fi
+else skips+=("h2spec (set H2SPEC=/path/to/h2spec)"); fi
 
 # ---------------------------------------------------------------- TLS (ALPN)
 if ! command -v openssl > /dev/null; then
-    echo "warning: the openssl command is missing; skipping the HTTPS interop checks"
-    exit $fail
+    skips+=("openssl command")
+    finish
 fi
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$tmp/key.pem" \
     -out "$tmp/cert.pem" -days 2 -subj /CN=localhost -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2> /dev/null
@@ -106,4 +118,4 @@ if (( have_curl )); then
 fi
 if (( have_py )); then python3 tests/net/h2_client.py "$tport" "$tmp/cert.pem" || fail=1; fi
 if [[ -n "$h2spec_bin" ]]; then h2spec_run "TLS" none -t -k -h 127.0.0.1 -p "$tport"; fi
-exit $fail
+finish

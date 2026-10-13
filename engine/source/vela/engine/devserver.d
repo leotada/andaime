@@ -8,7 +8,7 @@ import core.sys.posix.netinet.in_;
 import core.sys.posix.unistd : close, read;
 import core.sys.posix.sys.time : timeval;
 import core.stdc.errno : errno, EINTR;
-import core.stdc.stdio : printf, perror;
+import core.stdc.stdio : fprintf, stderr, printf, perror;
 
 import vela.http;
 import vela.engine.bufferpool;
@@ -16,6 +16,11 @@ import vela.engine.loop : RequestCallback, ServerConfig;
 
 void runDevServer(ref const ServerConfig cfg, RequestCallback onRequest)
 {
+    if (cfg.tls.enabled)
+    {
+        fprintf(stderr, "vela: TLS needs the epoll engine (Linux); the development server only speaks cleartext HTTP/1.1\n");
+        return;
+    }
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0)
         return perror("socket");

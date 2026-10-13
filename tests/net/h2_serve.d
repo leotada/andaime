@@ -1,5 +1,5 @@
 /// Server for the HTTP/2 interoperability checks (h2spec, curl, python-h2): `tools/h2_interop.sh`.
-/// Usage: h2_serve <port>
+/// Usage: h2_serve <port> [cert.pem key.pem]   (with a certificate: HTTPS, ALPN h2/http1.1)
 module h2_serve;
 
 import vela;
@@ -44,5 +44,10 @@ void main(string[] args) @system
     cfg.port = args.length > 1 ? args[1].to!ushort : 8080;
     cfg.host = "127.0.0.1";
     cfg.workers = 1;
+    if (args.length > 3)
+    {
+        cfg.tls.certFile = args[2];
+        cfg.tls.keyFile = args[3];
+    }
     serve(app, cfg);
 }

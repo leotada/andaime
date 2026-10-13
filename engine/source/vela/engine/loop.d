@@ -23,6 +23,19 @@ alias RequestCallback = void delegate(ref Request req, ref ByteBuffer output);
 /// threads, one per worker, so it must be safe for that.
 alias HandlerFactory = RequestCallback delegate();
 
+/// TLS on the listener. Set `certFile` and `keyFile` and the server speaks HTTPS only on `port`,
+/// with ALPN choosing HTTP/2 (`h2`) or HTTP/1.1. Needs OpenSSL 3 at run time (loaded by dlopen).
+struct TlsConfig
+{
+    string certFile;  /// PEM: the certificate followed by its intermediates (Let's Encrypt's fullchain.pem)
+    string keyFile;   /// PEM private key
+    /// How often each worker checks both files for changes (renewal) and reloads them; 0 = never.
+    /// New connections get the new certificate; a file that fails to load is logged and the old one kept.
+    uint reloadCheckMs = 10_000;
+
+    bool enabled() const pure nothrow @nogc @safe => certFile.length != 0;
+}
+
 struct ServerConfig
 {
     string host = "0.0.0.0";
@@ -45,7 +58,10 @@ struct ServerConfig
     /// HTTP/1.1 keeps working on the same port. Each stream runs in its own fiber, like a request.
     bool http2 = true;
     uint http2MaxStreams = 100;      /// SETTINGS_MAX_CONCURRENT_STREAMS per connection (maxInFlight still applies per worker)
-    uint http2WindowBytes = 1 << 20; /// connection receive window: how much request body may be in flight
+    uint http2StreamWindowBytes = 256 << 10;   /// per-stream receive window: request body a client may send per round trip
+    uint http2ConnectionWindowBytes = 1 << 20; /// connection receive window: request body in flight across all streams
+    /// HTTPS (see `TlsConfig`). The handshake must finish within `headerTimeoutMs`.
+    TlsConfig tls;
     Limits limits;
 }
 
@@ -65,6 +81,9 @@ struct LoopStats
     long maxStallMs;       /// the longest stretch without yielding seen so far
     size_t http2Connections; /// connections that switched to HTTP/2 since the start
     size_t http2Streams;     /// HTTP/2 requests handed to a fiber since the start
+    size_t tlsHandshakes;    /// TLS handshakes completed since the start
+    size_t tlsFailures;      /// TLS handshakes that failed or timed out
+    size_t tlsReloads;       /// certificate reloads of this worker
 }
 
 /// I/O backend. Planned implementations:
@@ -93,4 +112,5 @@ enum ConnState : ubyte
     writing,     /// response ready; sending
     closing,
     http2,       /// multiplexed: reading frames and running streams at the same time
+    handshake,   /// TLS handshake in progress
 }

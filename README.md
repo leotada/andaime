@@ -46,8 +46,9 @@ void main()
   (503 + `Retry-After`). Measured: 1,000 simultaneous requests in ~25 MB of RSS; the hot path does not allocate on the GC.
 - Robust by default: head/idle/write/request deadlines, slowloris protection, cancellation when the
   client goes away (the handler's `scope(exit)` runs), graceful stop, a zero-copy HTTP/1.1 parser fuzzed with ASan.
-- HTTP/2 on the same port (h2c): multiplexed streams, each in its own fiber, with flow control, per-stream deadlines
-  and cancellation, protection against rapid reset and control-frame floods. Your handlers do not change.
+- HTTPS and HTTP/2 on the same port: TLS with ALPN (browsers get HTTP/2) and certificate reload without restarts,
+  or cleartext h2c behind a proxy. Multiplexed streams, each in its own fiber, with flow control, per-stream
+  deadlines and cancellation, protection against rapid reset and control-frame floods. Your handlers do not change.
 - Fast compilation: the example's `app.d` compiles in ~250 ms on DMD, because the dispatch uses shallow `static foreach` and
   `static if` instead of deep template chains.
 
@@ -140,10 +141,38 @@ app.serveOpenApi(OpenApiInfo("My API", "1.0"));   // /openapi.json (generated fr
 - Known limits: chunked request bodies are not supported (501); `/docs` loads the Swagger UI from a CDN;
   static files up to 256 KiB are read on the worker (larger ones go to `offload`); a CPU-only handler cannot be cancelled.
 
-### HTTP/2 (h2c)
+### HTTP/2 and HTTPS
 
-On by default, on the same port as HTTP/1.1. Nothing changes in the application: the same handlers,
-middleware and `TestClient`; `ctx.request.protocol` tells which protocol a request came on.
+HTTP/2 is on by default, on the same port as HTTP/1.1: over TLS when the server has a certificate (ALPN
+chooses), in cleartext (h2c) otherwise. Nothing changes in the application: the same handlers, middleware
+and `TestClient`; `ctx.request.protocol` tells which protocol a request came on.
+
+```d
+ServerConfig cfg;
+cfg.port = 443;
+cfg.tls.certFile = "/etc/letsencrypt/live/example.com/fullchain.pem";
+cfg.tls.keyFile = "/etc/letsencrypt/live/example.com/privkey.pem";
+app.serve(cfg);   // browsers get HTTP/2; clients without ALPN or without h2 get HTTP/1.1
+```
+
+- With a certificate the listener speaks TLS only. There is no second, cleartext listener yet: for an
+  HTTP-to-HTTPS redirect on port 80 (and ACME HTTP-01 challenges), run a second process or use DNS-01.
+- TLS 1.2 and 1.3; for TLS 1.2 only ECDHE with AEAD ciphers (Mozilla's "intermediate" list, which also meets
+  HTTP/2's requirements); no compression, no renegotiation. Session resumption uses stateless tickets, with
+  keys shared by all workers and kept for the life of the process.
+- Certificate renewal needs no restart: each worker checks both files every `tls.reloadCheckMs` (10 s) and
+  reloads them when they change (certbot's symlink swaps included). New connections get the new certificate;
+  open ones keep theirs. A file that fails to load is logged and the previous certificate stays.
+- The handshake must finish within `headerTimeoutMs`. Prior knowledge and `Upgrade: h2c` are cleartext
+  features: over TLS, HTTP/2 is only chosen through ALPN.
+- OpenSSL 3 is loaded at run time, as for the HTTP client (`libssl3`); without a certificate it is never loaded.
+  Loading it sets SIGPIPE to ignored (unless the application installed a handler), because OpenSSL writes to
+  sockets with write(2) and a client that resets the connection would otherwise kill the process.
+- Memory: OpenSSL keeps about 15 KiB per connection, on top of the request. 1,000 in-flight HTTPS requests on
+  1,000 connections peak at ~44 MB (HTTP/1.1) and ~38 MB (h2), against ~25 MB in cleartext; the in-flight
+  ceiling (`maxInFlight`) is what bounds it on a small VPS.
+
+Cleartext HTTP/2 (h2c), without a certificate:
 
 ```sh
 curl --http2-prior-knowledge http://localhost:8080/users/1   # prior knowledge: the "PRI *" preface
@@ -154,18 +183,25 @@ curl --http2 http://localhost:8080/users/1                   # HTTP/1.1 "Upgrade
 ServerConfig cfg;
 cfg.http2 = true;               // default; false = HTTP/1.1 only
 cfg.http2MaxStreams = 100;      // SETTINGS_MAX_CONCURRENT_STREAMS per connection
-cfg.http2WindowBytes = 1 << 20; // connection receive window (request bodies in flight)
+cfg.http2StreamWindowBytes = 256 << 10;   // per-stream receive window: upload throughput per stream
+cfg.http2ConnectionWindowBytes = 1 << 20; // connection receive window: request bodies in flight
 ```
 
-- Cleartext only: HTTP/2 to browsers needs TLS with ALPN, which the server does not terminate. Use it service to
-  service, or behind a proxy that speaks h2c to its upstreams (configuration checked against each one's docs):
+The windows only limit upload throughput: request bodies are buffered whole either way (up to `maxBodyBytes`),
+so memory does not depend on them. One stream uploads at most one stream window per round trip, so with a 50 ms
+round trip the default 256 KiB allows about 5 MB/s per stream; raise it for large uploads over long distances.
+Values below 65,535 are raised to it.
+
+- Browsers only speak HTTP/2 over TLS: use h2c service to service, or behind a proxy that speaks h2c to its
+  upstreams (configuration checked against each one's docs):
   - Caddy: `reverse_proxy h2c://127.0.0.1:8080`.
   - HAProxy 1.9+: `server app 127.0.0.1:8080 proto h2`.
   - Envoy: an upstream cluster with `explicit_http_config.http2_protocol_options` and no TLS transport socket.
   - Google Cloud: Cloud Run with end-to-end HTTP/2 (container port named `h2c`); the Application Load Balancer with
     backend service protocol `H2C` (not on the classic Application Load Balancer; its `HTTP2` protocol requires TLS).
   - AWS ALB: HTTP/2 target groups (protocol version `HTTP2`) only work behind an HTTPS listener. AWS does not document
-    whether the hop to the target may be cleartext; users report h2c working, but it is untested here.
+    whether the hop to the target may be cleartext; users report h2c working, but it is untested here. An HTTPS
+    target group pointing at vela's TLS listener is the documented path.
 - Not for gRPC yet: gRPC needs response trailers (`grpc-status`) and streamed bodies, which vela does not support.
 - Each stream runs in its own fiber, exactly like an HTTP/1.1 request: `maxInFlight` counts streams (above it the
   stream is refused with `REFUSED_STREAM`, safe to retry), `requestTimeoutMs` applies per stream (504), a
@@ -176,9 +212,10 @@ cfg.http2WindowBytes = 1 << 20; // connection receive window (request bodies in 
   frames) end the connection with `ENHANCE_YOUR_CALM`; reading pauses while a client does not read its responses.
 - Not implemented: server push (clients disable it), priorities (accepted and ignored, as RFC 9113 allows), the HPACK
   dynamic table when encoding responses (decoding uses it as required).
-- Conformance: [h2spec](https://github.com/summerwind/h2spec) passes 145 of 146 cases. The remaining one (3.5/2,
-  an invalid preface) cannot pass on a port that also serves HTTP/1.1: there it is a malformed HTTP/1.1 request,
-  which correctly gets a 400. Also tested against curl (nghttp2) and python-h2.
+- Conformance: [h2spec](https://github.com/summerwind/h2spec) passes all 146 cases over TLS and 145 in cleartext.
+  The remaining one (3.5/2, an invalid preface) cannot pass on a cleartext port that also serves HTTP/1.1: there
+  it is a malformed HTTP/1.1 request, which correctly gets a 400. Also tested against curl (nghttp2) and python-h2,
+  in cleartext and over TLS.
 - Measured: 1,000 in-flight streams over 10 connections peak at ~16 MB of RSS; the HTTP/2 hot path (frames, HPACK,
   dispatch, framing the response) does not allocate on the GC.
 
@@ -188,7 +225,7 @@ cfg.http2WindowBytes = 1 << 20; // connection receive window (request bodies in 
 tools/check.sh                       # everything: unittests, example, allocation, network, Postgres, HTTP client, memory, compile-fail, budget
                                      # (starts a throwaway PostgreSQL and a Python upstream; without them, those tests are skipped)
 DC=ldmd2 tools/check.sh              # the same with LDC
-tools/h2_interop.sh                  # HTTP/2 against curl, python-h2 and h2spec (H2SPEC=/path/to/h2spec); part of check.sh
+tools/h2_interop.sh                  # HTTP/2 and HTTPS against curl, python-h2 and h2spec (H2SPEC=/path/to/h2spec); part of check.sh
 tools/fuzz.sh 600 h2                 # libFuzzer + ASan on the HTTP/2 session (or "parse" for the HTTP/1 parser)
 
 cd examples/hello && dub run         # starts the example at http://localhost:8080
@@ -197,7 +234,7 @@ curl -X POST localhost:8080/users -d '{"name":"Ana","age":31}'
 
 Tested with DMD 2.113 and LDC 1.43 (Linux x86_64).
 
-Requirements: a D compiler (DMD or LDC) and DUB. The core (`vela`) needs no database. Only whoever uses the optional `vela-pg` driver needs `libpq5` at run time; the HTTP client's outgoing HTTPS needs OpenSSL 3 (both loaded by dlopen).
+Requirements: a D compiler (DMD or LDC) and DUB. The core (`vela`) needs no database. Only whoever uses the optional `vela-pg` driver needs `libpq5` at run time; HTTPS (the server's TLS listener and the HTTP client's outgoing calls) needs OpenSSL 3 (both loaded by dlopen).
 
 ## Packages
 
@@ -218,7 +255,10 @@ Requirements: a D compiler (DMD or LDC) and DUB. The core (`vela`) needs no data
 - The Postgres driver does not block the worker, respects the pool, cancels on the server and discards the connection (`tests/db/pg_net.d`).
 - The HTTP/HTTPS client does not block, reuses connections, retries on a stale one and respects deadlines (`tests/net/client_net.d`).
 - The parser survives the attack corpus and the fuzzer (`tests/fuzz/`), and the `examples/api` example passes 31 end-to-end checks (`tests/example/api_e2e.py`).
-- 1,000 in-flight requests fit in under 30 MB of RSS, over HTTP/1.1 and over HTTP/2 (`tools/check.sh`, memory section).
+- 1,000 in-flight requests fit in under 30 MB of RSS, over HTTP/1.1 and over HTTP/2; over HTTPS, under 56 MB
+  (`tools/check.sh`, memory section).
+- HTTPS: ALPN, HTTP/1.1 and HTTP/2 over TLS, handshake deadline, refused cleartext and untrusted clients, cancellation,
+  clients resetting mid-response, certificate reload and configuration errors (`tests/net/tls_net.d`).
 - The HTTP/2 session handles every frame, stream state, flow-control and error case in `tests/h2/session_test.d`, survives
   the mutation fuzzer and its regressions (`tests/fuzz/fuzz_h2.d`), and the engine passes `tests/net/h2_net.d` (multiplexing,
   cancellation, deadlines, flow control, upgrade, timeouts, graceful stop).

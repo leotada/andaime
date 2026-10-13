@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """HTTP/2 interoperability with an independent implementation (python-h2, the library behind
-httpx/hyper). Usage: h2_client.py <port>. Exits non-zero on the first failure."""
+httpx/hyper). Usage: h2_client.py <port> [ca.pem]: with a CA, HTTPS with ALPN (Python's ssl
+module, i.e. OpenSSL as a client). Exits non-zero on the first failure."""
 import socket
+import ssl
 import sys
 import time
 
@@ -10,11 +12,17 @@ import h2.connection
 import h2.events
 
 PORT = int(sys.argv[1])
+CA = sys.argv[2] if len(sys.argv) > 2 else None
 
 
 class Conn:
     def __init__(self, upgrade=False):
         self.sock = socket.create_connection(("127.0.0.1", PORT), timeout=10)
+        if CA:
+            ctx = ssl.create_default_context(cafile=CA)
+            ctx.set_alpn_protocols(["h2", "http/1.1"])
+            self.sock = ctx.wrap_socket(self.sock, server_hostname="localhost")
+            assert self.sock.selected_alpn_protocol() == "h2", self.sock.selected_alpn_protocol()
         self.h2 = h2.connection.H2Connection(h2.config.H2Configuration(client_side=True))
         self.responses = {}
         if upgrade:
@@ -79,11 +87,14 @@ class Conn:
         return [self.responses[s] for s in sids]
 
 
+LABEL = "python-h2 (TLS)" if CA else "python-h2"
+
+
 def check(name, cond):
     if not cond:
-        print("FAILED:", name)
+        print("FAILED:", LABEL, name)
         sys.exit(1)
-    print("ok  python-h2:", name)
+    print("ok ", LABEL + ":", name)
 
 
 c = Conn()
@@ -107,12 +118,16 @@ check("2 MiB response intact", r["body"] == expected)
 (r,) = c.wait(c.request("GET", "/missing"))
 check("404", r["headers"][b":status"] == b"404")
 
-up = Conn(upgrade=True)
-(r,) = up.wait(1)
-check("h2c upgrade answers the HTTP/1.1 request on stream 1", r["body"] == b"h2")
-(r,) = up.wait(up.request("GET", "/"))
-check("upgraded connection serves new streams", r["body"] == b"hello from vela")
+if not CA:
+    up = Conn(upgrade=True)
+    (r,) = up.wait(1)
+    check("h2c upgrade answers the HTTP/1.1 request on stream 1", r["body"] == b"h2")
+    (r,) = up.wait(up.request("GET", "/"))
+    check("upgraded connection serves new streams", r["body"] == b"hello from vela")
+else:
+    (r,) = c.wait(c.request("GET", "/proto"))
+    check("ALPN h2 reaches the handler as HTTP/2", r["body"] == b"h2")
 
 c.h2.close_connection()
 c.flush()
-print("all python-h2 interop checks passed")
+print("all", LABEL, "interop checks passed")

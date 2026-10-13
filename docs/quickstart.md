@@ -220,9 +220,19 @@ The same port also speaks HTTP/2 over cleartext (h2c), with no change to your co
 curl --http2-prior-knowledge http://localhost:8080/users   # or --http2 to upgrade from HTTP/1.1
 ```
 
-Each stream gets its own fiber, so one slow request does not hold up the others on the connection. Browsers only
-use HTTP/2 over TLS, which vela does not terminate: put it behind a proxy that speaks h2c to its upstreams (Caddy,
-HAProxy, Envoy, Cloud Run; the README lists the configuration for each), or use it between services. `cfg.http2 = false` turns it off; the README has the details and limits.
+Each stream gets its own fiber, so one slow request does not hold up the others on the connection.
+`cfg.http2 = false` turns it off.
+
+For browsers, give the server a certificate: it then speaks HTTPS only, and ALPN chooses HTTP/2 or HTTP/1.1.
+
+```d
+cfg.port = 443;
+cfg.tls.certFile = "/etc/letsencrypt/live/example.com/fullchain.pem";
+cfg.tls.keyFile = "/etc/letsencrypt/live/example.com/privkey.pem";
+```
+
+Renewed certificates are picked up without a restart. Without a certificate, use cleartext HTTP/2 between
+services or behind a proxy that speaks h2c (Caddy, HAProxy, Envoy, Cloud Run); the README has the details.
 
 ## 10. Readable compile errors
 

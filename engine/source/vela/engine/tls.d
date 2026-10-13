@@ -1,6 +1,6 @@
-/// TLS client over OpenSSL loaded at run time (dlopen), in
-/// non-blocking mode. No headers and no `-lssl` at build time: only whoever does
-/// HTTPS needs libssl.so.3 installed (`libssl3` / `openssl`).
+/// OpenSSL loaded at run time (dlopen), used in non-blocking mode by the HTTP client and by the
+/// server's TLS listener (`vela.engine.tlsserver`). No headers and no `-lssl` at build time: only
+/// whoever does HTTPS needs libssl.so.3 installed (`libssl3` / `openssl`).
 module vela.engine.tls;
 
 @safe:
@@ -28,7 +28,33 @@ enum : int
     SSL_CTRL_SET_MIN_PROTO_VERSION = 123,
     TLS1_2_VERSION = 0x0303,
     TLSEXT_NAMETYPE_host_name = 0,
+    // server side (values from OpenSSL 3's ssl.h / tls1.h)
+    SSL_FILETYPE_PEM = 1,
+    SSL_CTRL_MODE = 33,
+    SSL_CTRL_SET_SESS_CACHE_MODE = 44,
+    SSL_CTRL_SET_TLSEXT_TICKET_KEYS = 59,
+    SSL_SESS_CACHE_OFF = 0,
+    SSL_TLSEXT_ERR_OK = 0,
+    SSL_TLSEXT_ERR_NOACK = 3,
 }
+
+enum : uint
+{
+    SSL_MODE_ENABLE_PARTIAL_WRITE = 0x1,
+    SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER = 0x2,
+    SSL_MODE_RELEASE_BUFFERS = 0x10,
+}
+
+enum : ulong
+{
+    SSL_OP_NO_COMPRESSION = 1UL << 17,
+    SSL_OP_CIPHER_SERVER_PREFERENCE = 1UL << 22,
+    SSL_OP_NO_RENEGOTIATION = 1UL << 30,
+}
+
+/// ALPN selection callback (SSL_CTX_alpn_select_cb_func).
+alias AlpnSelect = extern (C) int function(SSL*, const(ubyte)** out_, ubyte* outLen, const(ubyte)* in_,
+    uint inLen, void* arg) nothrow @nogc @system;
 
 /// Function table in a struct: loose `extern (C)` variables would become global symbols
 /// named like OpenSSL's functions and libssl itself would end up calling our pointers.
@@ -55,6 +81,18 @@ struct Api
     int function(SSL*) SSL_shutdown;
     long function(const(SSL)*) SSL_get_verify_result;
     ulong function() ERR_get_error;
+    // server side
+    const(SSL_METHOD)* function() TLS_server_method;
+    int function(SSL_CTX*, const(char)*) SSL_CTX_use_certificate_chain_file;
+    int function(SSL_CTX*, const(char)*, int) SSL_CTX_use_PrivateKey_file;
+    int function(const(SSL_CTX)*) SSL_CTX_check_private_key;
+    int function(SSL_CTX*, const(char)*) SSL_CTX_set_cipher_list;
+    ulong function(SSL_CTX*, ulong) SSL_CTX_set_options;
+    void function(SSL_CTX*, AlpnSelect, void*) SSL_CTX_set_alpn_select_cb;
+    void function(const(SSL)*, const(ubyte)**, uint*) SSL_get0_alpn_selected;
+    int function(SSL*, const(ubyte)*, uint) SSL_set_alpn_protos;
+    void function(SSL*) SSL_set_accept_state;
+    int function(SSL*) SSL_do_handshake;
     void function(ulong, char*, size_t) ERR_error_string_n;
     void function() ERR_clear_error;
 }
@@ -70,6 +108,22 @@ shared static this() @trusted
     gLock = new Object;
 }
 
+/// OpenSSL writes to sockets with write(2), not send(MSG_NOSIGNAL): a peer that resets the
+/// connection would raise SIGPIPE and kill the whole server. Ignored, unless the application
+/// installed a handler of its own.
+private void ignoreSigpipe() @system nothrow @nogc
+{
+    import core.sys.posix.signal : sigaction, sigaction_t, sigemptyset, SIGPIPE, SIG_DFL, SIG_IGN;
+
+    sigaction_t current;
+    if (sigaction(SIGPIPE, null, &current) != 0 || current.sa_handler != SIG_DFL)
+        return;
+    sigaction_t ign;
+    ign.sa_handler = SIG_IGN;
+    sigemptyset(&ign.sa_mask);
+    sigaction(SIGPIPE, &ign, null);
+}
+
 /// Loads libssl/libcrypto. Returns null on success, or the error message.
 string loadOpenSsl() @trusted
 {
@@ -77,6 +131,7 @@ string loadOpenSsl() @trusted
     {
         if (loaded)
             return null;
+        ignoreSigpipe();
         if (loadError !is null)
             return loadError;
 

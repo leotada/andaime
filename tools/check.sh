@@ -39,7 +39,10 @@ $DC $I -i -run tests/net/epoll_net.d
 echo "== HTTP/2 network tests (h2c, multiplexing, cancellation, deadlines, flow control, upgrade, stop)"
 $DC $I -i -run tests/net/h2_net.d
 
-echo "== HTTP/2 interoperability (curl, python-h2, h2spec; each skips itself when missing)"
+echo "== HTTPS (ALPN, HTTP/1.1 and HTTP/2 over TLS, handshake limits, cancellation, certificate reload)"
+$DC $I -i -run tests/net/tls_net.d
+
+echo "== HTTP/2 and HTTPS interoperability (curl, python-h2, h2spec; each skips itself when missing)"
 DC=$DC tools/h2_interop.sh || fail=1
 
 echo "== M3: PostgreSQL (async libpq), HTTP/HTTPS client and thread pool"
@@ -55,11 +58,13 @@ tmp=$(mktemp -d)
 $DC -O -release tests/net/loadgen.d -of"$tmp/loadgen" > /dev/null
 $DC -O -release tests/net/h2_loadgen.d -of"$tmp/h2_loadgen" > /dev/null
 $DC -O -release $I -i -of"$tmp/serve_slow" tests/net/serve_slow.d > /dev/null
-# usage: memtest <label> <load command...>  (the command gets the port as its first argument)
+$DC -O -release -Iengine/source -Ihttp/source -i -of"$tmp/tls_loadgen" tests/net/tls_loadgen.d > /dev/null
+# usage: memtest <label> <limit KiB> "<server args after the port>" <load command...>
+# (the load command gets the port as its first argument)
 memtest() {
-    local label=$1; shift
+    local label=$1 limit=$2 srvargs=$3; shift 3
     local port=$(( 18700 + RANDOM % 200 ))
-    "$tmp/serve_slow" "$port" 1500 > "$tmp/srv.log" 2>&1 &
+    "$tmp/serve_slow" "$port" $srvargs > "$tmp/srv.log" 2>&1 &
     local srv=$!
     sleep 0.5
     local idle=$(awk '/VmRSS/{print $2}' /proc/$srv/status)
@@ -76,12 +81,26 @@ memtest() {
     wait $srv 2>/dev/null || true
     tail -1 "$tmp/load.log"
     echo "$label RSS: idle ${idle} KiB, peak ${peak} KiB, after the burst ${after} KiB"
-    (( peak < 30 * 1024 )) || { echo "ABOVE 30 MB"; fail=1; }
+    (( peak < limit )) || { echo "ABOVE $(( limit / 1024 )) MB"; fail=1; }
 }
 loadgen_h1() { "$tmp/loadgen" "$1" 1000 500 1500; }
 loadgen_h2() { "$tmp/h2_loadgen" "$1" 10 100 1500; }
-memtest "HTTP/1.1 (1,000 connections)" loadgen_h1
-memtest "HTTP/2 (10 connections x 100 streams)" loadgen_h2
+memtest "HTTP/1.1 (1,000 connections)" $(( 30 * 1024 )) 1500 loadgen_h1
+memtest "HTTP/2 (10 connections x 100 streams)" $(( 30 * 1024 )) 1500 loadgen_h2
+# HTTPS: OpenSSL keeps ~15 KiB per connection on top of the request itself (measured ~44 MB peak
+# for 1,000 connections), so it has its own ceiling. Handshakes run one after another in the load
+# generator, so the handler waits longer for all 1,000 requests to be in flight at once.
+# (no "| grep -q" under pipefail: grep exiting early kills ldconfig with SIGPIPE and fails the pipeline)
+if command -v openssl > /dev/null && [[ -n "$(ldconfig -p 2> /dev/null | grep 'libssl\.so\.3')" ]]; then
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -keyout "$tmp/key.pem" -out "$tmp/cert.pem" \
+        -days 2 -subj /CN=localhost -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2> /dev/null
+    loadgen_tls_h1() { "$tmp/tls_loadgen" "$1" 1000 "$tmp/cert.pem"; }
+    loadgen_tls_h2() { "$tmp/tls_loadgen" "$1" 1000 "$tmp/cert.pem" h2; }
+    memtest "HTTPS HTTP/1.1 (1,000 connections)" $(( 56 * 1024 )) "5000 $tmp/cert.pem $tmp/key.pem" loadgen_tls_h1
+    memtest "HTTPS h2 (1,000 connections)" $(( 56 * 1024 )) "5000 $tmp/cert.pem $tmp/key.pem" loadgen_tls_h2
+else
+    echo "warning: openssl or libssl.so.3 missing; skipping the HTTPS memory test"
+fi
 rm -rf "$tmp"
 
 echo "== compile-error tests (expected message + at most 2 error lines)"

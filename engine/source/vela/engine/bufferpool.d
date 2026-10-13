@@ -3,6 +3,8 @@
 /// Fixed size classes (4, 16, 64 KiB). Idle connections return their
 /// buffer to the pool: 10 thousand idle keep-alive connections do not hold 160 MiB.
 /// The pool keeps at most `maxCachedBytes`; the excess goes back to the OS.
+/// Larger requests (a body up to `Limits.maxBodyBytes`) get an exact-size buffer that is never
+/// cached: it goes back to the OS as soon as the request is done.
 /// Single-threaded by design (one pool per worker), hence no locks.
 module vela.engine.bufferpool;
 
@@ -37,6 +39,8 @@ struct Buffer
 struct BufferPool
 {
     static immutable size_t[3] classSize = [4 << 10, 16 << 10, 64 << 10];
+    /// `Buffer.cls` of a buffer larger than every class.
+    enum ubyte oversize = classSize.length;
 
     private ubyte[][][3] free_;
     private size_t cachedBytes;
@@ -58,9 +62,14 @@ struct BufferPool
         ubyte c = 0;
         while (c < classSize.length && classSize[c] < minSize)
             c++;
-        if (c == classSize.length)
-            assert(0, "vela: buffer larger than the largest class; check Limits first");
         outstanding++;
+        if (c == oversize)
+        {
+            auto big = cast(ubyte*) malloc(minSize);
+            if (big is null)
+                onOutOfMemoryError();
+            return Buffer(big[0 .. minSize], 0, oversize);
+        }
         if (free_[c].length)
         {
             auto m = free_[c][$ - 1];
@@ -80,7 +89,7 @@ struct BufferPool
         if (b.isNull)
             return;
         outstanding--;
-        if (cachedBytes + b.mem.length <= maxCachedBytes)
+        if (b.cls != oversize && cachedBytes + b.mem.length <= maxCachedBytes)
         {
             free_[b.cls] ~= b.mem; // the list itself is small and stable after warm-up
             cachedBytes += b.mem.length;
@@ -90,11 +99,10 @@ struct BufferPool
         b = Buffer.init;
     }
 
-    /// Promotes to the next class preserving the data (large body).
+    /// Moves the data to a buffer of at least `minSize` bytes (the next class, or an exact-size
+    /// one for a large body). The caller enforces the limits (`Limits`).
     bool grow(ref Buffer b, size_t minSize) @trusted nothrow
     {
-        if (minSize > classSize[$ - 1])
-            return false;
         auto nb = acquire(minSize);
         nb.mem[0 .. b.len] = b.mem[0 .. b.len];
         nb.len = b.len;
@@ -118,4 +126,14 @@ struct BufferPool
     auto b = pool.acquire(5000);
     assert(b.mem.ptr is p); // reused, no malloc
     pool.release(b);
+
+    // above the largest class: exact size, data preserved, never cached
+    auto big = pool.acquire(100);
+    big.mem[0 .. 3] = cast(ubyte[]) "xyz";
+    big.len = 3;
+    assert(pool.grow(big, 1_000_000) && big.mem.length == 1_000_000 && big.cls == BufferPool.oversize);
+    assert(big.data == cast(ubyte[]) "xyz");
+    immutable cached = pool.cachedBytes;
+    pool.release(big);
+    assert(pool.cachedBytes == cached && pool.outstanding == 0);
 }

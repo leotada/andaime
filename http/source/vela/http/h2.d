@@ -83,8 +83,13 @@ private enum uint defaultFrameSize = 16_384;
 struct H2Config
 {
     uint maxConcurrentStreams = 100;  /// SETTINGS_MAX_CONCURRENT_STREAMS we announce
-    uint initialWindowSize = 65_535;  /// per-stream receive window we announce
-    uint connectionWindowSize = 1 << 20; /// connection receive window (raised with WINDOW_UPDATE at start)
+    /// Per-stream receive window we announce (SETTINGS_INITIAL_WINDOW_SIZE): how much of one request
+    /// body the client may send per round trip. Bodies are buffered whole anyway (`limits.maxBodyBytes`),
+    /// so this trades nothing but throughput. Clamped to [65,535, 2^31 - 1].
+    uint initialWindowSize = 256 << 10;
+    /// Connection receive window (raised with WINDOW_UPDATE at start): request body bytes in flight
+    /// across all streams of a connection. Clamped to [65,535, 2^31 - 1].
+    uint connectionWindowSize = 1 << 20;
     uint headerTableSize = 4096;      /// HPACK table we keep for the peer
     uint maxHeaders = 32;             /// fields per request; above that, 431
     uint floodLimit = 1000;           /// cost of control frames/resets before ENHANCE_YOUR_CALM (halves every `tick`)
@@ -234,6 +239,8 @@ final class H2Session
     this(H2Config c = H2Config.init) nothrow
     {
         cfg = c;
+        cfg.initialWindowSize = clampWindow(c.initialWindowSize);
+        cfg.connectionWindowSize = clampWindow(c.connectionWindowSize);
         hpack.setMaxAllowed(c.headerTableSize);
         // a string can never be longer than the block it came in (Huffman expands at most 8/5);
         // the header-list limit (431) is checked per request, this only bounds the scratch space
@@ -1347,7 +1354,7 @@ final class H2Session
         s.state = StreamState.open;
         s.openedMs = nowMs;
         s.sendWindow = peerInitialWindow;
-        s.recvWindow = cfg.initialWindowSize > defaultWindow ? cfg.initialWindowSize : defaultWindow;
+        s.recvWindow = cfg.initialWindowSize;
         streams.push(s);
         return s;
     }
@@ -1476,6 +1483,11 @@ final class H2Session
 }
 
 // ============================================================================= helpers
+
+private uint clampWindow(uint w) pure nothrow @nogc
+{
+    return w < defaultWindow ? defaultWindow : w > maxWindow ? cast(uint) maxWindow : w;
+}
 
 private uint readU32(scope const(ubyte)[] b) pure nothrow @nogc
 {

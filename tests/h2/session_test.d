@@ -241,7 +241,9 @@ unittest // connection window: DATA of all streams stops at 65535 until the peer
 
 unittest // the receive window is replenished as bodies arrive
 {
-    auto p = new Peer;
+    H2Config small;
+    small.initialWindowSize = 65_535;
+    auto p = new Peer(small);
     p.send(frame(1, flagEndHeaders, 1, post("/", "100000")));
     auto chunk = new ubyte[16_000];
     uint conn, stream;
@@ -255,6 +257,48 @@ unittest // the receive window is replenished as bodies arrive
     assert(stream >= 32_000, stream.to!string);
     p.send(frame(0, flagEndStream, 1, chunk[0 .. 4000]));
     assert(p.ready().req.body.length == 100_000);
+}
+
+unittest // the per-stream window is configurable, announced in SETTINGS and enforced
+{
+    uint announced(H2Config cfg)
+    {
+        auto s = new H2Session(cfg);
+        s.receive(cast(ubyte[]) clientPreface.dup);
+        auto o = cast(const(ubyte)[]) s.pendingOutput;
+        assert(o[3] == FrameType.settings);
+        immutable len = (o[0] << 16) | (o[1] << 8) | o[2];
+        for (size_t i = 9; i < 9 + len; i += 6)
+            if (o[i] == 0 && o[i + 1] == 4)
+                return (o[i + 2] << 24) | (o[i + 3] << 16) | (o[i + 4] << 8) | o[i + 5];
+        return 65_535; // not announced: the protocol default
+    }
+
+    H2Config cfg;
+    assert(announced(cfg) == 256 << 10, "default per-stream window");
+    cfg.initialWindowSize = 1 << 20;
+    assert(announced(cfg) == 1 << 20);
+    cfg.initialWindowSize = 1000; // below the protocol default: raised to it
+    assert(announced(cfg) == 65_535);
+    cfg.initialWindowSize = uint.max; // above 2^31 - 1: lowered to it
+    assert(announced(cfg) == 0x7fff_ffff);
+
+    // a client may send its whole window without reading anything from the server
+    cfg = H2Config.init;
+    cfg.initialWindowSize = 200_000;
+    auto p = new Peer(cfg);
+    ubyte[] burst = frame(1, flagEndHeaders, 1, post("/", "200000"));
+    auto chunk = new ubyte[16_384];
+    size_t left = 200_000;
+    while (left)
+    {
+        immutable n = left < chunk.length ? left : chunk.length;
+        left -= n;
+        burst ~= frame(0, left ? 0 : flagEndStream, 1, chunk[0 .. n]);
+    }
+    p.send(burst);
+    assert(!p.s.fatal);
+    assert(p.ready().req.body.length == 200_000);
 }
 
 unittest // connection errors

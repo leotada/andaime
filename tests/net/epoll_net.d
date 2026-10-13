@@ -628,6 +628,34 @@ void testExpectContinue()
     ok("Expect: 100-continue: go-ahead before the body, 417 for other expectations, 413 without 100");
 }
 
+void testLargeBodies()
+{
+    // bodies above the buffer pool's largest class (64 KiB) up to Limits.maxBodyBytes (1 MiB);
+    // they once got a 413 from 64 KiB on
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+    import std.conv : to;
+
+    foreach (n; [60_000, 70_000, 300_000, 1 << 20])
+    {
+        auto c = dial(s.port);
+        auto body = new char[n];
+        body[] = 'b';
+        c.tx("POST /len HTTP/1.1\r\nHost: t\r\nContent-Length: " ~ n.to!string ~ "\r\n\r\n" ~ body.idup);
+        auto r = c.rx();
+        assert(r.status == 200 && r.body == n.to!string, n.to!string ~ ": " ~ r.head);
+        // the same connection serves the next request (the large buffer went back)
+        c.tx("GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
+        assert(c.rx().body == "ok");
+        c.hang();
+    }
+    auto c = dial(s.port);
+    c.tx("POST /len HTTP/1.1\r\nHost: t\r\nContent-Length: " ~ ((1 << 20) + 1).to!string ~ "\r\n\r\n");
+    assert(c.rx().status == 413);
+    c.hang();
+    ok("request bodies from 60 KB to the 1 MiB limit (above the buffer classes), 413 above it");
+}
+
 void testOffload()
 {
     // pool configured in main: 2 threads, queue of 2
@@ -694,5 +722,6 @@ void main()
     testDateAndDetector();
     testOffload();
     testExpectContinue();
+    testLargeBodies();
     printf("all network tests passed\n");
 }

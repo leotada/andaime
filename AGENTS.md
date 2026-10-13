@@ -37,7 +37,9 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 - Every module starts with `@safe:` except the raw-syscall ones: `engine/.../epoll.d` and `devserver.d` stay `@system`;
   `EventLoop.run` is `@system` and `vela.server.serve` is the single `@trusted` entry point into them.
   Their overrides of `@safe` interfaces (`stop`, `awaitFd`, `sleepMs`) are small `@trusted` bodies.
-- FFI modules (`drivers/pg`, `engine/.../httpclient.d`, `tls.d`, `libpq.d`) expose `@trusted` façades; raw pointers never leave them.
+- FFI modules (`drivers/pg`, `engine/.../httpclient.d`, `tls.d`, `tlsserver.d`, `libpq.d`) expose `@trusted` façades; raw pointers never leave them
+  (`tlsserver.d`'s per-connection functions take an `SSL*` and are `@system`; only `epoll.d` calls them). Tests that need raw OpenSSL
+  (`tests/net/tls_net.d`, `tls_loadgen.d`) declare a `vela.engine.*` module name to reach the package-protected table.
   Anything that hands out a raw view (`PgResult.text`) is `@system`.
 - `__gshared` data is `@system`: read it through a small `@trusted` accessor and say why it is sound (usually "written once before the workers start").
 - A new `@trusted` needs a one-line comment saying why it is sound. When unsure, keep it `@system`.
@@ -48,7 +50,7 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 |------|------|
 | `http/` (`vela:http`) | HTTP types, zero-copy HTTP/1.1 parser, response writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK (`hpack.d`). No I/O. |
 | `web/` (`vela:web`) | `App`, `Group`, router (segment tree), handler introspection, JSON, OpenAPI, CORS, middleware, `TestClient`. No sockets. |
-| `engine/` (`vela:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload` thread pool, HTTP/HTTPS client, TLS (dlopen). No routes or DTOs. |
+| `engine/` (`vela:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload` thread pool, HTTP/HTTPS client, OpenSSL (dlopen, `tls.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
 | `drivers/pg/` (`vela-pg`) | PostgreSQL driver over async libpq (dlopen). **Independent package; the core must never depend on it.** |
 | `source/vela/` (`vela`) | `import vela;`, `server.d` (the only glue between web and engine), `staticfiles.d`. |
 | `examples/hello`, `examples/api` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI. |
@@ -96,9 +98,20 @@ Tests that need PostgreSQL, Python or OpenSSL skip themselves with a warning whe
   `respond` or `detach`. Stream and session objects are pooled: reset every field in `H2Stream.reset`/`H2Session.reset`
   (a stale field on a recycled stream once crashed the session; libFuzzer found it).
 - Never send RST_STREAM for a stream that was never opened (idle, or even-numbered): use a connection error.
-- An HTTP/2 change: add a case to `tests/h2/session_test.d`, run `tools/h2_interop.sh` (h2spec must stay at 145/146:
-  3.5/2 cannot pass on a mixed HTTP/1.1 port), and `tools/fuzz.sh 300 h2`. Inputs that once broke the session go in
+- An HTTP/2 change: add a case to `tests/h2/session_test.d`, run `tools/h2_interop.sh` (h2spec must stay at 146/146 over TLS and
+  145/146 in cleartext: 3.5/2 cannot pass on a mixed HTTP/1.1 port), and `tools/fuzz.sh 300 h2`. Inputs that once broke the session go in
   `tests/fuzz/h2_regressions/`; `fuzz_h2.d` replays them on every check.
+
+## TLS (read before touching `tlsserver.d` or the TLS parts of `epoll.d`)
+
+- Every read and write on a connection goes through `ioRead`/`ioSend` in `epoll.d`, never `read`/`send` on the fd:
+  with TLS they go through OpenSSL with read(2)/send(2) semantics (EAGAIN for WANT_READ/WANT_WRITE).
+- A short TLS read does not mean the socket is drained (OpenSSL returns one record at a time): keep reading until
+  EAGAIN. With edge-triggered epoll, stopping early loses the wake-up.
+- OpenSSL writes with write(2): SIGPIPE must stay ignored (`loadOpenSsl` does it). A server that died on a client's
+  reset taught this; `tests/net/tls_net.d` covers it.
+- Never call `SSL_shutdown` after a fatal TLS error (`Conn.tlsFatal`) or during the handshake.
+- Each worker has its own `SSL_CTX` (no locks); ticket keys are shared so resumption works across workers.
 
 ## Pitfalls that already cost time
 
@@ -118,10 +131,12 @@ Tests that need PostgreSQL, Python or OpenSSL skip themselves with a warning whe
   load native libraries at run time (dlopen) so the framework still builds without them.
 - **A new event-loop backend** (kqueue, io_uring): implement the `EventLoop` interface in `engine/source/vela/engine/loop.d`.
 - **A parser change**: add a file to `tests/fuzz/corpus/` named `<name>.<ok|incomplete|status>.http` and run the fuzzer.
+- **Buffers above 64 KiB**: `BufferPool` hands out exact-size, never-cached buffers past its largest class (request
+  bodies up to `maxBodyBytes`). HTTP/1.1 bodies above 64 KiB once failed with 413 because it could not; `testLargeBodies` covers it.
 - **A new `Request` field**: every producer must set it — the HTTP/1 parser (`parseRequestHead`) and the HTTP/2 session
   (`finishRequest`) — because the fiber's `Request` is reused across protocols.
 
 ## Out of scope for now
 
 Performance work (M4: benchmarks, SIMD head search, GC tuning, `sendfile`), kqueue (M5) and io_uring (M6), chunked request bodies,
-TLS termination in the server (HTTP/2 over TLS with ALPN, for browsers). Do not start these unless asked.
+a second (cleartext) listener next to the TLS one, response trailers and streamed bodies (gRPC). Do not start these unless asked.

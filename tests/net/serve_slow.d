@@ -1,5 +1,5 @@
 /// Load server: a route that "waits for an external API" for N ms (default 3000).
-/// Usage: serve_slow [port] [waitMs] — see the memory test in tools/check.sh.
+/// Usage: serve_slow [port] [waitMs] [cert.pem key.pem] — see the memory test in tools/check.sh.
 module serve_slow;
 
 import vela;
@@ -32,5 +32,10 @@ void main(string[] args)
     cfg.workers = 1;
     cfg.maxConnections = 15_000;
     cfg.maxInFlight = 15_000;
+    if (args.length > 4)
+    {
+        cfg.tls.certFile = args[3];
+        cfg.tls.keyFile = args[4];
+    }
     app.serve(cfg);
 }

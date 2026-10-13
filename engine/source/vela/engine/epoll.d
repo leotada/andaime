@@ -18,6 +18,10 @@
 /// parses the frames; each request it reports gets its own fiber, exactly like an HTTP/1
 /// request, and its response goes back to the session, which frames it with flow control.
 /// Cancellation, deadlines and the in-flight ceiling apply per stream.
+///
+/// TLS (`ServerConfig.tls`): an accepted connection starts in `Phase.handshake`; once the
+/// handshake completes, ALPN decides between HTTP/2 and HTTP/1.1, and every read and write goes
+/// through `ioRead`/`ioSend`, which hide OpenSSL behind read(2)/send(2) semantics.
 module vela.engine.epoll;
 
 version (linux):
@@ -41,6 +45,8 @@ import vela.http.h2;
 import vela.engine.bufferpool;
 import vela.engine.loop;
 import vela.engine.fiberio;
+import vela.engine.tls : SSL;
+import vela.engine.tlsserver;
 
 private extern (C) int accept4(int, sockaddr*, socklen_t*, int) nothrow @nogc;
 version (CRuntime_Glibc)
@@ -66,7 +72,7 @@ private class Item
     this(Kind k) nothrow @nogc @safe { kind = k; }
 }
 
-private enum Phase : ubyte { reading, running, writing, closed, h2 }
+private enum Phase : ubyte { reading, running, writing, closed, h2, handshake }
 
 private struct Stack(T)
 {
@@ -104,6 +110,9 @@ private final class Conn : Item
     H2Session h2;
     bool h2Paused;         /// stopped reading: too much output queued for a peer that does not read
     long blockedSinceMs;   /// output waiting for EPOLLOUT since then (0 = not blocked)
+    // TLS
+    SSL* ssl;              /// null on a cleartext connection
+    bool tlsFatal;         /// the TLS session broke: close without close_notify
 
     this() nothrow @safe { super(Kind.conn); }
 }
@@ -190,6 +199,11 @@ final class EpollLoop : EventLoop, Scheduler
     private Worker[] h2Scratch;     /// workers of one connection, collected before cancelling them
     private ByteBuffer upgradeSettings;
     private size_t h2Conns, h2Streams;
+    private TlsServer tlsServer;
+    private size_t tlsHandshakes, tlsFailures;
+    /// Ticket keys shared by every worker (set by runEpollServer; random per loop otherwise).
+    TicketKeys ticketKeys;
+    private bool haveTicketKeys;
     private Timer[] heap;
     private size_t heapN, staleTimers;
 
@@ -232,7 +246,8 @@ final class EpollLoop : EventLoop, Scheduler
     LoopStats stats() const nothrow @nogc
     {
         return LoopStats(inFlight, peakInFlight, workersCreated, workersRetired, idle.n,
-            connCount, rejected, cancelledN, timedOutN, stalls, maxStallMs, h2Conns, h2Streams);
+            connCount, rejected, cancelledN, timedOutN, stalls, maxStallMs, h2Conns, h2Streams,
+            tlsHandshakes, tlsFailures, tlsServer.reloads);
     }
 
     /// How many times the loop returned memory to the OS after a burst.
@@ -327,8 +342,25 @@ final class EpollLoop : EventLoop, Scheduler
 
     // ------------------------------------------------------------------ listener
 
+    /// Uses the same session ticket keys as other workers (call before `run`).
+    void shareTicketKeys(ref const TicketKeys k) nothrow @nogc
+    {
+        ticketKeys = k;
+        haveTicketKeys = true;
+    }
+
     private bool openListener()
     {
+        if (cfg.tls.enabled)
+        {
+            if (!haveTicketKeys)
+                ticketKeys = TicketKeys.random();
+            if (auto err = tlsServer.load(cfg.tls, cfg.http2, ticketKeys))
+            {
+                fprintf(stderr, "%.*s\n", cast(int) err.length, err.ptr);
+                return false;
+            }
+        }
         listenFd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
         if (listenFd < 0)
         {
@@ -405,7 +437,21 @@ final class EpollLoop : EventLoop, Scheduler
             c.h2 = null;
             c.h2Paused = false;
             c.blockedSinceMs = 0;
+            c.ssl = null;
+            c.tlsFatal = false;
             c.deadlineMs = nowMs + cfg.idleTimeoutMs;
+            if (cfg.tls.enabled)
+            {
+                c.ssl = tlsServer.accept(fd);
+                if (c.ssl is null)
+                {
+                    close(fd);
+                    spare.push(c);
+                    continue;
+                }
+                c.phase = Phase.handshake;
+                c.deadlineMs = nowMs + cfg.headerTimeoutMs; // the handshake counts as part of the head
+            }
             if (fd >= conns.length)
                 conns.length = fd + 1024;
             conns[fd] = c;
@@ -447,6 +493,8 @@ final class EpollLoop : EventLoop, Scheduler
             return; // closed in this same batch
         if (c.phase == Phase.h2)
             return onH2Event(c, events);
+        if (c.phase == Phase.handshake)
+            return continueHandshake(c, events);
         if (events & EPOLLERR)
         {
             if (c.phase == Phase.running)
@@ -472,6 +520,7 @@ final class EpollLoop : EventLoop, Scheduler
                     break;
                 case Phase.closed:
                 case Phase.h2:
+                case Phase.handshake:
                     break;
             }
             return;
@@ -482,7 +531,9 @@ final class EpollLoop : EventLoop, Scheduler
             if (c.fd >= 0 && c.phase == Phase.reading)
                 drive(c);
         }
-        if ((events & EPOLLIN) && c.fd >= 0 && c.phase == Phase.reading)
+        // over TLS a read can wait on writability (OpenSSL answering the peer): EPOLLOUT resumes it too
+        immutable readable = (events & EPOLLIN) || (c.ssl !is null && (events & EPOLLOUT));
+        if (readable && c.fd >= 0 && c.phase == Phase.reading)
             drive(c);
     }
 
@@ -510,7 +561,8 @@ final class EpollLoop : EventLoop, Scheduler
         {
             if (c.fd < 0 || c.phase != Phase.reading)
                 return;
-            if (cfg.http2 && c.fresh && !c.buf.isNull && c.buf.len >= 2 && c.buf.mem[0] == 'P'
+            // prior knowledge is a cleartext feature: over TLS, HTTP/2 is chosen by ALPN (RFC 9113 §3.3)
+            if (cfg.http2 && c.fresh && c.ssl is null && !c.buf.isNull && c.buf.len >= 2 && c.buf.mem[0] == 'P'
                 && c.buf.mem[1] == 'R' && !stopping)
             {
                 // "PR": no HTTP/1 method starts like that; the session checks the full preface
@@ -551,15 +603,19 @@ final class EpollLoop : EventLoop, Scheduler
                 }
             }
             immutable wasEmpty = c.buf.len == 0;
-            immutable r = read(c.fd, c.buf.free_.ptr, c.buf.free_.length);
+            immutable r = ioRead(c, c.buf.free_.ptr, c.buf.free_.length);
             if (r > 0)
             {
                 if (wasEmpty)
                     c.deadlineMs = nowMs + cfg.headerTimeoutMs; // not extended on every byte
                 c.buf.len += r;
                 any = true;
-                if (c.buf.free_.length != 0)
-                    return true; // short read: the kernel drained it
+                // a full buffer goes to the parser first: once it knows the head, it sizes the
+                // buffer for the whole body (growing here would only fit a head)
+                if (c.buf.free_.length == 0)
+                    return true;
+                if (c.ssl is null)
+                    return true; // short read: the kernel drained it (TLS reads one record at a time)
                 continue;
             }
             if (r == 0)
@@ -758,7 +814,7 @@ final class EpollLoop : EventLoop, Scheduler
         auto data = w.output.data;
         while (c.sent < data.length)
         {
-            immutable n = send(c.fd, data.ptr + c.sent, data.length - c.sent, MSG_NOSIGNAL);
+            immutable n = ioSend(c, data.ptr + c.sent, data.length - c.sent);
             if (n > 0)
             {
                 c.sent += n;
@@ -819,6 +875,58 @@ final class EpollLoop : EventLoop, Scheduler
         }
     }
 
+    // ------------------------------------------------------------------ TLS
+
+    /// read(2) on the connection, through TLS when there is a session.
+    private ptrdiff_t ioRead(Conn c, void* p, size_t n)
+    {
+        if (c.ssl is null)
+            return read(c.fd, p, n);
+        return tlsRead(c.ssl, p, n, c.tlsFatal);
+    }
+
+    /// send(2) on the connection, through TLS when there is a session.
+    private ptrdiff_t ioSend(Conn c, const(void)* p, size_t n)
+    {
+        if (c.ssl is null)
+            return send(c.fd, p, n, MSG_NOSIGNAL);
+        return tlsWrite(c.ssl, p, n, c.tlsFatal);
+    }
+
+    private void continueHandshake(Conn c, uint events)
+    {
+        if (events & EPOLLERR)
+        {
+            tlsFailures++;
+            return closeConn(c);
+        }
+        final switch (tlsHandshake(c.ssl))
+        {
+            case Handshake.again:
+                if (events & (EPOLLHUP | EPOLLRDHUP))
+                {
+                    tlsFailures++;
+                    closeConn(c); // the client left halfway
+                }
+                return;
+            case Handshake.failed:
+                tlsFailures++;
+                c.tlsFatal = true;
+                return closeConn(c);
+            case Handshake.done:
+                break;
+        }
+        tlsHandshakes++;
+        if (cfg.http2 && !stopping && tlsIsH2(c.ssl))
+        {
+            switchToH2(c);
+            return driveH2(c); // the client preface may already be decrypted and waiting
+        }
+        c.phase = Phase.reading;
+        c.deadlineMs = nowMs + cfg.idleTimeoutMs;
+        drive(c);
+    }
+
     // ------------------------------------------------------------------ HTTP/2
 
     private H2Session acquireSession()
@@ -827,7 +935,8 @@ final class EpollLoop : EventLoop, Scheduler
             return spareSessions.pop();
         H2Config hc;
         hc.maxConcurrentStreams = cfg.http2MaxStreams;
-        hc.connectionWindowSize = cfg.http2WindowBytes;
+        hc.initialWindowSize = cfg.http2StreamWindowBytes;
+        hc.connectionWindowSize = cfg.http2ConnectionWindowBytes;
         hc.maxHeaders = maxHeaders;
         hc.limits = cfg.limits;
         return new H2Session(hc);
@@ -849,6 +958,8 @@ final class EpollLoop : EventLoop, Scheduler
     /// becoming stream 1. Returns false to serve it as plain HTTP/1.1 (not an upgrade, or bad settings).
     private bool tryUpgrade(Conn c)
     {
+        if (c.ssl !is null)
+            return false; // "h2c" means cleartext; over TLS the token is ignored (RFC 9113 §3.1)
         Request tmp;
         parseRequestHead(cast(const(char)[]) c.buf.data, tmp, scratch[], cfg.limits);
         const(char)[] settings;
@@ -886,7 +997,7 @@ final class EpollLoop : EventLoop, Scheduler
             if (c.fd < 0)
                 return;
         }
-        if (events & (EPOLLIN | EPOLLHUP | EPOLLRDHUP))
+        if ((events & (EPOLLIN | EPOLLHUP | EPOLLRDHUP)) || (c.ssl !is null && (events & EPOLLOUT)))
             driveH2(c);
         if (c.fd >= 0 && (events & (EPOLLHUP | EPOLLRDHUP)))
             closeConn(c); // the peer stopped sending: whatever it asked for can no longer matter
@@ -932,7 +1043,7 @@ final class EpollLoop : EventLoop, Scheduler
                 closeConn(c); // cannot happen with our 16 KiB frames; the session would have failed first
                 return;
             }
-            immutable r = read(c.fd, c.buf.free_.ptr, c.buf.free_.length);
+            immutable r = ioRead(c, c.buf.free_.ptr, c.buf.free_.length);
             if (r > 0)
             {
                 c.buf.len += r;
@@ -1041,7 +1152,7 @@ final class EpollLoop : EventLoop, Scheduler
             auto data = s.pendingOutput;
             if (data.length == 0)
                 break;
-            immutable n = send(c.fd, data.ptr, data.length, MSG_NOSIGNAL);
+            immutable n = ioSend(c, data.ptr, data.length);
             if (n > 0)
             {
                 c.blockedSinceMs = 0;
@@ -1319,6 +1430,12 @@ final class EpollLoop : EventLoop, Scheduler
         {
             if (c is null || c.fd < 0 || c.deadlineMs == 0 || c.deadlineMs > nowMs || c.phase == Phase.h2)
                 continue;
+            if (c.phase == Phase.handshake)
+            {
+                tlsFailures++;
+                closeConn(c); // handshake too slow (or never started)
+                continue;
+            }
             final switch (c.phase)
             {
                 case Phase.reading:
@@ -1335,12 +1452,16 @@ final class EpollLoop : EventLoop, Scheduler
                     break;
                 case Phase.closed:
                 case Phase.h2:
+                case Phase.handshake:
                     break;
             }
         }
         foreach (c; conns)
             if (c !is null && c.fd >= 0 && c.phase == Phase.h2)
                 sweepH2(c);
+        if (cfg.tls.enabled)
+            if (auto msg = tlsServer.maybeReload(cfg.tls, nowMs))
+                fprintf(stderr, "%.*s\n", cast(int) msg.length, msg.ptr);
     }
 
     // ------------------------------------------------------------------ closing
@@ -1348,7 +1469,7 @@ final class EpollLoop : EventLoop, Scheduler
     private void sendRaw(Conn c, const(char)[] data)
     {
         // error responses are short: one non-blocking send is enough
-        send(c.fd, data.ptr, data.length, MSG_NOSIGNAL);
+        ioSend(c, data.ptr, data.length);
     }
 
     private void sendErrorAndClose(Conn c, int status)
@@ -1363,6 +1484,12 @@ final class EpollLoop : EventLoop, Scheduler
     {
         if (c.fd < 0)
             return;
+        if (c.ssl !is null)
+        {
+            // close_notify only after a completed handshake on an intact session
+            tlsClose(c.ssl, !c.tlsFatal && c.phase != Phase.handshake);
+            c.ssl = null;
+        }
         close(c.fd); // the kernel removes the fd from epoll
         conns[c.fd] = null;
         c.fd = -1;
@@ -1449,7 +1576,7 @@ final class EpollLoop : EventLoop, Scheduler
         {
             if (c is null || c.fd < 0)
                 continue;
-            if (c.phase == Phase.reading && (c.buf.isNull || c.buf.len == 0))
+            if (c.phase == Phase.handshake || (c.phase == Phase.reading && (c.buf.isNull || c.buf.len == 0)))
                 closeConn(c);
             else if (c.phase == Phase.h2)
             {
@@ -1511,8 +1638,25 @@ void runEpollServer(ServerConfig cfg, HandlerFactory factory)
         immutable cpus = sysconf(_SC_NPROCESSORS_ONLN);
         n = cpus > 0 ? cast(uint) cpus : 1;
     }
+    TicketKeys keys;
+    if (cfg.tls.enabled)
+    {
+        // fail before starting any worker, with one message (each worker loads its own context)
+        TlsServer probe;
+        keys = TicketKeys.random();
+        if (auto err = probe.load(cfg.tls, cfg.http2, keys))
+        {
+            fprintf(stderr, "%.*s\n", cast(int) err.length, err.ptr);
+            return;
+        }
+    }
     foreach (_; 0 .. n)
-        gLoops ~= new EpollLoop;
+    {
+        auto l = new EpollLoop;
+        if (cfg.tls.enabled)
+            l.shareTicketKeys(keys);
+        gLoops ~= l;
+    }
 
     sigaction_t sa;
     sa.sa_handler = &onSignal;
@@ -1520,7 +1664,8 @@ void runEpollServer(ServerConfig cfg, HandlerFactory factory)
     sigaction(SIGINT, &sa, null);
     sigaction(SIGTERM, &sa, null);
 
-    printf("vela (epoll, %u worker%s) at http://%.*s:%d\n", n, n == 1 ? "".ptr : "s".ptr,
+    printf("vela (epoll, %u worker%s) at %s://%.*s:%d\n", n, n == 1 ? "".ptr : "s".ptr,
+        cfg.tls.enabled ? "https".ptr : "http".ptr,
         cast(int) cfg.host.length, cfg.host.ptr, cast(int) cfg.port);
 
     Thread[] threads;

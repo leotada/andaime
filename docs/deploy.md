@@ -17,26 +17,34 @@ sudo apt install libssl3                  # OpenSSL 3, loaded at run time
 ## 2. The server configuration
 
 ```d
+// check
 import vela;
 
-void main()
+string home() => "hello";
+
+// Every worker calls this once, on its own thread, and serves its own App.
+App buildApp()
 {
     auto app = new App;
-    // ... routes ...
+    app.get!("/", home);   // ... your routes ...
 
     // HSTS: browsers that saw it once go straight to HTTPS for a year
     app.use((Context ctx, Next next) {
         ctx.setHeader("Strict-Transport-Security", "max-age=31536000");
         next();
     });
+    return app;
+}
 
+void main()
+{
     ServerConfig cfg;
     cfg.port = 443;
     cfg.tls.certFile = "/etc/vela/tls/cert.pem";   // copied there by certbot's deploy hook (below)
     cfg.tls.keyFile = "/etc/vela/tls/key.pem";
     cfg.tls.redirectPort = 80;                      // ACME challenges + 308 to https
     cfg.tls.acmeWebroot = "/var/www/acme";
-    app.serve(cfg);
+    serve(&buildApp, cfg);
 }
 ```
 
@@ -142,16 +150,33 @@ ports below 1024 as an ordinary user (redo it after each new build).
   appear at most once per second per worker, with a count of the lines skipped. Clients that just
   disconnect mid-handshake (port scanners, health checks) are counted (`LoopStats.tlsFailures`), not
   logged. `cfg.logConnectionErrors = false` silences them.
-- Memory: each TLS connection costs about 15 KiB in OpenSSL on top of the request; 1,000 requests in
-  flight over HTTPS peak at ~44 MB. On a 512 MB VPS the defaults are fine; `maxInFlight` (1,024 per
+- Memory: each TLS connection costs tens of KiB in OpenSSL on top of the request; 1,000 requests in
+  flight over HTTPS peak at ~44 MB with OpenSSL 3.0 and 56-71 MB with OpenSSL 3.5. On a 512 MB VPS the defaults are fine; `maxInFlight` (1,024 per
   worker) and `maxConnections` (10,000 per worker) are the knobs.
 - One worker per core by default (`cfg.workers`). Each worker loads its own copy of the certificate.
+- An unexpected error in a handler answers 500 and is logged with its stack trace (at most 5 traces per second per worker, then a
+  count). Symbol names in the trace need debug info: build with `-g` (DUB's `release-debug` build type). An `Error` such as a
+  `RangeError` also retires that fiber (`LoopStats.fibersPoisoned`).
+- A handler that overflows its fiber stack kills the process with SIGSEGV; the last line on stderr names the request and the
+  setting to raise (`ServerConfig.fiberStackBytes`, 256 KiB by default).
+- Memory returns to the OS after a burst (a quiet second, then a collection); if RSS looks high right after a traffic spike, wait a
+  couple of seconds before judging.
+
+## Behind a reverse proxy
+
+The TCP peer is the proxy. List it in `cfg.trustedProxies = ["127.0.0.1", "10.0.0.0/8"]` and handlers get the real client from
+`ClientIp` / `ctx.clientIp()` (the first address in `X-Forwarded-For`, from the right, that is not a trusted proxy). The header
+from any other peer is ignored, because anyone can send it. `accessLog()` prints `ip=`.
+
+Server-Sent Events and other streamed responses need the proxy not to buffer them. vela already sends `X-Accel-Buffering: no`
+(nginx honors it per response) and `Cache-Control: no-cache` on an `EventStream`. Other proxies have their own switch for
+response buffering or flushing (Caddy's `reverse_proxy` has `flush_interval -1`); check yours. Idle SSE connections should send
+a heartbeat (`w.comment()`) more often than the proxy's idle timeout.
 
 ## Known limits
 
 - **IPv4 only**: the listeners bind IPv4 addresses (`cfg.host`, default `0.0.0.0`). An AAAA record
   pointing at the server will not reach vela yet; publish only an A record.
-- Handlers do not see the client's address yet (it is only in the connection logs).
 - No OCSP stapling and no client certificates (mutual TLS).
 - The redirect port is for `redirectPort` only; serving the application itself in cleartext next to
   HTTPS is not supported (run a second process if you need it).

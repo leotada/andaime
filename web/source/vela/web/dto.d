@@ -3,8 +3,13 @@ module vela.web.dto;
 
 @safe:
 
+import vela.http.utf8 : codePoints;
+public import vela.web.numtext : ctNum, numText;
+
 /// Field name in the JSON when it differs from the D name: `@jsonKey("user_name") string userName;`
 struct jsonKey { string name; }
+/// Name of the struct's schema in the OpenAPI document: `@schemaName("UserOut") struct User { ... }`.
+struct schemaName { string name; }
 /// Optional field in the JSON (absent => keeps the initial value).
 enum optional;
 /// Field never read from or written to JSON.
@@ -16,15 +21,17 @@ struct maxLength { size_t value; }
 /// Closed range for numbers: `@inRange(0, 150) int age;`
 struct inRange { double min; double max; }
 
-/// A validation error. `location` is "path", "query", "header" or "body".
+/// A validation error, in FastAPI/Pydantic v2 shape: `{"type":..., "loc":[location, ...], "msg":...}`.
 struct FieldError
 {
-    string location;
-    const(char)[] field;
+    string location;  /// "path", "query", "header" or "body": the first element of `loc`
+    string locJson;   /// the rest of `loc`, already rendered as JSON array elements: `"items",1,"code"` ("" = none)
+    string type;      /// machine-readable code ("missing", "int_parsing", "string_too_short"...)
     string message;
 }
 
-/// Fixed capacity: collecting errors never allocates. Extras are only counted.
+/// Fixed capacity: collecting errors never allocates up front (only an actual error renders its location).
+/// Extras are counted and reported as one `too_many_errors` entry.
 struct FieldErrors
 {
     enum size_t capacity = 16;
@@ -32,12 +39,38 @@ struct FieldErrors
     size_t count;
     size_t dropped;
 
-    void add(string location, const(char)[] field, string message) nothrow @nogc @safe
+    /// Error on a single named input (query parameter, header, path segment). An empty `name` means `loc` is just
+    /// `[location]`.
+    void add(string location, scope const(char)[] name, string type, string message) nothrow @safe
     {
-        if (count < capacity)
-            items[count++] = FieldError(location, field, message);
-        else
+        if (count >= capacity)
+        {
             dropped++;
+            return;
+        }
+        items[count++] = FieldError(location, name.length ? jsonQuote(name) : null, type, message);
+    }
+
+    /// Error on one element of a list given as repeated query parameters: `loc` is `["query", name, index]`.
+    void addIndexed(string location, scope const(char)[] name, size_t index, string type, string message) nothrow @safe
+    {
+        if (count >= capacity)
+        {
+            dropped++;
+            return;
+        }
+        items[count++] = FieldError(location, jsonQuote(name) ~ "," ~ ctNum(index), type, message);
+    }
+
+    /// Error somewhere in a JSON body.
+    void addPath(scope ref const FieldPath path, string type, string message) nothrow @safe
+    {
+        if (count >= capacity)
+        {
+            dropped++;
+            return;
+        }
+        items[count++] = FieldError(path.location, path.render(), type, message);
     }
 
     bool any() const nothrow @nogc @safe => count > 0;
@@ -51,30 +84,94 @@ struct FieldErrors
     const(FieldError)[] list() const nothrow @nogc @safe return => items[0 .. count];
 }
 
-/// Path of the current field ("address.zip") in a fixed buffer: only becomes a
-/// string (allocating) when an error needs to be reported.
+/// `"text"` as JSON (only `"`, `\` and control characters need escaping here: keys and parameter names).
+string jsonQuote(scope const(char)[] s) pure nothrow @safe
+{
+    static immutable char[16] hexd = "0123456789abcdef";
+    char[] o = new char[s.length + 2];
+    o.length = 0;
+    o ~= '"';
+    foreach (char c; s)
+    {
+        if (c == '"' || c == '\\')
+        {
+            o ~= '\\';
+            o ~= c;
+        }
+        else if (c < 0x20)
+        {
+            o ~= "\\u00";
+            o ~= hexd[c >> 4];
+            o ~= hexd[c & 15];
+        }
+        else
+            o ~= c;
+    }
+    o ~= '"';
+    return (() @trusted => cast(string) o)(); // sole owner: safe to make immutable
+}
+
+/// Path of the current field (`items`, `[1]`, `code`) in a fixed stack: it only becomes a string (allocating) when an
+/// error needs to be reported. Deeper than `maxDepth` segments, the extra ones are counted but not stored and
+/// `render` ends with `"..."`.
 struct FieldPath
 {
-    private char[192] buf;
-    private size_t len;
+    enum size_t maxDepth = 32;
 
-    size_t push(scope const(char)[] key) nothrow @nogc @safe
+    private struct Seg
     {
-        immutable old = len;
-        if (len && len < buf.length)
-            buf[len++] = '.';
-        immutable n = key.length < buf.length - len ? key.length : buf.length - len;
-        buf[len .. len + n] = key[0 .. n];
-        len += n;
-        return old;
+        const(char)[] key;
+        size_t index;
+        bool isIndex;
+    }
+
+    private Seg[maxDepth] segs;
+    private size_t depth;
+    /// First element of `loc` for errors reported with this path: "body" (JSON), or "query" / "body" for `Query!T`/`Form!T`.
+    string location = "body";
+
+    /// Enters an object member. Returns the mark to give back to `pop`. `key` must outlive the parse (a literal).
+    size_t pushKey(const(char)[] key) nothrow @nogc @safe
+    {
+        immutable mark = depth;
+        if (depth < maxDepth)
+            segs[depth] = Seg(key, 0, false);
+        depth++;
+        return mark;
+    }
+
+    /// Enters an array element.
+    size_t pushIndex(size_t i) nothrow @nogc @safe
+    {
+        immutable mark = depth;
+        if (depth < maxDepth)
+            segs[depth] = Seg(null, i, true);
+        depth++;
+        return mark;
     }
 
     void pop(size_t mark) nothrow @nogc @safe
     {
-        len = mark;
+        depth = mark;
     }
 
-    const(char)[] current() const nothrow @nogc @safe return => buf[0 .. len];
+    bool empty() const nothrow @nogc @safe => depth == 0;
+
+    /// `"items",1,"code"` ("" for the root).
+    string render() const nothrow @safe
+    {
+        string r;
+        immutable n = depth < maxDepth ? depth : maxDepth;
+        foreach (k; 0 .. n)
+        {
+            if (k)
+                r ~= ",";
+            r ~= segs[k].isIndex ? ctNum(segs[k].index) : jsonQuote(segs[k].key);
+        }
+        if (depth > maxDepth)
+            r ~= `,"..."`;
+        return r;
+    }
 }
 
 /// true if member `i` of T carries the UDA `A` (type or enum).
@@ -101,24 +198,15 @@ template jsonKeyOf(T, size_t i)
     }();
 }
 
-/// Number -> text at CTFE (avoids std.conv in the core).
-string ctNum(ulong v) pure nothrow @safe
-{
-    if (v == 0)
-        return "0";
-    string r;
-    while (v)
-    {
-        r = cast(char)('0' + v % 10) ~ r;
-        v /= 10;
-    }
-    return r;
-}
+private enum string strShort(size_t n) = "expected at least " ~ ctNum(n) ~ " characters";
+private enum string strLong(size_t n) = "expected at most " ~ ctNum(n) ~ " characters";
+private enum string arrShort(size_t n) = "expected at least " ~ ctNum(n) ~ " items";
+private enum string arrLong(size_t n) = "expected at most " ~ ctNum(n) ~ " items";
+private enum string geMsg(double v) = "must be >= " ~ numText(v);
+private enum string leMsg(double v) = "must be <= " ~ numText(v);
 
-private enum string minLenMsg(size_t n) = "below the minimum length of " ~ ctNum(n);
-private enum string maxLenMsg(size_t n) = "above the maximum length of " ~ ctNum(n);
-
-/// Applies the validation UDAs of field `i` to the already-decoded value.
+/// Applies the validation UDAs of field `i` to the already-decoded value. Strings are measured in code points (what
+/// JSON Schema's minLength/maxLength mean and what the OpenAPI document promises), arrays in elements.
 void validateField(T, size_t i, V)(ref const V value, ref FieldErrors errs, ref const FieldPath path)
 {
     static foreach (attr; __traits(getAttributes, T.tupleof[i]))
@@ -127,22 +215,34 @@ void validateField(T, size_t i, V)(ref const V value, ref FieldErrors errs, ref 
         {
             static assert(__traits(compiles, value.length),
                 "vela: @minLength only applies to string or array (field '" ~ __traits(identifier, T.tupleof[i]) ~ "')");
-            if (value.length < attr.value)
-                errs.add("body", path.current.idup, minLenMsg!(attr.value));
+            static if (is(V : const(char)[]))
+            {
+                if (codePoints(value) < attr.value)
+                    errs.addPath(path, "string_too_short", strShort!(attr.value));
+            }
+            else if (value.length < attr.value)
+                errs.addPath(path, "too_short", arrShort!(attr.value));
         }
         else static if (is(typeof(attr) == maxLength))
         {
             static assert(__traits(compiles, value.length),
                 "vela: @maxLength only applies to string or array (field '" ~ __traits(identifier, T.tupleof[i]) ~ "')");
-            if (value.length > attr.value)
-                errs.add("body", path.current.idup, maxLenMsg!(attr.value));
+            static if (is(V : const(char)[]))
+            {
+                if (codePoints(value) > attr.value)
+                    errs.addPath(path, "string_too_long", strLong!(attr.value));
+            }
+            else if (value.length > attr.value)
+                errs.addPath(path, "too_long", arrLong!(attr.value));
         }
         else static if (is(typeof(attr) == inRange))
         {
             static assert(__traits(isArithmetic, V),
                 "vela: @inRange only applies to numbers (field '" ~ __traits(identifier, T.tupleof[i]) ~ "')");
-            if (value < attr.min || value > attr.max)
-                errs.add("body", path.current.idup, "outside the allowed range");
+            if (value < attr.min)
+                errs.addPath(path, "greater_than_equal", geMsg!(attr.min));
+            else if (value > attr.max)
+                errs.addPath(path, "less_than_equal", leMsg!(attr.max));
         }
     }
 }

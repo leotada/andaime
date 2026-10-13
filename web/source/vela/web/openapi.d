@@ -5,7 +5,7 @@
 ///
 ///     app.serveOpenApi(OpenApiInfo("My API", "1.0.0"));   // GET /openapi.json and /docs
 ///
-/// Detalhes:
+/// Details:
 ///  - `{param}` in the route -> path parameter; scalar outside the route -> query
 ///    (required, unless it has a default value or is Optional);
 ///  - `Header!"X"` -> header; `JsonBody!T` -> requestBody with T's schema;
@@ -17,11 +17,15 @@ module vela.web.openapi;
 
 @safe:
 
-import vela.http.types : Method, methodName;
+import vela.http.types : Method, methodName, statusText;
 import vela.web.params;
 import vela.web.context : Context;
-import vela.web.dto : jsonKey, optional, jsonIgnore, minLength, maxLength, inRange, hasUda;
+import vela.web.dto : schemaName, jsonKey, optional, jsonIgnore, minLength, maxLength, inRange, hasUda;
+import vela.web.numtext : itoa, numText, ctNum;
 import vela.web.handler_traits : parseRoute, indexOfName;
+import vela.web.stream : Stream, EventStream, produces;
+import vela.web.models : isQueryModel, isFormModel, modelFieldOptional;
+import vela.http.texttype : isTextType, textTypeFormat;
 
 /// One-line operation text: `@summary("Fetch a user") UserResponse getUser(long id)`.
 struct summary { string text; }
@@ -35,13 +39,50 @@ struct OpenApiInfo
     string jsonPath = "/openapi.json";
     /// Interactive page path (Swagger UI via CDN); "" = not served.
     string docsPath = "/docs";
+    /// Where the page loads Swagger UI from (a directory URL holding `swagger-ui.css` and `swagger-ui-bundle.js`).
+    /// The default is a pinned jsDelivr release, loaded with Subresource Integrity; set it to self-host (then no
+    /// integrity check is added, because the files are yours).
+    string swaggerUiBase = defaultSwaggerUiBase;
 }
+
+/// jsDelivr's copy of swagger-ui-dist, pinned. The integrity hashes below belong to exactly these two files. To update:
+///   curl -sL <base>/swagger-ui.css | openssl dgst -sha384 -binary | openssl base64 -A     (same for the bundle .js)
+enum defaultSwaggerUiBase = "https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14";
+private enum swaggerCssIntegrity = "sha384-wxLW6kwyHktdDGr6Pv1zgm/VGJh99lfUbzSn6HNHBENZlCN7W602k9VkGdxuFvPn";
+private enum swaggerJsIntegrity = "sha384-wmyclcVGX/WhUkdkATwhaK1X1JtiNrr2EoYJ+diV3vj4v6OC5yCeSu+yW13SYJep";
 
 /// Named schemas (`components/schemas`) accumulated during generation.
 struct Components
 {
     string[string] schemas;      // name -> JSON
     bool[string] building;       // avoids infinite recursion on self-referencing types
+    string[string] ownerOfName;  // schema name -> the type that owns it (T.mangleof)
+    string[string] nameOfType;   // T.mangleof -> its schema name
+    bool[string] operationIds;   // operationIds already used in this document
+
+    /// Reserves the names vela itself defines, so a user struct called `HTTPError` gets another name.
+    void reserveBuiltins() @safe
+    {
+        ownerOfName["HTTPValidationError"] = "vela";
+        ownerOfName["HTTPError"] = "vela";
+    }
+
+    /// The schema name for the type with mangled name `key`: `preferred` if free, else `fallback` (the sanitized fully
+    /// qualified name), else `fallback_2`, `fallback_3`... The same type always gets the same name.
+    string nameFor(string preferred, string key, string fallback) @safe
+    {
+        if (auto n = key in nameOfType)
+            return *n;
+        string name = preferred;
+        if (name in ownerOfName)
+            name = fallback;
+        string candidate = name;
+        for (int i = 2; candidate in ownerOfName; i++)
+            candidate = name ~ "_" ~ itoa(i);
+        ownerOfName[candidate] = key;
+        nameOfType[key] = candidate;
+        return candidate;
+    }
 }
 
 alias OpDescribe = string delegate(ref Components comps, string pattern) @safe;
@@ -72,33 +113,6 @@ string q(scope const(char)[] s) pure @safe
         }
     }
     return o ~ "\"";
-}
-
-private string num(double v) @safe
-{
-    // exact integers without scientific notation (@inRange usually has integer bounds)
-    if (v == cast(long) v && v > -1e15 && v < 1e15)
-        return itoa(cast(long) v);
-    import core.stdc.stdio : snprintf;
-
-    char[40] t;
-    auto n = (() @trusted => snprintf(t.ptr, t.length, "%.17g", v))();
-    return t[0 .. n].idup;
-}
-
-private string itoa(long v) pure @safe
-{
-    if (v == 0)
-        return "0";
-    bool neg = v < 0;
-    ulong u = neg ? cast(ulong)(-(v + 1)) + 1 : cast(ulong) v;
-    string r;
-    while (u)
-    {
-        r = cast(char)('0' + u % 10) ~ r;
-        u /= 10;
-    }
-    return neg ? "-" ~ r : r;
 }
 
 // ------------------------------------------------------------ type schemas
@@ -136,11 +150,25 @@ string schemaOf(T)(ref Components comps) @safe
         return schemaOf!U(comps);
     else static if (is(T == WithStatus!U, U))
         return schemaOf!U(comps);
+    else static if (isTextType!T)
+    {
+        enum fmt = textTypeFormat!T;
+        static if (fmt.length)
+            return `{"type":"string","format":` ~ q(fmt) ~ `}`;
+        else
+            return `{"type":"string"}`;
+    }
+    else static if (is(T == Stream))
+        return `{"type":"string","format":"binary"}`;
+    else static if (is(T == EventStream))
+        return `{"type":"string"}`;
+    else static if (is(T == V[K], V, K) && is(K == string))
+        return `{"type":"object","additionalProperties":` ~ schemaOf!V(comps) ~ `}`;
     else static if (is(T == U[], U) || is(T == U[n], U, size_t n))
         return `{"type":"array","items":` ~ schemaOf!U(comps) ~ `}`;
     else static if (is(T == struct))
     {
-        enum name = schemaName!T;
+        immutable name = comps.nameFor(schemaBaseName!T, T.mangleof, schemaFallbackName!T);
         if (name !in comps.schemas && name !in comps.building)
         {
             comps.building[name] = true;
@@ -153,7 +181,65 @@ string schemaOf(T)(ref Components comps) @safe
         return `{}`;
 }
 
-private enum schemaName(T) = T.stringof;
+/// Characters OpenAPI allows in a component name are `[A-Za-z0-9._-]`; every run of anything else becomes one `_`.
+private string sanitizeName(string s) pure @safe
+{
+    string r;
+    bool pendingUnderscore;
+    foreach (char c; s)
+    {
+        immutable ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-'
+            || c == '_';
+        if (c == '_' || !ok)
+            pendingUnderscore = r.length > 0; // runs of `_` and of disallowed characters collapse into one
+        else
+        {
+            if (pendingUnderscore)
+                r ~= '_';
+            pendingUnderscore = false;
+            r ~= c;
+        }
+    }
+    return r;
+}
+
+/// Readable schema name: `@schemaName("X")`, else the struct's name; for a template instance the template's name, `_`
+/// and its arguments' names (`Page!(User)` -> `Page_User`).
+private template schemaBaseName(T)
+{
+    enum schemaBaseName = () {
+        string given;
+        static foreach (a; __traits(getAttributes, T))
+            static if (is(typeof(a) == schemaName))
+                given = a.name;
+        if (given.length)
+            return given;
+        enum text = T.stringof;
+        foreach (i, c; text)
+            if (c == '!')
+            {
+                auto r = sanitizeName(__traits(identifier, T) ~ "_" ~ text[i + 1 .. $]);
+                return r.length ? r : __traits(identifier, T);
+            }
+        return __traits(identifier, T);
+    }();
+}
+
+/// Name used when the readable one belongs to another type: the sanitized fully qualified name (`app.models.User`; for a
+/// template instance its module and name, then its arguments: `app.models.Page_User`).
+private template schemaFallbackName(T)
+{
+    enum schemaFallbackName = () {
+        enum fqn = __traits(fullyQualifiedName, T);
+        enum text = T.stringof;
+        foreach (i, c; fqn)
+            if (c == '!')
+                foreach (j, d; text)
+                    if (d == '!')
+                        return sanitizeName(fqn[0 .. i] ~ "_" ~ text[j + 1 .. $]);
+        return sanitizeName(fqn);
+    }();
+}
 
 private string structSchema(T)(ref Components comps) @safe
 {
@@ -173,7 +259,7 @@ private string structSchema(T)(ref Components comps) @safe
                 else static if (is(typeof(attr) == maxLength))
                     extra ~= `,"` ~ (is(F : const(char)[]) ? "maxLength" : "maxItems") ~ `":` ~ itoa(attr.value);
                 else static if (is(typeof(attr) == inRange))
-                    extra ~= `,"minimum":` ~ num(attr.min) ~ `,"maximum":` ~ num(attr.max);
+                    extra ~= `,"minimum":` ~ numText(attr.min) ~ `,"maximum":` ~ numText(attr.max);
             }
             static if (is(F == Optional!U, U))
                 extra ~= `,"nullable":true`;
@@ -213,6 +299,7 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
     {
         enum info = parseRoute(path);
         string params, bodySchema;
+        string bodyMedia = "application/json";
         bool bodyRequired;
         bool canFail;
 
@@ -228,13 +315,41 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
                     ~ schemaOf!T(comps) ~ `}`;
                 canFail = true;
             }
-            else static if (is(T == Context) || isLocal!T)
+            else static if (is(T == Context) || isLocal!T || isClientIp!T)
             {
+            }
+            else static if (isQueryModel!T)
+            {
+                // each field is a query parameter of its own
+                alias M = typeof(T.value);
+                static foreach (k; 0 .. M.tupleof.length)
+                {
+                    static if (!hasUda!(M, k, jsonIgnore))
+                    {
+                        params ~= (params.length ? "," : "") ~ `{"name":` ~ q(jsonKeyOfField!(M, k)) ~ `,"in":"query","required":`
+                            ~ (modelFieldOptional!(M, k) ? "false" : "true")
+                            ~ (isScalarList!(typeof(M.tupleof[k])) ? `,"style":"form","explode":true` : "")
+                            ~ `,"schema":` ~ schemaOf!(typeof(M.tupleof[k]))(comps) ~ `}`;
+                    }
+                }
+                canFail = true;
+            }
+            else static if (isFormModel!T)
+            {
+                bodySchema = schemaOf!(typeof(T.value))(comps);
+                bodyMedia = "application/x-www-form-urlencoded";
+                bodyRequired = true;
+                canFail = true;
             }
             else static if (is(T == JsonBody!U, U))
             {
                 bodySchema = schemaOf!U(comps);
                 bodyRequired = true;
+                canFail = true;
+            }
+            else static if (is(T == Cookie!c, string c))
+            {
+                params ~= (params.length ? "," : "") ~ `{"name":` ~ q(c) ~ `,"in":"cookie","required":true,"schema":{"type":"string"}}`;
                 canFail = true;
             }
             else static if (is(T == Header!n, string n))
@@ -244,7 +359,9 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
             }
             else static if (is(T == Optional!U, U))
             {
-                static if (is(U == Header!n, string n))
+                static if (is(U == Cookie!c, string c))
+                    params ~= (params.length ? "," : "") ~ `{"name":` ~ q(c) ~ `,"in":"cookie","required":false,"schema":{"type":"string"}}`;
+                else static if (is(U == Header!n, string n))
                     params ~= (params.length ? "," : "") ~ `{"name":` ~ q(n) ~ `,"in":"header","required":false,"schema":{"type":"string"}}`;
                 else static if (is(U == JsonBody!V, V))
                 {
@@ -259,6 +376,13 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
                     canFail = true;
                 }
             }
+            else static if (isScalarList!T)
+            {
+                // repeated keys: ?tag=a&tag=b
+                params ~= (params.length ? "," : "") ~ `{"name":` ~ q(pname) ~ `,"in":"query","required":false,"style":"form","explode":true,"schema":`
+                    ~ schemaOf!T(comps) ~ `}`;
+                canFail = true;
+            }
             else // scalar outside the route => query
             {
                 enum hasDefault = is(typeof(((P[i .. i + 1] __a) => __a[0])()));
@@ -268,7 +392,11 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
             }
         }}
 
-        string o = `{"operationId":` ~ q(opId!fn);
+        string id = opId!fn;
+        if (id in comps.operationIds) // two handlers with the same name (different controllers): the spec wants unique ids
+            id = id ~ "_" ~ methodName(method) ~ "_" ~ sanitizeName(pattern);
+        comps.operationIds[id] = true;
+        string o = `{"operationId":` ~ q(id);
         static foreach (attr; __traits(getAttributes, fn))
             static if (is(typeof(attr) == summary))
                 o ~= `,"summary":` ~ q(attr.text);
@@ -276,22 +404,50 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
             o ~= `,"parameters":[` ~ params ~ `]`;
         if (bodySchema.length)
             o ~= `,"requestBody":{"required":` ~ (bodyRequired ? "true" : "false")
-                ~ `,"content":{"application/json":{"schema":` ~ bodySchema ~ `}}}`;
+                ~ `,"content":{` ~ q(bodyMedia) ~ `:{"schema":` ~ bodySchema ~ `}}}`;
 
         // responses
         string resp;
+        bool declares422;
         static if (is(typeof(fn) R == return))
         {
+            enum st = successStatus!fn;
             static if (is(R == void))
-                resp = `"204":{"description":"No content"}`;
+            {
+                enum code = st ? st : 204;
+                resp = `"` ~ ctNum(code) ~ `":{"description":` ~ q(statusDescription(code)) ~ `}`;
+            }
             else static if (is(R : const(char)[]))
-                resp = `"200":{"description":"OK","content":{"text/plain":{"schema":{"type":"string"}}}}`;
+            {
+                enum code = st ? st : 200;
+                resp = `"` ~ ctNum(code) ~ `":{"description":` ~ q(statusDescription(code))
+                    ~ `,"content":{"text/plain":{"schema":{"type":"string"}}}}`;
+            }
             else static if (is(R == Response))
-                resp = `"200":{"description":"OK"}`;
+            {
+                enum code = st ? st : 200;
+                resp = `"` ~ ctNum(code) ~ `":{"description":` ~ q(statusDescription(code)) ~ `}`;
+            }
+            else static if (isWithStatus!R && st == 0)
+                // the handler picks the status at run time: a range key (OpenAPI 3.0 allows "2XX")
+                resp = `"2XX":{"description":"Success","content":{` ~ q(mediaOf!(fn, R)) ~ `:{"schema":` ~ schemaOf!R(comps) ~ `}}}`;
             else
-                resp = `"200":{"description":"OK","content":{"application/json":{"schema":` ~ schemaOf!R(comps) ~ `}}}`;
+            {
+                enum code = st ? st : 200;
+                resp = `"` ~ ctNum(code) ~ `":{"description":` ~ q(statusDescription(code))
+                    ~ `,"content":{` ~ q(mediaOf!(fn, R)) ~ `:{"schema":` ~ schemaOf!R(comps) ~ `}}}`;
+            }
         }
-        if (canFail)
+        static foreach (a; __traits(getAttributes, fn))
+            static if (is(typeof(a) == responds))
+            {
+                ensureHttpError(comps);
+                resp ~= (resp.length ? "," : "") ~ `"` ~ ctNum(a.code) ~ `":{"description":` ~ q(a.description)
+                    ~ `,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HTTPError"}}}}`;
+                static if (a.code == 422)
+                    declares422 = true;
+            }
+        if (canFail && !declares422)
         {
             ensureValidationError(comps);
             resp ~= (resp.length ? "," : "") ~ `"422":{"description":"Validation error","content":{"application/json":`
@@ -304,6 +460,22 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
         return `{}`;
 }
 
+/// Media type of a handler's success body: JSON, except for streamed responses (`@produces("text/csv")` overrides it).
+private template mediaOf(alias fn, R)
+{
+    enum mediaOf = () {
+        string m = "application/json";
+        static if (is(R == Stream) || is(R == WithStatus!Stream))
+            m = "application/octet-stream";
+        else static if (is(R == EventStream) || is(R == WithStatus!EventStream))
+            m = "text/event-stream";
+        static foreach (a; __traits(getAttributes, fn))
+            static if (is(typeof(a) == produces))
+                m = a.mediaType;
+        return m;
+    }();
+}
+
 private template opId(alias fn)
 {
     static if (__traits(compiles, __traits(identifier, fn)))
@@ -312,12 +484,26 @@ private template opId(alias fn)
         enum opId = "handler";
 }
 
+/// Reason phrase as the response description ("Created"); "Success" for codes without one.
+private string statusDescription(int code) pure @safe
+{
+    auto t = statusText(code);
+    return t == "Unknown" ? "Success" : t;
+}
+
+private void ensureHttpError(ref Components comps) @safe
+{
+    if ("HTTPError" !in comps.schemas)
+        comps.schemas["HTTPError"] = `{"type":"object","properties":{"detail":{"type":"string"}},"required":["detail"]}`;
+}
+
 private void ensureValidationError(ref Components comps) @safe
 {
     if ("HTTPValidationError" !in comps.schemas)
         comps.schemas["HTTPValidationError"] = `{"type":"object","properties":{"detail":{"type":"array","items":`
-            ~ `{"type":"object","properties":{"loc":{"type":"array","items":{"type":"string"}},"msg":{"type":"string"}},`
-            ~ `"required":["loc","msg"]}}}}`;
+            ~ `{"type":"object","properties":{"type":{"type":"string"},`
+            ~ `"loc":{"type":"array","items":{"anyOf":[{"type":"string"},{"type":"integer"}]}},"msg":{"type":"string"}},`
+            ~ `"required":["type","loc","msg"]}}}}`;
 }
 
 // ------------------------------------------------------------ document
@@ -342,6 +528,7 @@ private string openApiPath(string pattern) pure @safe
 string buildOpenApi(const(OpRecord)[] ops, OpenApiInfo info) @safe
 {
     Components comps;
+    comps.reserveBuiltins();
     // group by path preserving registration order
     string[] order;
     string[string] byPath;
@@ -400,12 +587,41 @@ private string[] sortedKeys(string[string] aa) @safe
     return k;
 }
 
-/// Interactive page (Swagger UI loaded from a CDN by the user's browser).
-string docsHtml(string jsonPath, string title) @safe
+/// Interactive page (Swagger UI loaded by the user's browser). The title is HTML-escaped.
+string docsHtml(string jsonPath, string title, string swaggerUiBase = defaultSwaggerUiBase) @safe
 {
-    return `<!doctype html><html><head><meta charset="utf-8"><title>` ~ title
+    // integrity only for the pinned CDN files; a self-hosted copy has other bytes
+    immutable pinned = swaggerUiBase == defaultSwaggerUiBase;
+    return `<!doctype html><html><head><meta charset="utf-8"><title>` ~ htmlEscape(title)
         ~ ` — docs</title><meta name="viewport" content="width=device-width, initial-scale=1">`
-        ~ `<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui.css"></head>`
-        ~ `<body><div id="ui"></div><script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5.17.14/swagger-ui-bundle.js"></script>`
-        ~ `<script>SwaggerUIBundle({url:` ~ q(jsonPath) ~ `,dom_id:"#ui"})</script></body></html>`;
+        ~ `<link rel="stylesheet" href="` ~ htmlEscape(swaggerUiBase) ~ `/swagger-ui.css"`
+        ~ (pinned ? ` integrity="` ~ swaggerCssIntegrity ~ `" crossorigin="anonymous"` : "") ~ `></head>`
+        ~ `<body><div id="ui"></div><script src="` ~ htmlEscape(swaggerUiBase) ~ `/swagger-ui-bundle.js"`
+        ~ (pinned ? ` integrity="` ~ swaggerJsIntegrity ~ `" crossorigin="anonymous"` : "") ~ `></script>`
+        ~ `<script>SwaggerUIBundle({url:` ~ scriptString(jsonPath) ~ `,dom_id:"#ui"})</script></body></html>`;
+}
+
+private string htmlEscape(scope const(char)[] s) pure @safe
+{
+    string r;
+    foreach (char c; s)
+        switch (c)
+        {
+            case '&': r ~= "&amp;"; break;
+            case '<': r ~= "&lt;"; break;
+            case '>': r ~= "&gt;"; break;
+            case '"': r ~= "&quot;"; break;
+            case '\'': r ~= "&#39;"; break;
+            default: r ~= c;
+        }
+    return r;
+}
+
+/// A JSON string that is also safe inside an inline <script> (no `</script>` or `<!--` can end the element).
+private string scriptString(scope const(char)[] s) pure @safe
+{
+    string r;
+    foreach (char c; q(s))
+        r ~= c == '<' ? `\u003c` : (c == '>' ? `\u003e` : (c == '&' ? `\u0026` : [c].idup));
+    return r;
 }

@@ -2,6 +2,8 @@
 module vela.web.convert;
 
 import vela.web.params : isCharType;
+import vela.web.numtext : ctNum, itoa;
+import vela.http.texttype : isTextType, textTypeInvalidMessage, textFromString;
 
 @safe:
 
@@ -144,23 +146,54 @@ bool parseScalarText(T)(const(char)[] s, out T v)
         v = s;
         return true;
     }
+    else static if (isTextType!T)
+        return textFromString(s, v);
     else
         static assert(0, "vela: '" ~ T.stringof ~ "' is not a supported scalar");
 }
 
-/// Short type-error message, built at compile time.
-template typeHint(T)
+/// Machine-readable `type` of a failed conversion to T (Pydantic v2 names), built at compile time.
+template parseErrorType(T)
 {
     static if (is(T == bool))
-        enum typeHint = "expected a boolean (true/false)";
+        enum parseErrorType = "bool_parsing";
     else static if (is(T == enum))
-        enum typeHint = "value outside enum " ~ T.stringof;
+        enum parseErrorType = "enum";
     else static if (__traits(isIntegral, T))
-        enum typeHint = "expected an integer (" ~ T.stringof ~ ")";
+        enum parseErrorType = "int_parsing";
     else static if (__traits(isFloating, T))
-        enum typeHint = "expected a number";
+        enum parseErrorType = "float_parsing";
     else
-        enum typeHint = "invalid value";
+        enum parseErrorType = "value_error"; // also a text type's fromString refusing the text
+}
+
+/// Human message for a failed conversion to T, built at compile time.
+template parseErrorMsg(T)
+{
+    static if (is(T == bool))
+        enum parseErrorMsg = "expected true or false";
+    else static if (is(T == enum))
+    {
+        enum parseErrorMsg = () {
+            string r = "expected one of: ";
+            static foreach (k, m; __traits(allMembers, T))
+                r ~= (k ? ", " : "") ~ m;
+            return r;
+        }();
+    }
+    else static if (__traits(isIntegral, T))
+    {
+        static if (__traits(isUnsigned, T))
+            enum parseErrorMsg = "expected an integer between 0 and " ~ ctNum(T.max);
+        else
+            enum parseErrorMsg = "expected an integer between " ~ itoa(T.min) ~ " and " ~ itoa(T.max);
+    }
+    else static if (__traits(isFloating, T))
+        enum parseErrorMsg = "expected a number";
+    else static if (isTextType!T)
+        enum parseErrorMsg = textTypeInvalidMessage!T;
+    else
+        enum parseErrorMsg = "invalid value";
 }
 
 unittest

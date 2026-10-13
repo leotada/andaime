@@ -16,7 +16,7 @@ struct RequestId
     alias value this;
 }
 
-/// One line per request on stderr: `GET /users/7 200 1.3ms`.
+/// One line per request on stderr: `GET /users/7 200 1.3ms ip=203.0.113.7`.
 /// Does not allocate; write your own if you need JSON/structured logs.
 Middleware accessLog()
 {
@@ -27,11 +27,13 @@ Middleware accessLog()
             immutable us = (MonoTime.currTime - t0).total!"usecs";
             auto m = methodName(ctx.request.method);
             auto rid = ctx.locals.find!RequestId();
+            char[39] ipBuf = void;
+            immutable ipLen = ctx.clientIp().format(ipBuf[]);
             // sound: every pointer/length pair below comes from a live slice
             () @trusted {
-                fprintf(stderr, "%.*s %.*s %d %ld.%ldms%s%.*s\n", cast(int) m.length, m.ptr,
+                fprintf(stderr, "%.*s %.*s %d %ld.%ldms ip=%.*s%s%.*s\n", cast(int) m.length, m.ptr,
                     cast(int) ctx.request.target.length, ctx.request.target.ptr, ctx.response.status,
-                    cast(long)(us / 1000), cast(long)((us % 1000) / 100),
+                    cast(long)(us / 1000), cast(long)((us % 1000) / 100), cast(int) ipLen, ipBuf.ptr,
                     rid is null ? "".ptr : " rid=".ptr, rid is null ? 0 : cast(int) rid.value.length,
                     rid is null ? "".ptr : rid.value.ptr);
             }();

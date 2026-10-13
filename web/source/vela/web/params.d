@@ -4,6 +4,8 @@ module vela.web.params;
 @safe:
 
 import vela.http.types : HeaderField;
+import vela.http.ip : IpAddress;
+import vela.http.texttype : isTextType;
 
 /// JSON body decoded into `T`. Access the fields directly: `body.name`.
 struct JsonBody(T)
@@ -12,12 +14,29 @@ struct JsonBody(T)
     alias value this;
 }
 
-/// Value of a header. It is a zero-copy slice of the network buffer:
-/// valid only during the request. To keep it, use `.idup`.
+/// The client's address (`ctx.clientIp()`): the TCP peer, or the real client behind a trusted proxy. A parameter kind of its
+/// own: `string who(ClientIp ip) => ip.toString;`. Not shown in the OpenAPI document.
+struct ClientIp
+{
+    IpAddress value;
+    alias value this;
+}
+
+/// Value of a header, copied into a `string` you may keep (one small allocation per header parameter). For a
+/// zero-copy view use `ctx.request.header("Name")` instead, which is valid during the request only.
 struct Header(string name)
 {
     enum string headerName = name;
-    const(char)[] value;
+    string value;
+    alias value this;
+}
+
+/// Value of a cookie, copied into a `string` you may keep: `string me(Cookie!"session" s)`. Required like a header;
+/// `Optional!(Cookie!"theme")` makes it optional.
+struct Cookie(string name)
+{
+    enum string cookieName = name;
+    string value;
     alias value this;
 }
 
@@ -29,28 +48,9 @@ struct Local(T)
     alias value this;
 }
 
-/// Optional parameter: `Optional!int page`, `Optional!(Header!"X-Trace")`.
-struct Optional(T)
-{
-    private T _value;
-    private bool _has;
-
-    this(T v)
-    {
-        _value = v;
-        _has = true;
-    }
-
-    bool has() const => _has;
-
-    ref inout(T) get() inout return
-    {
-        assert(_has, "empty Optional: check .has before .get");
-        return _value;
-    }
-
-    inout(T) getOr(inout(T) fallback) inout => _has ? _value : fallback;
-}
+/// Optional parameter: `Optional!int page`, `Optional!(Header!"X-Trace")`. Defined in `vela:http` so the database
+/// driver shares it (a NULL column is an empty `Optional`).
+public import vela.http.optional : Optional;
 
 /// Return with a status other than 200: `return withStatus(201, user);`
 struct WithStatus(T)
@@ -60,6 +60,26 @@ struct WithStatus(T)
 }
 
 WithStatus!T withStatus(T)(int status, T value) => WithStatus!T(status, value);
+
+/// Success status of a handler: `@status(201) Item create(JsonBody!NewItem b)`. Applies to a normal return (a handler that
+/// returns `WithStatus` or `Response` decides for itself) and replaces the 204 of a `void` handler. OpenAPI documents it.
+struct status { int code; }
+
+/// Documents an error response of a handler (repeatable): `@responds(404, "User not found")`. Purely descriptive: the
+/// handler still produces it by throwing `HttpError`.
+struct responds { int code; string description; }
+
+/// The `@status` code of handler `fn`, or 0 when it has none.
+template successStatus(alias fn)
+{
+    enum successStatus = () {
+        int r = 0;
+        static foreach (a; __traits(getAttributes, fn))
+            static if (is(typeof(a) == status))
+                r = a.code;
+        return r;
+    }();
+}
 
 /// Hand-built response (redirect, custom content-type, extra headers).
 struct Response
@@ -94,15 +114,21 @@ class HttpError : Exception
 
 enum isJsonBody(T) = is(T == JsonBody!U, U);
 enum isHeader(T) = is(T == Header!n, string n);
+enum isCookie(T) = is(T == Cookie!n, string n);
 enum isLocal(T) = is(T == Local!U, U);
+enum isClientIp(T) = is(T == ClientIp);
+
+/// A query list: an array of scalars that is not itself a text type (`int[] ids`, `string[] tags`, `Order[] sort`).
+enum isScalarList(T) = is(T == U[], U) && !isScalar!T && isScalar!U;
 enum isOptional(T) = is(T == Optional!U, U);
 enum isWithStatus(T) = is(T == WithStatus!U, U);
 
 enum isCharType(T) = is(immutable T == immutable char) || is(immutable T == immutable wchar)
     || is(immutable T == immutable dchar);
 
-/// Scalars extractable from path, query or header.
+/// Scalars extractable from path, query or header: numbers, bool, enums, text, and your own text types
+/// (`static bool fromString(text, out T)` plus `toString(sink)`; see `vela.http.texttype`).
 enum isScalar(T) = is(T == bool) || is(T == enum)
     || (__traits(isIntegral, T) && !isCharType!T)
     || __traits(isFloating, T)
-    || is(T == string) || is(T == const(char)[]);
+    || is(T == string) || is(T == const(char)[]) || isTextType!T;

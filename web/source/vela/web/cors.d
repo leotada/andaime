@@ -34,8 +34,14 @@ Middleware cors(CorsConfig cfg)
         if (o == "*")
             any = true;
     immutable string maxAge = utoa(cfg.maxAgeSeconds);
+    // With a fixed `*` (no credentials) every response is the same for every origin. In every other case the answer
+    // depends on the Origin header, including "no CORS headers at all" for a missing or disallowed origin: a shared
+    // cache must not hand that variant to an allowed origin, so `Vary: Origin` goes on every response.
+    immutable bool varyOrigin = !(any && !cfg.credentials);
 
     return (Context ctx, Next next) {
+        if (varyOrigin)
+            ctx.addVary("Origin");
         auto origin = ctx.request.header("Origin");
         if (origin is null)
         {
@@ -62,10 +68,7 @@ Middleware cors(CorsConfig cfg)
         if (any && !cfg.credentials)
             ctx.setHeader("Access-Control-Allow-Origin", "*");
         else
-        {
             ctx.setHeader("Access-Control-Allow-Origin", origin);
-            ctx.setHeader("Vary", "Origin");
-        }
         if (cfg.credentials)
             ctx.setHeader("Access-Control-Allow-Credentials", "true");
 
@@ -74,11 +77,15 @@ Middleware cors(CorsConfig cfg)
         if (preflight)
         {
             ctx.setHeader("Access-Control-Allow-Methods", cfg.methods);
+            ctx.addVary("Access-Control-Request-Method");
             auto wanted = ctx.request.header("Access-Control-Request-Headers");
             if (cfg.allowHeaders.length)
                 ctx.setHeader("Access-Control-Allow-Headers", cfg.allowHeaders);
             else if (wanted.length)
+            {
                 ctx.setHeader("Access-Control-Allow-Headers", wanted);
+                ctx.addVary("Access-Control-Request-Headers"); // the answer echoes what the browser asked for
+            }
             ctx.setHeader("Access-Control-Max-Age", maxAge);
             ctx.response.status = 204;
             ctx.response.contentType = null;

@@ -7,7 +7,10 @@ module vela.web.json;
 import vela.http.buffer;
 import vela.web.dto;
 import vela.web.params : Optional, isOptional, isCharType;
-import vela.web.convert : parseInteger, parseFloat, typeHint;
+import vela.web.convert : parseInteger, parseFloat, parseErrorType, parseErrorMsg;
+import vela.web.numtext : itoa;
+import vela.http.utf8 : validUtf8;
+import vela.http.texttype : isTextType, textFromString, textToString;
 
 // =====================================================================
 // Writing
@@ -37,6 +40,22 @@ void writeJson(T)(ref ByteBuffer o, ref const T v)
         else
             o.put("null");
     }
+    else static if (is(T == V[K], V, K) && is(K == string))
+    {
+        // an object; the order is the associative array's own (unspecified)
+        o.put('{');
+        bool first = true;
+        foreach (k, ref val; v)
+        {
+            if (!first)
+                o.put(',');
+            first = false;
+            writeJsonString(o, k);
+            o.put(':');
+            writeJson(o, val);
+        }
+        o.put('}');
+    }
     else static if (is(T == U[], U) || is(T == U[n], U, size_t n))
     {
         o.put('[');
@@ -47,6 +66,13 @@ void writeJson(T)(ref ByteBuffer o, ref const T v)
             writeJson(o, e);
         }
         o.put(']');
+    }
+    else static if (isTextType!T)
+    {
+        // a text type is a JSON string: its toString writes the text, escaped on the way
+        o.put('"');
+        textToString(v, (scope const(char)[] piece) { writeJsonEscaped(o, piece); });
+        o.put('"');
     }
     else static if (is(T == struct))
     {
@@ -67,7 +93,7 @@ void writeJson(T)(ref ByteBuffer o, ref const T v)
     }
     else
         static assert(0, "vela: type '" ~ T.stringof ~ "' is not serializable to JSON. "
-            ~ "Use bool, numbers, string, enum, arrays, structs or Optional!T.");
+            ~ "Use bool, numbers, string, enum, arrays, string-keyed maps, structs or Optional!T.");
 }
 
 private enum string quotedKey(T, size_t i) = "\"" ~ jsonKeyOf!(T, i) ~ "\":";
@@ -85,8 +111,15 @@ private void writeEnum(E)(ref ByteBuffer o, E v)
 
 void writeJsonString(ref ByteBuffer o, scope const(char)[] s) nothrow @nogc @safe
 {
-    static immutable char[16] hexd = "0123456789abcdef";
     o.put('"');
+    writeJsonEscaped(o, s);
+    o.put('"');
+}
+
+/// The characters of `s` as they go inside a JSON string (no quotes).
+void writeJsonEscaped(ref ByteBuffer o, scope const(char)[] s) nothrow @nogc @safe
+{
+    static immutable char[16] hexd = "0123456789abcdef";
     size_t start = 0;
     foreach (i, char c; s)
     {
@@ -108,7 +141,6 @@ void writeJsonString(ref ByteBuffer o, scope const(char)[] s) nothrow @nogc @saf
         start = i + 1;
     }
     o.put(s[start .. $]);
-    o.put('"');
 }
 
 // =====================================================================
@@ -363,9 +395,9 @@ private void encodeUtf8(ref char[] o, int cp) @safe pure nothrow
 
 /// Type error: records it and skips the value (parsing continues, to
 /// report all the wrong fields at once, like FastAPI).
-private bool typeMismatch(ref JsonReader r, ref FieldErrors errs, ref const FieldPath path, string msg)
+private bool typeMismatch(ref JsonReader r, ref FieldErrors errs, ref const FieldPath path, string type, string msg)
 {
-    errs.add("body", path.current.idup, msg);
+    errs.addPath(path, type, msg);
     return r.skipValue();
 }
 
@@ -380,12 +412,12 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
         else if (r.literal("false"))
             v = false;
         else
-            return typeMismatch(r, errs, path, typeHint!T);
+            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T);
     }
     else static if (is(T == enum))
     {
         if (!r.peekIs('"'))
-            return typeMismatch(r, errs, path, typeHint!T);
+            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T);
         const(char)[] raw;
         bool esc;
         if (!r.rawString(raw, esc))
@@ -398,40 +430,64 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
                 ok = true;
             }
         if (!ok)
-            errs.add("body", path.current.idup, typeHint!T);
+            errs.addPath(path, parseErrorType!T, parseErrorMsg!T);
     }
     else static if (__traits(isIntegral, T) && !isCharType!T)
     {
         if (!r.peekNumber())
-            return typeMismatch(r, errs, path, typeHint!T);
+            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T);
         const(char)[] tok;
         if (!r.number(tok))
             return false;
         if (!parseInteger(tok, v))
-            errs.add("body", path.current.idup, typeHint!T);
+            errs.addPath(path, parseErrorType!T, parseErrorMsg!T);
     }
     else static if (__traits(isFloating, T))
     {
         if (!r.peekNumber())
-            return typeMismatch(r, errs, path, typeHint!T);
+            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T);
         const(char)[] tok;
         if (!r.number(tok))
             return false;
         if (!parseFloat(tok, v))
-            errs.add("body", path.current.idup, typeHint!T);
+            errs.addPath(path, parseErrorType!T, parseErrorMsg!T);
     }
     else static if (is(string : T)) // string, const(char)[]
     {
         if (!r.peekIs('"'))
-            return typeMismatch(r, errs, path, "esperado string");
+            return typeMismatch(r, errs, path, "string_type", "expected a string");
         const(char)[] raw;
         bool esc;
         if (!r.rawString(raw, esc))
             return false;
+        if (!validUtf8(raw)) // escapes decode to valid UTF-8 (lone surrogates are rejected), so the raw text decides
+        {
+            errs.addPath(path, "string_unicode", "invalid UTF-8");
+            return true;
+        }
         string decoded;
         if (!decodeJsonString(raw, esc, decoded))
             return r.syntax();
         v = decoded;
+    }
+    else static if (isTextType!T)
+    {
+        if (!r.peekIs('"'))
+            return typeMismatch(r, errs, path, "string_type", "expected a string");
+        const(char)[] raw;
+        bool esc;
+        if (!r.rawString(raw, esc))
+            return false;
+        if (!validUtf8(raw))
+        {
+            errs.addPath(path, "string_unicode", "invalid UTF-8");
+            return true;
+        }
+        string decoded;
+        if (!decodeJsonString(raw, esc, decoded))
+            return r.syntax();
+        if (!textFromString(decoded, v))
+            errs.addPath(path, parseErrorType!T, parseErrorMsg!T);
     }
     else static if (is(T == Optional!U, U))
     {
@@ -445,18 +501,57 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
             v = T(tmp);
         }
     }
+    else static if (is(T == V[K], V, K) && is(K == string))
+    {
+        // {"a": 1, "b": 2} -> int[string]; a repeated key keeps its last value
+        if (!r.eat('{'))
+            return typeMismatch(r, errs, path, "dict_type", "expected an object");
+        T map;
+        if (!r.eat('}'))
+        {
+            do
+            {
+                const(char)[] rawKey;
+                bool kesc;
+                if (!r.rawString(rawKey, kesc) || !r.eat(':'))
+                    return r.syntax();
+                string key;
+                if (!validUtf8(rawKey))
+                {
+                    errs.addPath(path, "string_unicode", "invalid UTF-8");
+                    if (!r.skipValue())
+                        return false;
+                    continue;
+                }
+                if (!decodeJsonString(rawKey, kesc, key))
+                    return r.syntax();
+                V item;
+                immutable mark = path.pushKey(key);
+                if (!readJson(r, item, errs, path))
+                    return false;
+                path.pop(mark);
+                map[key] = item;
+            }
+            while (r.eat(','));
+            if (!r.eat('}'))
+                return r.syntax();
+        }
+        v = map;
+    }
     else static if (is(T == U[], U))
     {
         if (!r.eat('['))
-            return typeMismatch(r, errs, path, "esperado array");
+            return typeMismatch(r, errs, path, "list_type", "expected an array");
         v = null;
         if (r.eat(']'))
             return true;
         do
         {
             U e;
+            immutable mark = path.pushIndex(v.length);
             if (!readJson(r, e, errs, path))
                 return false;
+            path.pop(mark);
             v ~= e;
         }
         while (r.eat(','));
@@ -466,7 +561,7 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
     else static if (is(T == struct))
     {
         if (!r.eat('{'))
-            return typeMismatch(r, errs, path, "esperado objeto");
+            return typeMismatch(r, errs, path, "model_type", "expected an object");
         bool[T.tupleof.length] seen;
         if (!r.eat('}'))
         {
@@ -487,7 +582,7 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
                                 known = true;
                                 seen[i] = true;
                                 {
-                                    immutable mark = path.push(jsonKeyOf!(T, i));
+                                    immutable mark = path.pushKey(jsonKeyOf!(T, i));
                                     if (!readJson(r, v.tupleof[i], errs, path))
                                         return false;
                                     path.pop(mark);
@@ -509,11 +604,11 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
         {
             static if (!hasUda!(T, i, jsonIgnore))
             {{
-                immutable mark = path.push(jsonKeyOf!(T, i));
+                immutable mark = path.pushKey(jsonKeyOf!(T, i));
                 static if (!hasUda!(T, i, optional) && !isOptional!(typeof(T.tupleof[i])))
                 {
                     if (!seen[i])
-                        errs.add("body", path.current.idup, "required field");
+                        errs.addPath(path, "missing", "Field required");
                 }
                 if (seen[i])
                     validateField!(T, i)(v.tupleof[i], errs, path);
@@ -523,7 +618,7 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
     }
     else
         static assert(0, "vela: type '" ~ T.stringof ~ "' cannot be read from JSON. "
-            ~ "Use bool, numbers, string, enum, arrays, structs or Optional!T.");
+            ~ "Use bool, numbers, string, enum, arrays, string-keyed maps, structs or Optional!T.");
     return true;
 }
 
@@ -535,13 +630,15 @@ bool decodeJson(T)(const(char)[] text, ref T v, ref FieldErrors errs)
     immutable before = errs.count;
     if (!readJson(r, v, errs, path))
     {
-        errs.add("body", "", "invalid JSON");
+        // a syntax error makes the type errors found before it meaningless (they may come from the cut-off text)
+        errs.count = before;
+        errs.add("body", "", "json_invalid", "invalid JSON at byte " ~ itoa(r.errorPos == size_t.max ? r.pos : r.errorPos));
         return false;
     }
     r.ws();
     if (r.pos != text.length)
     {
-        errs.add("body", "", "extra content after the JSON");
+        errs.add("body", "", "json_invalid", "invalid JSON at byte " ~ itoa(r.pos));
         return false;
     }
     return errs.count == before;
@@ -574,16 +671,113 @@ unittest
     assert(b.data == `{"name":"Ana é \"x\"","age":30,"role":"admin","email":null,`
         ~ `"tags_list":["a","b"],"address":{"cep":"01310-100"}}`, b.data);
 
-    // several errors reported at once, with the field path
+    // several errors reported at once, with the field path and a machine-readable type
     errs.clear();
     Dto e;
     assert(!decodeJson(`{"name":"Al","age":"x","role":"root","tags_list":[],"address":{"cep":"1"}}`, e, errs));
-    const(char)[][] fields;
-    foreach (ref fe; errs.list)
-        fields ~= fe.field;
-    assert(fields == ["age", "role", "address.cep", "name"]);
+    assert(errorSummary(errs) == [`int_parsing body,"age"`, `enum body,"role"`, `string_too_short body,"address","cep"`,
+        `string_too_short body,"name"`], errorSummary(errs).to!string);
+    assert(errs.list[0].message == "expected an integer between -2147483648 and 2147483647", errs.list[0].message);
+    assert(errs.list[1].message == "expected one of: admin, user");
+    assert(errs.list[2].message == "expected at least 8 characters");
 
-    // syntax
+    // syntax: the byte where parsing stopped
     errs.clear();
-    assert(!decodeJson(`{"name": }`, e, errs) && errs.list[$ - 1].message == "invalid JSON");
+    assert(!decodeJson(`{"name": }`, e, errs));
+    assert(errs.list[$ - 1].type == "json_invalid" && errs.list[$ - 1].message == "invalid JSON at byte 9", errs.list[$ - 1].message);
+    errs.clear();
+    assert(!decodeJson(`{"name":"Ana","age":1,"role":"user"} x`, e, errs));
+    assert(errs.list[$ - 1].type == "json_invalid" && errs.list[$ - 1].message == "invalid JSON at byte 37");
+}
+
+version (unittest)
+{
+    import std.conv : to;
+
+    /// "type location,locJson" of every error, for assertions.
+    string[] errorSummary(ref const FieldErrors errs)
+    {
+        string[] r;
+        foreach (ref fe; errs.list)
+            r ~= fe.type ~ " " ~ fe.location ~ (fe.locJson.length ? "," ~ fe.locJson : "");
+        return r;
+    }
+}
+
+unittest
+{
+    struct Item { @minLength(2) string code; int qty; }
+    struct Order { Item[] items; string[] tags; @maxLength(2) int[] ids; Optional!Item extra; }
+
+    // the array index is part of loc; nested objects inside arrays too
+    FieldErrors errs;
+    Order o;
+    assert(!decodeJson(`{"items":[{"code":"ab","qty":1},{"code":"x","qty":"no"},{"qty":2}],"tags":["a",5],"ids":[1,2,3]}`, o, errs));
+    assert(errorSummary(errs) == [`int_parsing body,"items",1,"qty"`, `string_too_short body,"items",1,"code"`,
+        `missing body,"items",2,"code"`, `string_type body,"tags",1`, `too_long body,"ids"`], errorSummary(errs).to!string);
+    assert(errs.list[4].message == "expected at most 2 items");
+
+    // wrong JSON kinds
+    errs.clear();
+    assert(!decodeJson(`{"items":{},"tags":"x","ids":[]}`, o, errs));
+    assert(errorSummary(errs) == [`list_type body,"items"`, `list_type body,"tags"`]);
+    errs.clear();
+    assert(!decodeJson(`[1]`, o, errs));
+    assert(errorSummary(errs) == [`model_type body`] && errs.list[0].message == "expected an object");
+    errs.clear();
+    Item it;
+    assert(!decodeJson(`{"code":"ok","qty":1.5}`, it, errs) && errs.list[0].type == "int_parsing");
+    errs.clear();
+    assert(!decodeJson(`{"code":"ok","qty":99999999999}`, it, errs) && errs.list[0].type == "int_parsing");
+}
+
+unittest
+{
+    // lengths count characters, not bytes
+    struct Name { @minLength(3) @maxLength(4) string v; }
+    FieldErrors errs;
+    Name n;
+    assert(!decodeJson(`{"v":"çã"}`, n, errs) && errs.list[0].type == "string_too_short");
+    errs.clear();
+    assert(decodeJson(`{"v":"çãõ"}`, n, errs), "3 characters (6 bytes) satisfy minLength(3)");
+    errs.clear();
+    assert(decodeJson(`{"v":"çãõé"}`, n, errs), "4 characters (8 bytes) satisfy maxLength(4)");
+    errs.clear();
+    assert(!decodeJson(`{"v":"çãõéü"}`, n, errs) && errs.list[0].type == "string_too_long");
+    errs.clear();
+    assert(decodeJson(`{"v":"a\u00e7\u00e3"}`, n, errs), "escapes count as characters too");
+
+    // invalid UTF-8 is an error, never a D string
+    errs.clear();
+    ubyte[] bad = cast(ubyte[]) `{"v":"abc`.dup ~ [cast(ubyte) 0xff] ~ cast(ubyte[]) `"}`.dup;
+    assert(!decodeJson(cast(const(char)[]) bad, n, errs));
+    assert(errs.list[0].type == "string_unicode" && errs.list[0].message == "invalid UTF-8");
+}
+
+unittest
+{
+    // @inRange: separate codes for each side, with the bound in the message
+    struct R { @inRange(0, 150) int age; @inRange(0.5, 1.5) double ratio; }
+    FieldErrors errs;
+    R r;
+    assert(!decodeJson(`{"age":-1,"ratio":2}`, r, errs));
+    assert(errorSummary(errs) == [`greater_than_equal body,"age"`, `less_than_equal body,"ratio"`]);
+    assert(errs.list[0].message == "must be >= 0" && errs.list[1].message == "must be <= 1.5");
+
+    // too deep a path is cut with "..."
+    FieldPath p;
+    foreach (i; 0 .. 40)
+        p.pushKey("k");
+    assert(p.render().length > 0 && p.render()[$ - 6 .. $] == `,"..."`);
+
+    // more errors than the capacity: counted, not lost silently
+    struct Many { int[] v; }
+    errs.clear();
+    Many m;
+    string js = `{"v":[`;
+    foreach (i; 0 .. 20)
+        js ~= (i ? `,"x"` : `"x"`);
+    js ~= `]}`;
+    assert(!decodeJson(js, m, errs));
+    assert(errs.count == FieldErrors.capacity && errs.dropped == 4);
 }

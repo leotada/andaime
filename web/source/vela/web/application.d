@@ -4,12 +4,15 @@ module vela.web.application;
 @safe:
 
 import vela.http.types;
+import vela.http.ip : Cidr, parseCidr;
 import vela.web.context;
 import vela.web.params : HttpError;
 import vela.web.router;
 import vela.web.handler_traits : handlerError, dispatch;
 import vela.web.json : writeJsonString;
 import vela.web.openapi;
+import vela.web.response_check : checkResponse;
+import vela.http.date : httpDate;
 
 /// Route UDA for controller methods: `@Get("/users/{id}")`.
 struct Route
@@ -63,46 +66,53 @@ private final class Chain
 ///     api.use(&requireLogin);
 ///     api.get!("/users/{id}", getUser);        // GET /api/v1/users/{id}, with requireLogin
 ///
-/// A middleware applies to routes registered AFTER the `use` (as in Express).
+/// A middleware applies to EVERY route of the group and of its subgroups, whenever the route is registered
+/// (before or after the `use`). Order: the order of the `use` calls, outermost first; a parent group's middleware
+/// runs before its subgroups'. Group middleware runs after routing, so it only sees requests that matched a route.
 /// The prefix is plain text: no `{param}` (binding by name is decided at compile time).
 final class Group
 {
     private App app;
     private string prefix;
+    private Group parent;
     private Middleware[] mws;
 
-    private this(App app, string prefix, Middleware[] inherited)
+    private this(App app, string prefix, Group parent)
     {
         this.app = app;
         this.prefix = prefix;
-        this.mws = inherited;
+        this.parent = parent;
     }
 
     void use(Middleware mw)
     {
+        app.mustBeOpen();
         mws ~= mw;
     }
 
     void use(void function(Context, Next) @system mw)
     {
-        mws ~= (Context c, Next n) @trusted => mw(c, n);
+        use((Context c, Next n) @trusted => mw(c, n));
     }
 
-    /// Subgroup: inherits the current prefix and middlewares.
+    /// Subgroup: its prefix extends this one's, and this group's middleware runs before its own.
     Group group(string sub)
     {
-        return new Group(app, prefix ~ checkPrefix(sub), mws.dup);
+        app.mustBeOpen();
+        return new Group(app, prefix ~ checkPrefix(sub), this);
     }
 
     void register(Method method, string path, HandlerFn h, OpDescribe describe = null)
     {
         auto full = (path == "/" && prefix.length) ? prefix : prefix ~ path;
-        if (mws.length == 0)
-            return app.register(method, full, h, describe);
-        auto c = new Chain;
-        c.mws = mws.dup;
-        c.handler = h;
-        app.register(method, full, &c.entry, describe);
+        app.registerIn(this, method, full, h, describe);
+    }
+
+    private void collect(ref Middleware[] outer) // root first
+    {
+        if (parent !is null)
+            parent.collect(outer);
+        outer ~= mws;
     }
 }
 
@@ -123,13 +133,26 @@ final class App
 {
     private Router router;
     private HandlerFn[] handlers;
+    private Group[] owners;          // owners[i] = group of handlers[i], or null
     private Middleware[] middlewares;
     private ErrorHandler errorHandler;
     private UserHandler notFoundHandler;
     private OpRecord[] ops;
 
+    private bool frozen;
+    private ProxyTrust proxyTrust;
+    private bool openApiWanted;
+    private OpenApiInfo openApiInfo;
+    private string openApiJson;
+
     /// If the route does not exist but exists with/without the trailing slash, answers 308 to it.
     bool redirectTrailingSlash;
+
+    /// Log the stack trace of unexpected exceptions (not `HttpError`), at most `maxTracesPerSecond` per second.
+    bool logStackTraces = true;
+    enum int maxTracesPerSecond = 5;
+    private long traceWindowMs = long.min / 2;
+    private int tracesInWindow;
 
     this()
     {
@@ -138,32 +161,64 @@ final class App
 
     // ---- middlewares (registration order = outside in)
 
+    /// App-level middleware: runs for every request, before routing (so it also sees 404 and 405), in the order of the
+    /// `use` calls, outermost first. Whenever it is registered, it applies to all routes.
     void use(Middleware mw)
     {
+        mustBeOpen();
         middlewares ~= mw;
     }
 
     void use(void function(Context, Next) @system mw)
     {
-        middlewares ~= (Context c, Next n) @trusted => mw(c, n);
+        use((Context c, Next n) @trusted => mw(c, n));
     }
 
     /// Creates a route group with its own prefix and middlewares.
     Group group(string prefix)
     {
+        mustBeOpen();
         return new Group(this, checkPrefix(prefix), null);
+    }
+
+    /// Everything (routes, middleware, handlers) must be set up before the first request: `freeze` builds the
+    /// per-route middleware chains and the OpenAPI document, and nothing changes afterwards, so workers can read the
+    /// app without locks. `serve` freezes each worker's app; `handle` freezes it on the first request (TestClient).
+    private void mustBeOpen() const
+    {
+        if (frozen)
+            throw new RouteError("vela: the app is already serving; register routes and middleware before serve "
+                ~ "(in the build function)");
+    }
+
+    /// Believes `X-Forwarded-For` (or `header`) from these proxies, given as CIDR strings: `ctx.clientIp()` and `ClientIp`
+    /// then return the real client. `serve` does this from `ServerConfig.trustedProxies`. Throws `RouteError` on a bad CIDR.
+    void trustProxies(const(string)[] cidrs, string header = "X-Forwarded-For")
+    {
+        mustBeOpen();
+        Cidr[] nets;
+        foreach (c; cidrs)
+        {
+            Cidr n;
+            if (!parseCidr(c, n))
+                throw new RouteError("vela: trusted proxy '" ~ c ~ "' is not an address or a CIDR (10.0.0.0/8, 127.0.0.1, ::1/128)");
+            nets ~= n;
+        }
+        proxyTrust = ProxyTrust(nets, header);
     }
 
     /// Handles any exception thrown by handlers and middlewares (including `HttpError`).
     /// Exceptions that are not `HttpError` are still logged first.
     void onError(ErrorHandler h)
     {
+        mustBeOpen();
         errorHandler = h;
     }
 
     /// Response for nonexistent routes (replaces the default JSON 404).
     void onNotFound(UserHandler h)
     {
+        mustBeOpen();
         notFoundHandler = h;
     }
 
@@ -171,27 +226,56 @@ final class App
     /// validate the signature at compile time and call this.
     void register(Method method, string path, HandlerFn h, OpDescribe describe = null)
     {
+        registerIn(null, method, path, h, describe);
+    }
+
+    private void registerIn(Group owner, Method method, string path, HandlerFn h, OpDescribe describe)
+    {
+        mustBeOpen();
         handlers ~= h;
+        owners ~= owner;
         router.add(method, path, cast(int)(handlers.length - 1));
         ops ~= OpRecord(method, path, describe);
     }
 
-    /// Publishes `/openapi.json` (and the `/docs` page) generated from the signatures of the
-    /// handlers registered UP TO here. Call it after registering the routes.
+    /// Wraps each grouped route in its group chain and builds the OpenAPI document. Idempotent.
+    void freeze()
+    {
+        if (frozen)
+            return;
+        foreach (i, g; owners)
+        {
+            if (g is null)
+                continue;
+            Middleware[] all;
+            g.collect(all);
+            if (all.length == 0)
+                continue;
+            auto c = new Chain;
+            c.mws = all;
+            c.handler = handlers[i];
+            handlers[i] = &c.entry;
+        }
+        if (openApiWanted)
+            openApiJson = buildOpenApi(ops, openApiInfo);
+        frozen = true;
+    }
+
+    /// Publishes `/openapi.json` (and the `/docs` page) generated from the signatures of ALL the handlers of the
+    /// app, including those registered after this call (the document is built when the app starts serving).
     void serveOpenApi(OpenApiInfo info = OpenApiInfo.init)
     {
-        auto records = ops.dup;
-        string cached;
+        mustBeOpen();
+        openApiWanted = true;
+        openApiInfo = info;
         if (info.jsonPath.length)
             register(Method.GET, info.jsonPath, delegate(Context c) {
-                if (cached is null)
-                    cached = buildOpenApi(records, info);
                 c.response.contentType = "application/json";
-                c.response.body.put(cached);
+                c.response.body.put(openApiJson);
             });
         if (info.docsPath.length)
         {
-            auto html = docsHtml(info.jsonPath, info.title);
+            auto html = docsHtml(info.jsonPath, info.title, info.swaggerUiBase);
             register(Method.GET, info.docsPath, delegate(Context c) {
                 c.response.contentType = "text/html; charset=utf-8";
                 c.response.body.put(html);
@@ -234,14 +318,41 @@ final class App
     /// Processes the request already loaded in `ctx`. Never throws.
     void handle(Context ctx)
     {
+        if (!frozen)
+            freeze();
+        ctx.proxies = &proxyTrust;
         try
             runFrom(ctx, 0);
         catch (Exception e)
             fail(ctx, e);
+        finishResponse(ctx);
+    }
+
+    /// The one validation point, after the middleware has unwound (see `checkResponse`). A streamed response whose
+    /// head was already committed is left alone: its status and headers are on the wire.
+    private static void finishResponse(Context ctx)
+    {
+        if (ctx.committed)
+            return;
+        if (!checkResponse(ctx))
+        {
+            ctx.response.clearHeaders();
+            renderError(ctx, 500, "internal error");
+            ctx.response.ensureHeader("Date", httpDate());
+        }
     }
 
     private void fail(Context ctx, Exception e)
     {
+        if (ctx.committed)
+        {
+            // A streamed response already started: status and headers are on the wire, so no error page is possible.
+            // The failure is logged and the response is cut off (HTTP/1.1: connection closed without the final chunk;
+            // HTTP/2: stream reset), which is the only honest signal left to the client.
+            logError(ctx, e);
+            ctx.aborted = true;
+            return;
+        }
         if (errorHandler is null)
         {
             if (auto he = cast(HttpError) e)
@@ -374,19 +485,45 @@ final class App
         ctx.response.body.put('}');
     }
 
-    private static void internalError(Context ctx, Exception e)
+    private void internalError(Context ctx, Exception e)
     {
         logError(ctx, e);
         renderError(ctx, 500, "internal error");
     }
 
-    private static void logError(Context ctx, Exception e) nothrow @trusted
+    /// Logs the exception behind a 500 (details only in the log, never in the response). With `logStackTraces` the
+    /// whole `toString()` goes out -- message, file:line and stack trace (needs debug info: build with `-g`, or DUB's
+    /// `release-debug` type, for symbol names) -- at most `maxTracesPerSecond` times per second per App; the rest get
+    /// the one-line form. Each worker has its own App, so the limit is per worker.
+    private void logError(Context ctx, Exception e) nothrow @trusted
     {
         import core.stdc.stdio : fprintf, stderr;
+        import core.time : MonoTime;
 
-        // details only in the log, never in the response
-        fprintf(stderr, "vela: error in %.*s %.*s: %.*s (%.*s:%d)\n",
-            cast(int) methodName(ctx.request.method).length, methodName(ctx.request.method).ptr,
+        // @trusted: fprintf with explicit lengths on strings that stay alive during the call
+        immutable m = methodName(ctx.request.method);
+        if (logStackTraces)
+        {
+            immutable now = MonoTime.currTime.ticks / (MonoTime.ticksPerSecond / 1000); // ms
+            if (now - traceWindowMs >= 1000)
+            {
+                traceWindowMs = now;
+                tracesInWindow = 0;
+            }
+            if (tracesInWindow < maxTracesPerSecond)
+            {
+                tracesInWindow++;
+                string text;
+                try
+                    text = e.toString();
+                catch (Exception)
+                    text = e.msg;
+                fprintf(stderr, "vela: error in %.*s %.*s: %.*s\n", cast(int) m.length, m.ptr,
+                    cast(int) ctx.request.path.length, ctx.request.path.ptr, cast(int) text.length, text.ptr);
+                return;
+            }
+        }
+        fprintf(stderr, "vela: error in %.*s %.*s: %.*s (%.*s:%d)\n", cast(int) m.length, m.ptr,
             cast(int) ctx.request.path.length, ctx.request.path.ptr,
             cast(int) e.msg.length, e.msg.ptr, cast(int) e.file.length, e.file.ptr, cast(int) e.line);
     }

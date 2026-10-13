@@ -46,6 +46,8 @@ void main()
   (503 + `Retry-After`). Measured: 1,000 simultaneous requests in ~25 MB of RSS; the hot path does not allocate on the GC.
 - Robust by default: head/idle/write/request deadlines, slowloris protection, cancellation when the
   client goes away (the handler's `scope(exit)` runs), graceful stop, a zero-copy HTTP/1.1 parser fuzzed with ASan.
+- HTTP/2 on the same port (h2c): multiplexed streams, each in its own fiber, with flow control, per-stream deadlines
+  and cancellation, protection against rapid reset and control-frame floods. Your handlers do not change.
 - Fast compilation: the example's `app.d` compiles in ~250 ms on DMD, because the dispatch uses shallow `static foreach` and
   `static if` instead of deep template chains.
 
@@ -67,6 +69,8 @@ come. Outside Linux, `serve` falls back to the blocking development server.
 M3 is also done on Linux: a bounded thread pool (`offload`), a PostgreSQL driver over asynchronous
 libpq (the separate package `vela-pg`, in `drivers/pg`) and a cooperative HTTP/HTTPS client (`httpClient()`). All three suspend
 only the request's fiber.
+
+HTTP/2 over cleartext (h2c) is served by the epoll engine next to HTTP/1.1; see [HTTP/2](#http2-h2c) below.
 
 Inside a handler, wait without blocking the worker:
 
@@ -136,12 +140,49 @@ app.serveOpenApi(OpenApiInfo("My API", "1.0"));   // /openapi.json (generated fr
 - Known limits: chunked request bodies are not supported (501); `/docs` loads the Swagger UI from a CDN;
   static files up to 256 KiB are read on the worker (larger ones go to `offload`); a CPU-only handler cannot be cancelled.
 
+### HTTP/2 (h2c)
+
+On by default, on the same port as HTTP/1.1. Nothing changes in the application: the same handlers,
+middleware and `TestClient`; `ctx.request.protocol` tells which protocol a request came on.
+
+```sh
+curl --http2-prior-knowledge http://localhost:8080/users/1   # prior knowledge: the "PRI *" preface
+curl --http2 http://localhost:8080/users/1                   # HTTP/1.1 "Upgrade: h2c", answered on stream 1
+```
+
+```d
+ServerConfig cfg;
+cfg.http2 = true;               // default; false = HTTP/1.1 only
+cfg.http2MaxStreams = 100;      // SETTINGS_MAX_CONCURRENT_STREAMS per connection
+cfg.http2WindowBytes = 1 << 20; // connection receive window (request bodies in flight)
+```
+
+- Cleartext only: HTTP/2 to browsers needs TLS with ALPN, which the server does not terminate. Use it behind a
+  proxy or load balancer that speaks h2c to its upstreams (Caddy, Envoy, HAProxy, AWS ALB, Google Cloud
+  load balancers), for gRPC-style clients, or service to service.
+- Each stream runs in its own fiber, exactly like an HTTP/1.1 request: `maxInFlight` counts streams (above it the
+  stream is refused with `REFUSED_STREAM`, safe to retry), `requestTimeoutMs` applies per stream (504), a
+  `RST_STREAM` from the client cancels only that handler, and closing the connection cancels all of them.
+- Graceful stop sends `GOAWAY`; streams already accepted finish first. Idle connections get `GOAWAY` after `idleTimeoutMs`.
+- Limits are the same as HTTP/1.1 (`Limits`: header list, `:path`, body) and answer with the same statuses (431, 414, 413).
+- Protection: `CONTINUATION` floods, rapid reset and control-frame floods (`PING`, `SETTINGS`, `PRIORITY`, empty
+  frames) end the connection with `ENHANCE_YOUR_CALM`; reading pauses while a client does not read its responses.
+- Not implemented: server push (clients disable it), priorities (accepted and ignored, as RFC 9113 allows), the HPACK
+  dynamic table when encoding responses (decoding uses it as required).
+- Conformance: [h2spec](https://github.com/summerwind/h2spec) passes 145 of 146 cases. The remaining one (3.5/2,
+  an invalid preface) cannot pass on a port that also serves HTTP/1.1: there it is a malformed HTTP/1.1 request,
+  which correctly gets a 400. Also tested against curl (nghttp2) and python-h2.
+- Measured: 1,000 in-flight streams over 10 connections peak at ~16 MB of RSS; the HTTP/2 hot path (frames, HPACK,
+  dispatch, framing the response) does not allocate on the GC.
+
 ## Commands
 
 ```sh
 tools/check.sh                       # everything: unittests, example, allocation, network, Postgres, HTTP client, memory, compile-fail, budget
                                      # (starts a throwaway PostgreSQL and a Python upstream; without them, those tests are skipped)
 DC=ldmd2 tools/check.sh              # the same with LDC
+tools/h2_interop.sh                  # HTTP/2 against curl, python-h2 and h2spec (H2SPEC=/path/to/h2spec); part of check.sh
+tools/fuzz.sh 600 h2                 # libFuzzer + ASan on the HTTP/2 session (or "parse" for the HTTP/1 parser)
 
 cd examples/hello && dub run         # starts the example at http://localhost:8080
 curl -X POST localhost:8080/users -d '{"name":"Ana","age":31}'
@@ -155,7 +196,7 @@ Requirements: a D compiler (DMD or LDC) and DUB. The core (`vela`) needs no data
 
 | Package       | Role                                                        | Depends on |
 |---------------|-------------------------------------------------------------|------------|
-| `vela:http`   | types, zero-copy HTTP/1.1 parser, writer. No I/O.           | —          |
+| `vela:http`   | types, zero-copy HTTP/1.1 parser and writer, HTTP/2 session and HPACK. No I/O. | — |
 | `vela:web`    | App, router, handler introspection, JSON, middleware        | http       |
 | `vela:engine` | event loop, buffers, connections, `offload`, HTTP/TLS client. Knows nothing about routes. | http |
 | `vela-pg` (`drivers/pg`) | cooperative PostgreSQL driver (async libpq). **An independent DUB package**: the core depends neither on it nor on libpq | vela:engine |
@@ -163,14 +204,17 @@ Requirements: a D compiler (DMD or LDC) and DUB. The core (`vela`) needs no data
 
 ## Rules the tests guarantee
 
-- The framework's hot path does not allocate on the GC (`tests/alloc/hot_path.d`).
+- The framework's hot path does not allocate on the GC, over HTTP/1.1 and HTTP/2 (`tests/alloc/`).
 - An invalid signature = a one-line compile error (`tests/compile_fail/`).
 - The example's `app.d` compiles in under 400 ms on DMD (`tools/check.sh`).
 - The engine handles cancellation, the request ceiling, deadlines and partial writes (`tests/net/epoll_net.d`).
 - The Postgres driver does not block the worker, respects the pool, cancels on the server and discards the connection (`tests/db/pg_net.d`).
 - The HTTP/HTTPS client does not block, reuses connections, retries on a stale one and respects deadlines (`tests/net/client_net.d`).
 - The parser survives the attack corpus and the fuzzer (`tests/fuzz/`), and the `examples/api` example passes 31 end-to-end checks (`tests/example/api_e2e.py`).
-- 1,000 in-flight requests fit in under 30 MB of RSS (`tools/check.sh`, memory section).
+- 1,000 in-flight requests fit in under 30 MB of RSS, over HTTP/1.1 and over HTTP/2 (`tools/check.sh`, memory section).
+- The HTTP/2 session handles every frame, stream state, flow-control and error case in `tests/h2/session_test.d`, survives
+  the mutation fuzzer and its regressions (`tests/fuzz/fuzz_h2.d`), and the engine passes `tests/net/h2_net.d` (multiplexing,
+  cancellation, deadlines, flow control, upgrade, timeouts, graceful stop).
 
 ## Spikes
 

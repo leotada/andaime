@@ -46,14 +46,14 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 
 | Path | Role |
 |------|------|
-| `http/` (`vela:http`) | HTTP types, zero-copy HTTP/1.1 parser, response writer, byte buffer. No I/O. |
+| `http/` (`vela:http`) | HTTP types, zero-copy HTTP/1.1 parser, response writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK (`hpack.d`). No I/O. |
 | `web/` (`vela:web`) | `App`, `Group`, router (segment tree), handler introspection, JSON, OpenAPI, CORS, middleware, `TestClient`. No sockets. |
 | `engine/` (`vela:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload` thread pool, HTTP/HTTPS client, TLS (dlopen). No routes or DTOs. |
 | `drivers/pg/` (`vela-pg`) | PostgreSQL driver over async libpq (dlopen). **Independent package; the core must never depend on it.** |
 | `source/vela/` (`vela`) | `import vela;`, `server.d` (the only glue between web and engine), `staticfiles.d`. |
 | `examples/hello`, `examples/api` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI. |
-| `tests/` | `web/` (no network), `net/` (real sockets), `db/` (needs Postgres), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
-| `tools/` | `check.sh` (everything), `fuzz.sh`, and the helpers that start a throwaway Postgres / test upstream. |
+| `tests/` | `web/` (no network), `h2/` (HTTP/2 session, no network), `net/` (real sockets), `db/` (needs Postgres), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
+| `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh` (curl, python-h2, h2spec), and the helpers that start a throwaway Postgres / test upstream. |
 | `docs/quickstart.md`, `README.md` | User-facing docs. Keep them in sync with behavior. |
 
 Dependency direction: `http` ← `web`, `http` ← `engine` ← `drivers/*`; `source/vela/server.d` is the only module that knows both
@@ -64,7 +64,8 @@ Dependency direction: `http` ← `web`, `http` ← `engine` ← `drivers/*`; `so
 ```sh
 tools/check.sh                 # full verification (DMD); starts a throwaway Postgres and a Python upstream when available
 DC=ldmd2 tools/check.sh        # the same with LDC
-tools/fuzz.sh [seconds]        # libFuzzer + ASan on the HTTP parser (needs LDC)
+tools/fuzz.sh [seconds] [parse|h2]  # libFuzzer + ASan on the HTTP/1 parser or the HTTP/2 session (needs LDC)
+tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SPEC=/path); also run by check.sh
 cd examples/api && dub build   # build an example
 ```
 
@@ -84,6 +85,21 @@ Tests that need PostgreSQL, Python or OpenSSL skip themselves with a warning whe
 - Module-level variables in D are **thread-local**. Share across workers only with `__gshared`/`shared` and a clear reason.
 - Per-worker singletons: `pgPool(...)` and `httpClient()` are thread-local; never pass connections between workers.
 
+## HTTP/2 (read before touching `http/.../h2.d` or the h2 part of `epoll.d`)
+
+- Protocol logic lives in `H2Session` (`vela.http.h2`), which does no I/O: the engine feeds it bytes (`receive`), runs
+  what `popReady` hands out (one fiber per stream, like an HTTP/1 request), cancels what `popReset` hands out, gives back
+  each response with `respond` (the handler's HTTP/1.1-format output, transcoded to HEADERS/DATA there), and writes
+  `pendingOutput`. Keep that split: anything about frames, HPACK, stream states or flow control belongs in the session,
+  where `tests/h2/session_test.d` and the fuzzers can reach it without sockets.
+- A stream object the engine holds (`task` set) is never recycled by the session; the engine gives it back with
+  `respond` or `detach`. Stream and session objects are pooled: reset every field in `H2Stream.reset`/`H2Session.reset`
+  (a stale field on a recycled stream once crashed the session; libFuzzer found it).
+- Never send RST_STREAM for a stream that was never opened (idle, or even-numbered): use a connection error.
+- An HTTP/2 change: add a case to `tests/h2/session_test.d`, run `tools/h2_interop.sh` (h2spec must stay at 145/146:
+  3.5/2 cannot pass on a mixed HTTP/1.1 port), and `tools/fuzz.sh 300 h2`. Inputs that once broke the session go in
+  `tests/fuzz/h2_regressions/`; `fuzz_h2.d` replays them on every check.
+
 ## Pitfalls that already cost time
 
 - dlopen function tables must live in a `struct` held by a `__gshared` instance (`pq`, `tls`). Loose `extern (C)` variables named like
@@ -102,8 +118,10 @@ Tests that need PostgreSQL, Python or OpenSSL skip themselves with a warning whe
   load native libraries at run time (dlopen) so the framework still builds without them.
 - **A new event-loop backend** (kqueue, io_uring): implement the `EventLoop` interface in `engine/source/vela/engine/loop.d`.
 - **A parser change**: add a file to `tests/fuzz/corpus/` named `<name>.<ok|incomplete|status>.http` and run the fuzzer.
+- **A new `Request` field**: every producer must set it — the HTTP/1 parser (`parseRequestHead`) and the HTTP/2 session
+  (`finishRequest`) — because the fiber's `Request` is reused across protocols.
 
 ## Out of scope for now
 
 Performance work (M4: benchmarks, SIMD head search, GC tuning, `sendfile`), kqueue (M5) and io_uring (M6), chunked request bodies,
-HTTP/2. Do not start these unless asked.
+TLS termination in the server (HTTP/2 over TLS with ALPN, for browsers). Do not start these unless asked.

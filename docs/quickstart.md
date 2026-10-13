@@ -214,6 +214,16 @@ app.serve(cfg);
 There are deadlines for head, idle, write and request; graceful stop on SIGINT/SIGTERM; and a log warning
 when a handler holds the worker for more than 50 ms without yielding (blocking code).
 
+The same port also speaks HTTP/2 over cleartext (h2c), with no change to your code:
+
+```sh
+curl --http2-prior-knowledge http://localhost:8080/users   # or --http2 to upgrade from HTTP/1.1
+```
+
+Each stream gets its own fiber, so one slow request does not hold up the others on the connection. Browsers only
+use HTTP/2 over TLS, which vela does not terminate: put it behind a proxy that speaks h2c to its upstreams, or use
+it between services. `cfg.http2 = false` turns it off; the README has the details and limits.
+
 ## 10. Readable compile errors
 
 An invalid signature becomes one line explaining what to fix, with no template *backtrace*:
@@ -234,7 +244,8 @@ cd examples/hello && dub run   # in-memory CRUD
 cd examples/api   && dub run   # real API: Postgres + external API + CORS + static files + OpenAPI
 ```
 
-Without PostgreSQL, Python or OpenSSL on the machine, the tests that depend on them declare themselves skipped.
+Without PostgreSQL, Python or OpenSSL on the machine, the tests that depend on them declare themselves skipped;
+the same goes for the HTTP/2 interoperability checks without curl, python-h2 (`pip install h2`) or h2spec.
 
 ## Next steps
 

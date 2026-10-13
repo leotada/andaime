@@ -12,6 +12,12 @@
 ///
 /// Pools: idle fibers above `maxIdleWorkers` are torn down (the stack goes back
 /// to the OS); network buffers go to the `BufferPool`, which has its own ceiling.
+///
+/// HTTP/2 (h2c): a connection that starts with the client preface, or upgrades with
+/// `Upgrade: h2c`, moves to `Phase.h2`. From then on an `H2Session` (vela.http.h2, no I/O)
+/// parses the frames; each request it reports gets its own fiber, exactly like an HTTP/1
+/// request, and its response goes back to the session, which frames it with flow control.
+/// Cancellation, deadlines and the in-flight ceiling apply per stream.
 module vela.engine.epoll;
 
 version (linux):
@@ -31,6 +37,7 @@ import core.sys.linux.epoll;
 import core.sys.linux.sys.eventfd : eventfd;
 
 import vela.http;
+import vela.http.h2;
 import vela.engine.bufferpool;
 import vela.engine.loop;
 import vela.engine.fiberio;
@@ -59,7 +66,7 @@ private class Item
     this(Kind k) nothrow @nogc @safe { kind = k; }
 }
 
-private enum Phase : ubyte { reading, running, writing, closed }
+private enum Phase : ubyte { reading, running, writing, closed, h2 }
 
 private struct Stack(T)
 {
@@ -92,6 +99,11 @@ private final class Conn : Item
     Worker worker;         /// while running/writing
     size_t sent;           /// bytes of worker.output already sent
     long deadlineMs;       /// loop's monotonic clock; 0 = no deadline
+    bool fresh;            /// no request served yet (HTTP/2 prior knowledge only at the start)
+    // HTTP/2 (Phase.h2)
+    H2Session h2;
+    bool h2Paused;         /// stopped reading: too much output queued for a peer that does not read
+    long blockedSinceMs;   /// output waiting for EPOLLOUT since then (0 = not blocked)
 
     this() nothrow @safe { super(Kind.conn); }
 }
@@ -114,6 +126,7 @@ private final class Worker : Fiber
     EpollLoop loop;
     RequestCallback cb;
     Conn conn;
+    H2Stream stream;       /// set when the request is an HTTP/2 stream
     Request req;
     HeaderField[maxHeaders] store;
     ByteBuffer output;
@@ -173,6 +186,10 @@ final class EpollLoop : EventLoop, Scheduler
     private Conn[] conns; /// by fd
     private Stack!Conn spare, dead;
     private Stack!Worker idle;
+    private Stack!H2Session spareSessions;
+    private Worker[] h2Scratch;     /// workers of one connection, collected before cancelling them
+    private ByteBuffer upgradeSettings;
+    private size_t h2Conns, h2Streams;
     private Timer[] heap;
     private size_t heapN, staleTimers;
 
@@ -215,7 +232,7 @@ final class EpollLoop : EventLoop, Scheduler
     LoopStats stats() const nothrow @nogc
     {
         return LoopStats(inFlight, peakInFlight, workersCreated, workersRetired, idle.n,
-            connCount, rejected, cancelledN, timedOutN, stalls, maxStallMs);
+            connCount, rejected, cancelledN, timedOutN, stalls, maxStallMs, h2Conns, h2Streams);
     }
 
     /// How many times the loop returned memory to the OS after a burst.
@@ -271,14 +288,17 @@ final class EpollLoop : EventLoop, Scheduler
 
             foreach (i; 0 .. (n < 0 ? 0 : n))
                 onEvent(cast(Item) evs[i].data.ptr, evs[i].events);
+            drainResumeQ();
             flushDead();
 
             fireTimers();
+            drainResumeQ();
             flushDead();
 
             if (nowMs >= nextSweepMs)
             {
                 sweep();
+                drainResumeQ();
                 flushDead();
                 trimIfQuiet();
                 nextSweepMs = nowMs + sweepEveryMs;
@@ -381,6 +401,10 @@ final class EpollLoop : EventLoop, Scheduler
             c.sent100 = false;
             c.headLen = c.total = c.sent = 0;
             c.worker = null;
+            c.fresh = true;
+            c.h2 = null;
+            c.h2Paused = false;
+            c.blockedSinceMs = 0;
             c.deadlineMs = nowMs + cfg.idleTimeoutMs;
             if (fd >= conns.length)
                 conns.length = fd + 1024;
@@ -421,6 +445,8 @@ final class EpollLoop : EventLoop, Scheduler
     {
         if (c.fd < 0)
             return; // closed in this same batch
+        if (c.phase == Phase.h2)
+            return onH2Event(c, events);
         if (events & EPOLLERR)
         {
             if (c.phase == Phase.running)
@@ -445,6 +471,7 @@ final class EpollLoop : EventLoop, Scheduler
                         closeConn(c);
                     break;
                 case Phase.closed:
+                case Phase.h2:
                     break;
             }
             return;
@@ -483,9 +510,18 @@ final class EpollLoop : EventLoop, Scheduler
         {
             if (c.fd < 0 || c.phase != Phase.reading)
                 return;
+            if (cfg.http2 && c.fresh && !c.buf.isNull && c.buf.len >= 2 && c.buf.mem[0] == 'P'
+                && c.buf.mem[1] == 'R' && !stopping)
+            {
+                // "PR": no HTTP/1 method starts like that; the session checks the full preface
+                switchToH2(c);
+                return driveH2(c);
+            }
             final switch (tryParse(c))
             {
                 case Step.ready:
+                    if (cfg.http2 && !stopping && tryUpgrade(c))
+                        return;
                     startRequest(c);
                     break; // back to the top: there may be another pipelined request
                 case Step.needMore:
@@ -597,6 +633,7 @@ final class EpollLoop : EventLoop, Scheduler
             closeConn(c);
             return;
         }
+        c.fresh = false;
         Worker w = acquireWorker();
         // second parse, now into the fiber's own structures (parsing is cheap;
         // the head stays alive while the fiber is suspended)
@@ -632,6 +669,7 @@ final class EpollLoop : EventLoop, Scheduler
     private void releaseWorker(Worker w)
     {
         w.conn = null;
+        w.stream = null;
         inFlight--;
         w.output.shrinkTo(64 << 10); // a response peak does not stay pinned to the fiber
         if (idle.n < cfg.maxIdleWorkers)
@@ -680,6 +718,8 @@ final class EpollLoop : EventLoop, Scheduler
     /// The handler returned (or was cancelled): decides what to send.
     private void finish(Worker w)
     {
+        if (w.stream !is null)
+            return finishH2(w);
         Conn c = w.conn;
         if (w.cancelled)
         {
@@ -763,6 +803,13 @@ final class EpollLoop : EventLoop, Scheduler
         auto w = c.worker;
         if (w is null || c.phase != Phase.running)
             return;
+        cancelWorker(w, timeout);
+    }
+
+    private void cancelWorker(Worker w, bool timeout)
+    {
+        if (w.done || w.cancelled)
+            return;
         w.cancelled = true;
         w.timedOut = timeout;
         if (w.waiting)
@@ -770,6 +817,350 @@ final class EpollLoop : EventLoop, Scheduler
             wake(w);
             resume(w); // the wait throws RequestCancelled; the stack unwinds and the fiber ends
         }
+    }
+
+    // ------------------------------------------------------------------ HTTP/2
+
+    private H2Session acquireSession()
+    {
+        if (!spareSessions.empty)
+            return spareSessions.pop();
+        H2Config hc;
+        hc.maxConcurrentStreams = cfg.http2MaxStreams;
+        hc.connectionWindowSize = cfg.http2WindowBytes;
+        hc.maxHeaders = maxHeaders;
+        hc.limits = cfg.limits;
+        return new H2Session(hc);
+    }
+
+    private void switchToH2(Conn c, H2Session s = null)
+    {
+        c.h2 = s !is null ? s : acquireSession();
+        c.h2.nowMs = nowMs;
+        c.phase = Phase.h2;
+        c.fresh = false;
+        c.h2Paused = false;
+        c.blockedSinceMs = 0;
+        c.deadlineMs = 0;
+        h2Conns++;
+    }
+
+    /// HTTP/1.1 request with `Upgrade: h2c`: answers 101 and continues as HTTP/2, the request
+    /// becoming stream 1. Returns false to serve it as plain HTTP/1.1 (not an upgrade, or bad settings).
+    private bool tryUpgrade(Conn c)
+    {
+        Request tmp;
+        parseRequestHead(cast(const(char)[]) c.buf.data, tmp, scratch[], cfg.limits);
+        const(char)[] settings;
+        if (!wantsH2cUpgrade(tmp, settings))
+            return false;
+        upgradeSettings.clear();
+        if (!decodeBase64Url(settings, upgradeSettings))
+            return false;
+        auto s = acquireSession();
+        s.nowMs = nowMs;
+        if (!s.startUpgrade(tmp, c.buf.mem[c.headLen .. c.total], cast(const(ubyte)[]) upgradeSettings.data))
+        {
+            s.reset();
+            spareSessions.push(s);
+            return false;
+        }
+        // the session copied the request: what follows in the buffer is the client preface
+        c.buf.compact(c.total);
+        c.haveHead = false;
+        c.sent100 = false;
+        c.headLen = c.total = 0;
+        switchToH2(c, s);
+        dispatchH2(c); // stream 1 starts now; the client preface may already be in the buffer
+        driveH2(c);
+        return true;
+    }
+
+    private void onH2Event(Conn c, uint events)
+    {
+        if (events & EPOLLERR)
+            return closeConn(c);
+        if (events & EPOLLOUT)
+        {
+            flushH2(c);
+            if (c.fd < 0)
+                return;
+        }
+        if (events & (EPOLLIN | EPOLLHUP | EPOLLRDHUP))
+            driveH2(c);
+        if (c.fd >= 0 && (events & (EPOLLHUP | EPOLLRDHUP)))
+            closeConn(c); // the peer stopped sending: whatever it asked for can no longer matter
+    }
+
+    /// Reads frames until EAGAIN, starting a fiber for each request that completes. Never
+    /// recursive: flushing does not read, and reading pauses while output is backed up.
+    private void driveH2(Conn c)
+    {
+        auto s = c.h2;
+        for (;;)
+        {
+            if (c.fd < 0)
+                return;
+            if (!c.buf.isNull && c.buf.len)
+            {
+                s.nowMs = nowMs;
+                immutable n = s.receive(c.buf.data);
+                c.buf.compact(n);
+                dispatchH2(c);
+                if (c.fd < 0)
+                    return;
+            }
+            if (s.fatal)
+                break;
+            if (!s.wantsRead)
+            {
+                flushH2(c);
+                if (c.fd < 0)
+                    return;
+                if (!s.wantsRead)
+                {
+                    c.h2Paused = true; // EPOLLOUT resumes reading once the output drains
+                    return;
+                }
+            }
+            // room for at least the next frame (the buffer starts at a frame boundary)
+            if (c.buf.isNull)
+                c.buf = pool.acquire(4096);
+            immutable want = s.needBytes > c.buf.len ? s.needBytes : c.buf.len + 1;
+            if (want > c.buf.mem.length && !pool.grow(c.buf, want))
+            {
+                closeConn(c); // cannot happen with our 16 KiB frames; the session would have failed first
+                return;
+            }
+            immutable r = read(c.fd, c.buf.free_.ptr, c.buf.free_.length);
+            if (r > 0)
+            {
+                c.buf.len += r;
+                continue;
+            }
+            if (r < 0 && errno == EINTR)
+                continue;
+            if (r < 0 && errno == EAGAIN)
+            {
+                if (c.buf.len == 0)
+                    pool.release(c.buf); // an idle HTTP/2 connection holds no buffer either
+                break;
+            }
+            closeConn(c); // EOF or error
+            return;
+        }
+        flushH2(c);
+    }
+
+    /// Hands the session's events to fibers: cancellations first, then new requests.
+    private void dispatchH2(Conn c)
+    {
+        auto s = c.h2;
+        H2Stream st;
+        while (s.popReset(st))
+        {
+            auto w = cast(Worker) st.task;
+            if (w !is null && !w.done)
+                cancelWorker(w, false); // its fiber unwinds; finishH2 gives the stream back
+            else
+                s.detach(st);
+        }
+        while (c.fd >= 0 && s.popReady(st))
+            startStream(c, st);
+    }
+
+    private void startStream(Conn c, H2Stream st)
+    {
+        auto s = c.h2;
+        if (inFlight >= cfg.maxInFlight)
+        {
+            rejected++;
+            s.cancelStream(st, H2Error.refusedStream); // safe for the client to retry
+            return;
+        }
+        h2Streams++;
+        Worker w = acquireWorker();
+        w.req = st.req;
+        w.conn = c;
+        w.stream = st;
+        w.output.clear();
+        w.cancelled = w.timedOut = w.failed = w.closeAfter = false;
+        st.task = w;
+        st.deadlineMs = nowMs + cfg.requestTimeoutMs;
+        resume(w);
+    }
+
+    /// A stream's handler returned (or was cancelled).
+    private void finishH2(Worker w)
+    {
+        Conn c = w.conn;
+        auto st = w.stream;
+        w.stream = null;
+        if (c.fd < 0 || c.h2 is null)
+        {
+            // the connection is gone: closeH2 detaches every stream itself
+            st.task = null;
+            releaseWorker(w);
+            return;
+        }
+        auto s = c.h2;
+        if (w.cancelled && !w.timedOut)
+        {
+            cancelledN++;
+            s.detach(st); // the peer reset it: nothing to send
+            releaseWorker(w);
+            return flushH2(c);
+        }
+        if (w.timedOut)
+        {
+            timedOutN++;
+            w.output.clear();
+            static immutable body504 = `{"detail":"request time limit exceeded"}`;
+            writeResponseHead(w.output, 504, "application/json", body504.length, null, true);
+            w.output.put(body504);
+        }
+        else if (w.failed)
+        {
+            w.output.clear();
+            writeResponseHead(w.output, 500, "text/plain; charset=utf-8", 21, null, true);
+            w.output.put("Internal Server Error");
+        }
+        s.respond(st, w.output); // swaps buffers: the body is not copied
+        releaseWorker(w);
+        flushH2(c);
+    }
+
+    /// Writes what the session has queued. Closes the connection once the session is done.
+    private void flushH2(Conn c)
+    {
+        if (c.fd < 0)
+            return;
+        auto s = c.h2;
+        for (;;)
+        {
+            auto data = s.pendingOutput;
+            if (data.length == 0)
+                break;
+            immutable n = send(c.fd, data.ptr, data.length, MSG_NOSIGNAL);
+            if (n > 0)
+            {
+                c.blockedSinceMs = 0;
+                s.sent(n); // may queue more DATA
+                continue;
+            }
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n < 0 && errno == EAGAIN)
+            {
+                if (c.blockedSinceMs == 0)
+                    c.blockedSinceMs = nowMs;
+                return; // EPOLLOUT continues
+            }
+            closeConn(c);
+            return;
+        }
+        c.blockedSinceMs = 0;
+        if (s.finished)
+            return closeConn(c);
+        // idle clock: starts when the last stream ends, stops while any stream is open
+        if (s.busy)
+            c.deadlineMs = 0;
+        else if (c.deadlineMs == 0)
+            c.deadlineMs = nowMs + cfg.idleTimeoutMs;
+        if (c.h2Paused && s.wantsRead)
+        {
+            c.h2Paused = false;
+            // resume from the loop, not from here: EPOLLIN will not fire again for bytes
+            // that were already waiting, so read them now (the caller is never driveH2)
+            driveH2Later(c);
+        }
+    }
+
+    /// Connections whose reading was paused and can go on; drained by `onH2Event`/sweep.
+    private void driveH2Later(Conn c)
+    {
+        resumeQ.push(c);
+    }
+
+    private Stack!Conn resumeQ;
+
+    private void drainResumeQ()
+    {
+        while (!resumeQ.empty)
+        {
+            auto c = resumeQ.pop();
+            if (c.fd >= 0 && c.phase == Phase.h2)
+                driveH2(c);
+        }
+    }
+
+    /// Deadlines of one HTTP/2 connection (called from `sweep`).
+    private void sweepH2(Conn c)
+    {
+        auto s = c.h2;
+        s.tick();
+        if (c.blockedSinceMs && nowMs - c.blockedSinceMs > cfg.writeTimeoutMs)
+            return closeConn(c); // the client does not read
+        if (s.busy == 0 && c.deadlineMs && nowMs >= c.deadlineMs)
+        {
+            s.goAway(); // idle too long
+            return flushH2(c);
+        }
+        // collect first: cancelling resumes fibers, which changes the session's stream list
+        size_t n = 0;
+        foreach (st; s.activeStreams)
+        {
+            if (st.task !is null)
+            {
+                if (st.deadlineMs && nowMs >= st.deadlineMs)
+                {
+                    if (n == h2Scratch.length)
+                        h2Scratch.length = h2Scratch.length ? h2Scratch.length * 2 : 16;
+                    h2Scratch[n++] = cast(Worker) st.task;
+                }
+            }
+            else if (st.state == StreamState.open && nowMs - st.openedMs >= cfg.headerTimeoutMs)
+                s.timeoutStream(st, 408); // headers or body too slow
+        }
+        foreach (i; 0 .. n)
+        {
+            cancelWorker(h2Scratch[i], true); // 504 through finishH2
+            h2Scratch[i] = null;
+        }
+        if (c.fd >= 0)
+            flushH2(c);
+    }
+
+    /// The socket is closed: cancels every handler still running on it, recycles the session.
+    private void closeH2(Conn c)
+    {
+        auto s = c.h2;
+        size_t n = 0;
+        foreach (st; s.activeStreams)
+            if (st.task !is null)
+            {
+                if (n == h2Scratch.length)
+                    h2Scratch.length = h2Scratch.length ? h2Scratch.length * 2 : 16;
+                h2Scratch[n++] = cast(Worker) st.task;
+            }
+        foreach (i; 0 .. n)
+        {
+            auto w = h2Scratch[i];
+            h2Scratch[i] = null;
+            if (!w.done)
+            {
+                cancelledN++;
+                cancelWorker(w, false); // finishH2 sees the closed socket and only releases it
+            }
+        }
+        c.h2 = null;
+        if (spareSessions.n < 16)
+        {
+            s.reset();
+            spareSessions.push(s);
+        }
+        else
+            s.releaseMemory(); // the object goes to the GC; its buffers go back to the OS now
     }
 
     // ------------------------------------------------------------------ Scheduler
@@ -926,7 +1317,7 @@ final class EpollLoop : EventLoop, Scheduler
     {
         foreach (c; conns)
         {
-            if (c is null || c.fd < 0 || c.deadlineMs == 0 || c.deadlineMs > nowMs)
+            if (c is null || c.fd < 0 || c.deadlineMs == 0 || c.deadlineMs > nowMs || c.phase == Phase.h2)
                 continue;
             final switch (c.phase)
             {
@@ -943,9 +1334,13 @@ final class EpollLoop : EventLoop, Scheduler
                     closeConn(c); // client does not read
                     break;
                 case Phase.closed:
+                case Phase.h2:
                     break;
             }
         }
+        foreach (c; conns)
+            if (c !is null && c.fd >= 0 && c.phase == Phase.h2)
+                sweepH2(c);
     }
 
     // ------------------------------------------------------------------ closing
@@ -974,6 +1369,8 @@ final class EpollLoop : EventLoop, Scheduler
         connCount--;
         if (!c.buf.isNull)
             pool.release(c.buf);
+        if (c.h2 !is null)
+            closeH2(c);
         if (c.worker !is null)
         {
             auto w = c.worker;
@@ -1049,8 +1446,17 @@ final class EpollLoop : EventLoop, Scheduler
     private void closeIdleConns()
     {
         foreach (c; conns)
-            if (c !is null && c.fd >= 0 && c.phase == Phase.reading && (c.buf.isNull || c.buf.len == 0))
+        {
+            if (c is null || c.fd < 0)
+                continue;
+            if (c.phase == Phase.reading && (c.buf.isNull || c.buf.len == 0))
                 closeConn(c);
+            else if (c.phase == Phase.h2)
+            {
+                c.h2.goAway(); // streams already accepted finish; the connection closes after them
+                flushH2(c);
+            }
+        }
     }
 
     private void teardown()

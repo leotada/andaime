@@ -34,6 +34,14 @@ struct ByteBuffer
         len = 0;
     }
 
+    /// Exchanges contents with `other` (hands a response to another owner without copying).
+    void swap(ref ByteBuffer other) pure nothrow @nogc @safe
+    {
+        auto p = ptr; ptr = other.ptr; other.ptr = p;
+        auto l = len; len = other.len; other.len = l;
+        auto c = cap; cap = other.cap; other.cap = c;
+    }
+
     void reserve(size_t extra) nothrow @nogc @trusted
     {
         if (len + extra <= cap)

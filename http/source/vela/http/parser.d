@@ -67,6 +67,7 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
 
     const(char)[] head = buf[0 .. end + 2]; // includes the CRLF of the last line
     size_t p = 0;
+    req.protocol = Protocol.http1; // `req` may be reused from an HTTP/2 stream
 
     // ---- request line: METHOD SP target SP HTTP/1.x CRLF
     size_t s = p;
@@ -217,4 +218,8 @@ unittest
     // HTTP/1.0 without keep-alive closes
     parseRequestHead("GET / HTTP/1.0\r\n\r\n", r, store[]);
     assert(!r.keepAlive);
+    // a Request reused after an HTTP/2 stream is HTTP/1 again
+    r.protocol = Protocol.http2;
+    parseRequestHead("GET / HTTP/1.1\r\n\r\n", r, store[]);
+    assert(r.protocol == Protocol.http1);
 }

@@ -1,7 +1,7 @@
 /// `import vela;` brings in everything an application needs.
 module vela;
 
-public import vela.http.types : Method, HeaderField, Request;
+public import vela.http.types : Method, HeaderField, Request, Protocol;
 public import vela.web;
 public import vela.server : serve;
 public import vela.staticfiles : serveStatic, StaticConfig;

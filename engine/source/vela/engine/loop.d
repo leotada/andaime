@@ -41,6 +41,11 @@ struct ServerConfig
     uint stallWarnMs = 50;           /// warning when a handler holds the worker longer than this without yielding; 0 turns it off
     bool reusePort = true;           /// SO_REUSEPORT: one listener per worker
     bool trimAfterBurst = true;      /// returns memory to the OS 1 s after a burst (runs the GC)
+    /// HTTP/2 over cleartext (h2c): prior knowledge (the `PRI *` preface) and `Upgrade: h2c`.
+    /// HTTP/1.1 keeps working on the same port. Each stream runs in its own fiber, like a request.
+    bool http2 = true;
+    uint http2MaxStreams = 100;      /// SETTINGS_MAX_CONCURRENT_STREAMS per connection (maxInFlight still applies per worker)
+    uint http2WindowBytes = 1 << 20; /// connection receive window: how much request body may be in flight
     Limits limits;
 }
 
@@ -58,6 +63,8 @@ struct LoopStats
     size_t timedOut;       /// requests cancelled by deadline (504)
     size_t stalls;         /// handlers that held the worker beyond stallWarnMs
     long maxStallMs;       /// the longest stretch without yielding seen so far
+    size_t http2Connections; /// connections that switched to HTTP/2 since the start
+    size_t http2Streams;     /// HTTP/2 requests handed to a fiber since the start
 }
 
 /// I/O backend. Planned implementations:
@@ -85,4 +92,5 @@ enum ConnState : ubyte
     running,     /// handler in the fiber (running or suspended waiting for I/O)
     writing,     /// response ready; sending
     closing,
+    http2,       /// multiplexed: reading frames and running streams at the same time
 }

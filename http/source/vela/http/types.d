@@ -54,10 +54,14 @@ bool equalsIgnoreCase(scope const(char)[] a, scope const(char)[] b) pure nothrow
     return true;
 }
 
+/// Wire protocol a request arrived on. Handlers rarely need it: the response is the same.
+enum Protocol : ubyte { http1, http2 }
+
 /// View of an already-parsed request. Owns no memory.
 struct Request
 {
     Method method;
+    Protocol protocol;
     const(char)[] target; /// path?query exactly as received
     const(char)[] path;   /// without the query, still percent-encoded
     const(char)[] query;  /// without the '?', still percent-encoded

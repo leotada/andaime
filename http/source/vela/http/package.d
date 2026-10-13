@@ -3,8 +3,13 @@
 module vela.http;
 
 public import vela.http.types;
+public import vela.http.optional;
+public import vela.http.ip;
+public import vela.http.texttype;
+public import vela.http.utf8;
 public import vela.http.buffer;
 public import vela.http.parser;
+public import vela.http.response;
 public import vela.http.writer;
 public import vela.http.date;
 public import vela.http.hpack : HpackDecoder, HpackError;

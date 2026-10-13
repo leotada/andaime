@@ -1,11 +1,34 @@
-/// Growable byte buffer allocated outside the GC heap.
-/// It holds no pointers into the GC, so the collector never scans it.
+/// Growable byte buffer on the GC heap, in blocks the collector never scans (`NO_SCAN`: they hold no pointers).
+///
+/// Why the GC and not malloc: slices of these buffers reach user code (the request body, header values, a response body a
+/// middleware looks at after the handler). With malloc/free or realloc, a slice kept past the request -- which `@safe`
+/// code is allowed to do -- would point into freed memory. With the GC a kept slice keeps its block alive: it is
+/// memory-safe, though it may show bytes from a later request that reused the block (a logic bug in user code, not
+/// memory corruption).
+///
+/// Growing therefore allocates a new block, copies, and drops the old one; the old one is never freed explicitly because
+/// a slice of it may still be in use. Buffers are reused (`clear`), so after warm-up requests do not grow them and the
+/// hot path stays free of GC allocation (tests/alloc).
 module vela.http.buffer;
 
 @safe:
 
-import core.stdc.stdlib : malloc, realloc, free;
+import core.memory : GC;
 import core.exception : onOutOfMemoryError;
+
+/// A `NO_SCAN` GC block of `n` bytes (internal: used by ByteBuffer and the engine's BufferPool). `@nogc` is asserted here on purpose, through a function-pointer cast: the
+/// functions that write into a ByteBuffer are `@nogc` because they do not allocate once the buffer has warmed up; growth
+/// (an amortized, warm-up-only event) is the single exception, and it lives in this one function.
+/// Not `NO_INTERIOR`: user code holds slices into the middle of blocks.
+char* allocBlock(size_t n) nothrow @nogc @trusted
+{
+    alias Malloc = extern (C) void* function(size_t, uint, const TypeInfo) pure nothrow @nogc;
+    // sound: GC.malloc really is nothrow; @nogc only describes the GC's own bookkeeping, not memory safety
+    auto p = cast(char*) (cast(Malloc) &GC.malloc)(n, GC.BlkAttr.NO_SCAN, null);
+    if (p is null)
+        onOutOfMemoryError();
+    return p;
+}
 
 struct ByteBuffer
 {
@@ -13,12 +36,7 @@ struct ByteBuffer
     private size_t len;
     private size_t cap;
 
-    @disable this(this); // single owner: avoids double free
-
-    ~this() @trusted nothrow @nogc
-    {
-        free(ptr);
-    }
+    @disable this(this); // single owner for writes
 
     size_t length() const pure nothrow @nogc @safe => len;
     size_t capacity() const pure nothrow @nogc @safe => cap;
@@ -49,9 +67,9 @@ struct ByteBuffer
         size_t n = cap ? cap : 256;
         while (n < len + extra)
             n *= 2;
-        auto p = cast(char*) realloc(ptr, n);
-        if (p is null)
-            onOutOfMemoryError();
+        auto p = allocBlock(n);
+        if (len)
+            p[0 .. len] = ptr[0 .. len]; // the old block stays valid for whoever still holds a slice of it
         ptr = p;
         cap = n;
     }
@@ -128,13 +146,12 @@ struct ByteBuffer
         put(tmp[0 .. n]);
     }
 
-    /// Returns memory if the buffer grew beyond `maxKeep` (e.g. after
-    /// a large response), so RSS does not stay pinned to the peak.
-    void shrinkTo(size_t maxKeep) nothrow @nogc @trusted
+    /// Drops the block if the buffer grew beyond `maxKeep` (e.g. after a large response), so memory does not stay
+    /// pinned to the peak. The collector reclaims it once no slice refers to it.
+    void shrinkTo(size_t maxKeep) nothrow @nogc @safe
     {
         if (cap <= maxKeep)
             return;
-        free(ptr);
         ptr = null;
         len = cap = 0;
     }

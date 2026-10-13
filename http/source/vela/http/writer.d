@@ -1,42 +1,18 @@
-/// Serializes the HTTP/1.1 response head straight into a ByteBuffer.
+/// Serializes the HTTP/1.1 response head straight into a ByteBuffer (the structured form lives in `vela.http.response`).
 module vela.http.writer;
 
 @safe:
 
 import vela.http.types;
 import vela.http.buffer;
+import vela.http.response;
 
+/// Convenience form used for the responses the engine itself produces (errors, redirects): a known length, no streaming.
 void writeResponseHead(ref ByteBuffer o, int status, scope const(char)[] contentType,
     size_t contentLength, scope const HeaderField[] extra, bool keepAlive) nothrow @nogc @safe
 {
-    o.put("HTTP/1.1 ");
-    o.putUint(status);
-    o.put(' ');
-    o.put(statusText(status));
-    o.put("\r\n");
-    if (contentType.length)
-    {
-        o.put("Content-Type: ");
-        o.put(contentType);
-        o.put("\r\n");
-    }
-    // 204 and 304 carry no body or Content-Length (RFC 9110 §8.6)
-    if (status != 204 && status != 304)
-    {
-        o.put("Content-Length: ");
-        o.putUint(contentLength);
-        o.put("\r\n");
-    }
-    foreach (ref h; extra)
-    {
-        o.put(h.name);
-        o.put(": ");
-        o.put(h.value);
-        o.put("\r\n");
-    }
-    if (!keepAlive)
-        o.put("Connection: close\r\n");
-    o.put("\r\n");
+    const ResponseHead head = ResponseHead(status, contentType, extra, cast(long) contentLength);
+    vela.http.response.writeResponseHead(o, head, keepAlive, false); // (the structured overload)
 }
 
 unittest

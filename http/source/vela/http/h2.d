@@ -6,10 +6,10 @@
 /// lives here — frames, HPACK, stream states, flow control in both directions, validation,
 /// errors — so it can be unit-tested and fuzzed without sockets, like the HTTP/1 parser.
 ///
-/// Responses arrive in the HTTP/1.1 wire format the rest of vela already produces
-/// (`writeResponseHead` + body) and are transcoded here: the status line becomes `:status`,
-/// names are lowercased, connection-specific fields are dropped. Handlers, middleware and the
-/// web layer do not know which protocol they are serving.
+/// Responses arrive as a structured `ResponseHead` plus body bytes (`respond`, or `beginResponse`/`sendData`/
+/// `endResponse` for a streamed body) and are encoded here: the status becomes `:status`, names are lowercased,
+/// connection-specific fields are dropped. Handlers, middleware and the web layer do not know which protocol they are
+/// serving.
 ///
 /// What is deliberately absent: server push (disabled by RFC 9113 clients anyway), priorities
 /// (parsed and ignored, as RFC 9113 allows), the HPACK dynamic table on the encoding side.
@@ -19,6 +19,7 @@ module vela.http.h2;
 
 import vela.http.types;
 import vela.http.buffer;
+import vela.http.response : ResponseHead, isHopByHop;
 import vela.http.hpack;
 import vela.http.parser : Limits;
 
@@ -134,6 +135,7 @@ private:
     size_t received;
     bool sawRegular, sawMethod, sawScheme, sawPath, sawAuthority;
     bool malformed, tooLarge, cookieCrumbs, gotHeaders, queued, responding, endSent;
+    bool bodyDone;                   // the whole response body is in `response` (nothing more will be appended)
     int earlyStatus;                 // answered by the session itself, no handler
     uint[4] pseudo;                  // [off, len] of :method and :path in fieldBytes
     uint[2] authority;
@@ -166,7 +168,7 @@ private:
         contentLength = -1;
         received = 0;
         sawRegular = sawMethod = sawScheme = sawPath = sawAuthority = false;
-        malformed = tooLarge = cookieCrumbs = gotHeaders = queued = responding = endSent = false;
+        malformed = tooLarge = cookieCrumbs = gotHeaders = queued = responding = endSent = bodyDone = false;
         earlyStatus = 0;
         pseudo[] = 0;
         authority[] = 0;
@@ -289,8 +291,8 @@ final class H2Session
         needBytes = clientPreface.length;
     }
 
-    /// Frees every buffer now: for a session that will not be reused (its malloc'd memory
-    /// would otherwise wait for the GC to finalize the object).
+    /// Drops every buffer now: for a session that will not be reused (the collector reclaims the blocks
+    /// once no slice refers to them).
     void releaseMemory() nothrow
     {
         reset();
@@ -473,9 +475,9 @@ final class H2Session
         return true;
     }
 
-    /// The handler's response, in HTTP/1.1 wire format (head + body). Takes the buffer's
-    /// memory by swapping it with the stream's (no copy); `h1` comes back empty.
-    void respond(H2Stream s, ref ByteBuffer h1) nothrow
+    /// The handler's whole response. Takes the body's memory by swapping it with the stream's (no copy); `body_` comes
+    /// back empty. The head's slices are only read during the call.
+    void respond(H2Stream s, ref const ResponseHead head, ref ByteBuffer body_) nothrow
     {
         s.task = null;
         if (s.resetByPeer || s.state == StreamState.closed || s.state == StreamState.idle)
@@ -484,23 +486,61 @@ final class H2Session
             return;
         }
         s.response.clear();
-        s.response.swap(h1);
-        queueResponse(s);
+        s.response.swap(body_);
+        s.sendPos = 0;
+        s.sendEnd = s.response.length;
+        s.bodyDone = true;
+        sendHead(s, head, s.sendEnd == 0);
         pump();
     }
 
-    /// Same as `respond`, copying (error responses built in a shared scratch buffer).
-    void respondCopy(H2Stream s, scope const(char)[] h1) nothrow
+    // ---- a response whose body is produced while it is being sent (SSE, downloads). The engine keeps `s.task` set
+    // until `endResponse`, so the stream is not recycled under the handler.
+
+    /// Sends HEADERS and starts the body. `endStream`: there is no body at all.
+    void beginResponse(H2Stream s, ref const ResponseHead head, bool endStream) nothrow
+    {
+        if (s.resetByPeer || s.state == StreamState.closed || s.state == StreamState.idle || s.responding)
+            return; // the peer reset it: the engine learns it from popReset
+        s.response.clear();
+        s.sendPos = s.sendEnd = 0;
+        s.bodyDone = endStream;
+        sendHead(s, head, endStream);
+        pump();
+    }
+
+    /// Queues body bytes (copied) and moves what the windows allow into the output. Returns how many bytes of this
+    /// stream are still waiting to be sent: the engine suspends the handler when that is above its high-water mark.
+    size_t sendData(H2Stream s, scope const(char)[] data) nothrow
+    {
+        if (!s.responding || s.bodyDone || s.endSent || s.resetByPeer || s.state == StreamState.closed)
+            return 0;
+        s.response.put(data);
+        s.sendEnd = s.response.length;
+        pump();
+        return s.sendEnd - s.sendPos;
+    }
+
+    /// Bytes of the stream's body queued but not yet sent.
+    size_t pendingBytes(const H2Stream s) const nothrow @nogc => s.sendEnd - s.sendPos;
+
+    /// The body is complete. END_STREAM goes out with the last DATA frame (or on its own if everything was sent). The
+    /// engine hands the stream back: it must not touch it afterwards.
+    void endResponse(H2Stream s) nothrow
     {
         s.task = null;
-        if (s.resetByPeer || s.state == StreamState.closed || s.state == StreamState.idle)
+        if (!s.responding || s.endSent || s.resetByPeer || s.state == StreamState.closed || s.state == StreamState.idle)
         {
             detach(s);
             return;
         }
-        s.response.clear();
-        s.response.put(h1);
-        queueResponse(s);
+        s.bodyDone = true;
+        if (s.sendPos == s.sendEnd)
+        {
+            sending.remove(s);
+            frameHeader(0, FrameType.data, flagEndStream, s.id);
+            endSent(s);
+        }
         pump();
     }
 
@@ -1197,74 +1237,48 @@ final class H2Session
             return;
         s.task = null;
         s.response.clear();
-        writeResponseHeadMinimal(s.response, status);
-        queueResponse(s);
-    }
-
-    private static void writeResponseHeadMinimal(ref ByteBuffer o, int status) nothrow @nogc
-    {
-        o.put("HTTP/1.1 ");
-        o.putUint(status);
-        o.put(" X\r\nContent-Length: 0\r\n\r\n");
+        s.sendPos = s.sendEnd = 0;
+        s.bodyDone = true;
+        const ResponseHead head = ResponseHead(status, null, null, 0);
+        sendHead(s, head, true);
     }
 
     // ================================================================ responses
 
-    /// Transcodes the HTTP/1.1 head in `s.response` into HEADERS (+ CONTINUATION) and
-    /// schedules the body as DATA.
-    private void queueResponse(H2Stream s) nothrow
+    /// Encodes `head` as HEADERS (+ CONTINUATION). With `endStream` the response has no body and the stream ends here;
+    /// otherwise the stream joins the DATA round robin (`s.sendPos`..`s.sendEnd` of `s.response` is its body so far).
+    private void sendHead(H2Stream s, ref const ResponseHead head, bool endStream) nothrow
     {
         s.responding = true;
-        auto raw = s.response.data;
-        size_t headEnd = 0;
-        while (headEnd + 3 < raw.length && raw[headEnd .. headEnd + 4] != "\r\n\r\n")
-            headEnd++;
-        if (headEnd + 3 >= raw.length || raw.length < 12)
-        {
-            s.response.clear();
-            writeResponseHeadMinimal(s.response, 500);
-            raw = s.response.data;
-            headEnd = raw.length - 4;
-        }
-        int status = 0;
-        foreach (c; raw[9 .. 12])
-            status = status * 10 + (c >= '0' && c <= '9' ? c - '0' : 0);
-
         hpackOut.clear();
-        encodeStatus(hpackOut, status);
-        size_t p = 0;
-        while (p < headEnd && raw[p] != '\n')
-            p++;
-        p++;
-        while (p < headEnd)
+        encodeStatus(hpackOut, head.status);
+        if (head.contentType.length)
+            encodeField(hpackOut, "content-type", head.contentType);
+        if (head.contentLength >= 0 && head.status != 204 && head.status != 304)
         {
-            size_t e = p;
-            while (e < headEnd && raw[e] != '\r')
-                e++;
-            auto line = raw[p .. e];
-            p = e + 2;
-            size_t colon = 0;
-            while (colon < line.length && line[colon] != ':')
-                colon++;
-            if (colon == 0 || colon == line.length)
-                continue;
-            auto name = line[0 .. colon];
-            auto value = line[colon + 1 .. $];
-            while (value.length && (value[0] == ' ' || value[0] == '\t'))
-                value = value[1 .. $];
-            if (isConnectionSpecific(name))
-                continue;
-            encodeField(hpackOut, name, value,
-                equalsIgnoreCase(name, "set-cookie") || equalsIgnoreCase(name, "authorization"));
+            char[20] digits = void;
+            size_t k = digits.length;
+            ulong v = cast(ulong) head.contentLength;
+            do
+            {
+                digits[--k] = cast(char)('0' + v % 10);
+                v /= 10;
+            }
+            while (v);
+            encodeField(hpackOut, "content-length", digits[k .. $]);
         }
-        s.sendPos = headEnd + 4;
-        s.sendEnd = raw.length;
-        immutable noBody = s.sendPos == s.sendEnd;
+        foreach (ref h; head.headers)
+        {
+            if (isHopByHop(h.name) || equalsIgnoreCase(h.name, "content-length") || equalsIgnoreCase(h.name, "content-type"))
+                continue;
+            encodeField(hpackOut, h.name, h.value,
+                equalsIgnoreCase(h.name, "set-cookie") || equalsIgnoreCase(h.name, "authorization"));
+        }
 
         // HEADERS, then CONTINUATIONs if the block exceeds the peer's frame size
         auto block = hpackOut.data;
         size_t chunk = block.length < peerMaxFrame ? block.length : peerMaxFrame;
-        ubyte flags = (chunk == block.length ? flagEndHeaders : 0) | (noBody ? flagEndStream : 0);
+        ubyte flags = (chunk == block.length ? flagEndHeaders : 0) | (endStream ? flagEndStream : 0);
         frameHeader(chunk, FrameType.headers, flags, s.id);
         outbox.put(block[0 .. chunk]);
         block = block[chunk .. $];
@@ -1275,7 +1289,7 @@ final class H2Session
             outbox.put(block[0 .. chunk]);
             block = block[chunk .. $];
         }
-        if (noBody)
+        if (endStream)
             endSent(s);
         else
             sending.push(s);
@@ -1308,7 +1322,7 @@ final class H2Session
                     i++;
                     continue;
                 }
-                immutable last = s.sendPos + n == s.sendEnd;
+                immutable last = s.bodyDone && s.sendPos + n == s.sendEnd;
                 frameHeader(n, FrameType.data, last ? flagEndStream : 0, s.id);
                 outbox.put(s.response.data[s.sendPos .. s.sendPos + n]);
                 s.sendPos += n;
@@ -1321,7 +1335,14 @@ final class H2Session
                     endSent(s);
                 }
                 else
+                {
+                    if (!s.bodyDone && s.sendPos == s.sendEnd)
+                    {
+                        s.response.clear(); // a streamed body: do not keep what was already sent
+                        s.sendPos = s.sendEnd = 0;
+                    }
                     i++;
+                }
             }
             if (!progress)
                 break;

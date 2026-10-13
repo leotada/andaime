@@ -19,26 +19,14 @@ struct HeadResult
 {
     ParseStatus status;
     size_t headLength;    /// head bytes, including the final CRLFCRLF
-    size_t contentLength; /// size of the body to read after the head
+    size_t contentLength; /// size of the body to read after the head (0 when `chunked`)
+    bool chunked;         /// `Transfer-Encoding: chunked`: the body length is not known up front (see vela.http.chunked)
     int errorStatus;      /// HTTP status to respond with when status == error
 }
 
 private HeadResult fail(int code) pure nothrow @nogc
 {
-    return HeadResult(ParseStatus.error, 0, 0, code);
-}
-
-private bool isTchar(char c) pure nothrow @nogc
-{
-    if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))
-        return true;
-    switch (c)
-    {
-        case '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~':
-            return true;
-        default:
-            return false;
-    }
+    return HeadResult(ParseStatus.error, 0, 0, false, code);
 }
 
 /// Finds "\r\n\r\n". M4 replaces it with a vectorized search (core.simd).
@@ -107,11 +95,13 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
     if (minor != '0' && minor != '1')
         return fail(505);
     req.keepAlive = minor == '1';
+    req.http11 = minor == '1';
     p += 10;
 
     // ---- headers
     size_t n = 0;
     bool sawLength = false, sawTE = false;
+    int badTE = 0;
     size_t contentLength = 0;
     while (p < head.length)
     {
@@ -166,7 +156,15 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
             contentLength = v;
         }
         else if (equalsIgnoreCase(name, "transfer-encoding"))
+        {
+            // `chunked` as the only coding. A second header, or a list ("chunked, identity", "gzip, chunked"), is refused: the
+            // ambiguity between this parser and a proxy in front of it is what request smuggling lives on.
+            if (sawTE)
+                return fail(400);
             sawTE = true;
+            if (!equalsIgnoreCase(value, "chunked"))
+                badTE = value.length == 0 ? 400 : 501; // decided after the loop: Content-Length next to it is a 400 first
+        }
         else if (equalsIgnoreCase(name, "expect"))
         {
             if (!equalsIgnoreCase(value, "100-continue"))
@@ -183,13 +181,15 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
 
     if (sawTE && sawLength)
         return fail(400); // RFC 9112 §6.1: reject to avoid smuggling
-    if (sawTE)
-        return fail(501); // chunked request bodies are not supported yet
+    if (badTE)
+        return fail(badTE);
+    if (sawTE && !req.http11)
+        return fail(400); // HTTP/1.0 has no chunked coding (RFC 9112 §6.1)
     if (contentLength > limits.maxBodyBytes)
         return fail(413);
 
     req.headers = headerStore[0 .. n];
-    return HeadResult(ParseStatus.complete, end + 4, contentLength, 0);
+    return HeadResult(ParseStatus.complete, end + 4, contentLength, sawTE, 0);
 }
 
 unittest

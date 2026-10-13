@@ -65,6 +65,7 @@ private void serveConnection(int c, ref const ServerConfig cfg, ref BufferPool p
     Buffer buf = pool.acquire(4096);
     scope (exit)
         pool.release(buf);
+    auto sink = new BufferedSink;
 
     while (true)
     {
@@ -104,9 +105,15 @@ private void serveConnection(int c, ref const ServerConfig cfg, ref BufferPool p
         }
         req.body = buf.mem[h.headLength .. total];
 
-        // ---- response
+        // ---- response (the whole thing is collected first: the development server does not stream)
+        sink.reset();
+        onRequest(req, sink);
+        auto head = sink.head;
+        head.contentLength = sink.body.length;
         output.clear();
-        onRequest(req, output);
+        writeResponseHead(output, head, req.keepAlive, false);
+        if (req.method != Method.HEAD && !statusHasNoBody(head.status))
+            output.put(sink.body.data);
         if (!sendAll(c, output.data))
             return;
         if (!req.keepAlive)

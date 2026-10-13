@@ -10,18 +10,25 @@ module vela.engine.loop;
 @safe:
 
 import vela.http.types : Request;
-import vela.http.buffer : ByteBuffer;
+import vela.http.response : ResponseSink;
 import vela.http.parser : Limits;
 
-/// The engine calls this with a complete request (head + body) and
-/// expects the whole response (head + body) serialized into `output`.
+/// The engine calls this with a complete request (head + body) and a `ResponseSink` for the response: `sink.start(head)`,
+/// any number of `sink.write(...)`, `sink.end()`. A response of known length is buffered and sent in one go; a streamed
+/// one (`contentLength < 0`) goes out chunk by chunk, and `write`/`flush` suspend the fiber while the client is slow.
 /// Runs inside a fiber, so it may call `sleep`/`awaitFd`.
-alias RequestCallback = void delegate(ref Request req, ref ByteBuffer output);
+alias RequestCallback = void delegate(ref Request req, ResponseSink sink) @safe;
 
 /// Called once per fiber (not per request) to create the state the
 /// callback reuses (Context, buffers...). May be called from several
 /// threads, one per worker, so it must be safe for that.
 alias HandlerFactory = RequestCallback delegate();
+
+/// Called once per worker, ON that worker's own thread, before it opens its listener; returns that worker's
+/// `HandlerFactory`. Whatever it creates (the App, thread-local state, `pgPool`, `httpClient`) therefore belongs to that
+/// worker. Worker 0 runs it first, alone; the others run it concurrently, so it must not touch shared state without a
+/// lock. It may throw: the server then reports it and starts nothing (or stops, if a later worker failed).
+alias WorkerInit = HandlerFactory delegate() @safe;
 
 /// TLS on the listener. Set `certFile` and `keyFile` and the server speaks HTTPS only on `port`,
 /// with ALPN choosing HTTP/2 (`h2`) or HTTP/1.1. Needs OpenSSL 3 at run time (loaded by dlopen).
@@ -52,11 +59,28 @@ struct ServerConfig
     uint maxConnections = 10_000;    /// per worker
     uint maxInFlight = 1024;         /// requests in progress per worker; above that, 503
     uint maxIdleWorkers = 64;        /// idle fibers kept in a pool; the rest are torn down
-    uint fiberStackBytes = 128 << 10; /// virtual stack of each fiber (only what is used becomes RSS)
+    /// Virtual stack of each fiber; only the pages a handler actually touches become RSS, so a generous default costs
+    /// almost nothing. Overflowing it is a SIGSEGV that ends the whole process, so a handler that recurses deeply or
+    /// keeps big arrays on the stack should raise it. Each fiber uses 2 memory mappings (stack + guard page), and Linux
+    /// allows 65,530 per process by default (`vm.max_map_count`): about 32,000 fibers.
+    /// The default is 256 KiB (it was 128 KiB): that measured the same RSS at 1,000 in-flight requests, while 512 KiB
+    /// cost ~0.8 MB more (LDC).
+    uint fiberStackBytes = 256 << 10;
     uint headerTimeoutMs = 10_000;   /// from the first byte to the end of the head (slowloris)
     uint idleTimeoutMs = 60_000;     /// idle keep-alive
     uint requestTimeoutMs = 30_000;  /// handler went past this: cancelled, 504
-    uint writeTimeoutMs = 30_000;    /// client that does not read the response
+    uint writeTimeoutMs = 30_000;    /// client that does not read the response (also each blocked write of a streamed one)
+    /// A response that is being written goes out as soon as this many bytes are buffered; past it `write` waits for the
+    /// transport (HTTP/1.1: the socket; HTTP/2: the flow-control windows), so a slow reader never makes memory grow.
+    uint streamHighWaterBytes = 64 << 10;
+    /// Longest a response may take from its first byte to its end; 0 = no limit (Server-Sent Events can live for hours).
+    /// `requestTimeoutMs` covers the time until the response head is started.
+    uint streamTimeoutMs = 0;
+    /// Proxies whose `X-Forwarded-For` is believed, as CIDR strings (`"10.0.0.0/8"`, `"127.0.0.1"`). For a request whose TCP
+    /// peer is one of them `ctx.clientIp()` returns the first address in the header that is not a trusted proxy; for any
+    /// other peer the header is ignored (anyone can send it). An invalid entry fails startup.
+    const(string)[] trustedProxies;
+    string forwardedHeader = "X-Forwarded-For"; /// the header `ctx.clientIp()` reads behind a trusted proxy
     uint shutdownGraceMs = 10_000;   /// wait for in-flight requests on stop
     uint stallWarnMs = 50;           /// warning when a handler holds the worker longer than this without yielding; 0 turns it off
     bool reusePort = true;           /// SO_REUSEPORT: one listener per worker
@@ -95,6 +119,8 @@ struct LoopStats
     size_t tlsFailures;      /// TLS handshakes that failed or timed out
     size_t tlsReloads;       /// certificate reloads of this worker
     size_t redirects;        /// requests answered on `tls.redirectPort` (308 or ACME challenge)
+    size_t handlerErrors;    /// throwables that escaped a handler (answered 500)
+    size_t fibersPoisoned;   /// fibers thrown away because an `Error` escaped (never reused)
 }
 
 /// I/O backend. Planned implementations:

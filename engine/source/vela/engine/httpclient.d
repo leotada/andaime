@@ -296,7 +296,8 @@ final class HttpClient
     /// Closes the idle connections.
     void closeIdle() nothrow
     {
-        foreach (k, list; idle)
+        // byValue instead of foreach over the AA: older druntime's _aaApply is not nothrow
+        foreach (list; idle.byValue)
             foreach (c; list)
                 c.closeNow();
         idle = null;
@@ -305,7 +306,7 @@ final class HttpClient
     size_t idleCount() const nothrow
     {
         size_t n;
-        foreach (list; idle)
+        foreach (list; idle.byValue)
             n += list.length;
         return n;
     }

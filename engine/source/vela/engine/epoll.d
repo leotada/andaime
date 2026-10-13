@@ -42,6 +42,7 @@ import core.sys.linux.sys.eventfd : eventfd;
 
 import vela.http;
 import vela.http.h2;
+import vela.http.chunked : ChunkedDecoder, ChunkResult;
 import vela.engine.bufferpool;
 import vela.engine.loop;
 import vela.engine.fiberio;
@@ -109,6 +110,9 @@ private final class Conn : Item
     Buffer buf;
     bool haveHead;
     bool sent100;          /// already answered 100 Continue to this request
+    bool chunked;          /// the request body is `Transfer-Encoding: chunked` (decoded in place by `dec`)
+    bool chunkDone;        /// the last chunk and the trailers were read
+    ChunkedDecoder dec;
     size_t headLen, total; /// geometry of the current request (valid with haveHead)
     Worker worker;         /// while running/writing
     size_t sent;           /// bytes of worker.output already sent
@@ -116,9 +120,13 @@ private final class Conn : Item
     bool fresh;            /// no request served yet (HTTP/2 prior knowledge only at the start)
     bool redirect;         /// accepted on the redirect port: answered by the engine, never the app
     uint peerIp;           /// client IPv4 address (network order), recorded at accept for the logs
+    ushort peerPort;       /// its port (host order)
     // HTTP/2 (Phase.h2)
     H2Session h2;
     bool h2Paused;         /// stopped reading: too much output queued for a peer that does not read
+    uint writersWaiting;   /// HTTP/2: handlers suspended because their stream's output is above the high-water mark
+    bool waking;           /// inside wakeH2Writers (not reentrant)
+    bool lingering;        /// FIN sent, discarding what the peer still sends until it closes (see lingerClose)
     long blockedSinceMs;   /// output waiting for EPOLLOUT since then (0 = not blocked)
     // TLS
     SSL* ssl;              /// null on a cleartext connection
@@ -140,7 +148,7 @@ private struct Timer
     uint gen;
 }
 
-private final class Worker : Fiber
+private final class Worker : Fiber, ResponseSink
 {
     EpollLoop loop;
     RequestCallback cb;
@@ -152,6 +160,18 @@ private final class Worker : Fiber
     WaitItem item;
 
     bool done, cancelled, timedOut, failed, closeAfter, retiring;
+
+    // The response being written (see the sink methods): what the handler has done so far.
+    ResponseHead h2head;   /// HTTP/2: the head, sent when the response is committed (its slices live in the App's Context)
+    long remaining = -1;   /// known length: bytes still expected
+    bool started, ended;   /// start() / end() were called
+    bool chunked;          /// HTTP/1.1 framing for an unknown length
+    bool noBody;           /// HEAD, 204, 304: writes are discarded
+    bool committed;        /// HTTP/2: HEADERS (and possibly body) already handed to the session
+    bool h2done;           /// HTTP/2: endResponse gave the stream back to the session
+    bool flushedAny;       /// some response bytes already reached the transport: a 500 is no longer possible
+    bool waitingWrite;     /// suspended until the connection (or the stream's output) can take more
+    bool poisoned;        /// an `Error` escaped the handler: cleanup code may not have run, so this fiber is never reused
     bool waiting, timerPending;
     uint waitGen;
     int waitFd = -1;
@@ -166,6 +186,21 @@ private final class Worker : Fiber
         item.w = this;
     }
 
+    // ResponseSink: small @trusted bodies; the work is in the loop (raw syscalls and fiber switches on this worker's
+    // own state).
+    override void start(ref const ResponseHead head) @trusted { loop.sinkStart(this, head); }
+    override void write(scope const(char)[] data) @trusted { loop.sinkWrite(this, data); }
+    override void flush() @trusted { loop.sinkFlush(this); }
+    override void end() @trusted { loop.sinkEnd(this); }
+
+    void resetResponseState() nothrow @nogc
+    {
+        cancelled = timedOut = failed = closeAfter = false;
+        started = ended = chunked = noBody = committed = h2done = flushedAny = waitingWrite = false;
+        remaining = -1;
+        h2head = ResponseHead.init;
+    }
+
     private void run()
     {
         for (;;)
@@ -174,14 +209,19 @@ private final class Worker : Fiber
                 return;
             done = false;
             try
-                cb(req, output);
+                cb(req, this);
             catch (RequestCancelled)
                 cancelled = true;
+            catch (ResponseAborted)
+                failed = true; // already logged by the web layer; the response is cut off
             catch (Throwable t)
             {
                 failed = true;
-                fprintf(stderr, "vela: unhandled error in handler: %.*s\n",
-                    cast(int) t.msg.length, t.msg.ptr);
+                // An Exception that got this far came from the glue around the app; an Error (RangeError, AssertError,
+                // a failed contract...) may have skipped cleanup code, so the fiber and its Context are thrown away.
+                if (cast(Exception) t is null)
+                    poisoned = true;
+                loop.noteHandlerFailure(this, t);
             }
             done = true;
             Fiber.yield();
@@ -228,6 +268,9 @@ final class EpollLoop : EventLoop, Scheduler
     private long stopDeadlineMs;
     private size_t connCount, inFlight, peakInFlight, workersCreated, workersRetired;
     private size_t rejected, cancelledN, timedOutN, stalls;
+    private size_t handlerErrors, fibersPoisoned;
+    private long failWindowMs = -1_000_000;
+    private size_t failLogged, failSuppressed;
     private long quietSinceMs;      /// since when inFlight == 0 (0 = busy)
     private size_t createdAtTrim;  /// workersCreated at the last cleanup
     private size_t trims;
@@ -241,6 +284,8 @@ final class EpollLoop : EventLoop, Scheduler
     /// Port of the cleartext redirect listener (`tls.redirectPort`), 0 when there is none.
     ushort boundRedirectPort;
     shared bool ready;
+    /// Set once the listener is open and never cleared (`ready` goes back to false at teardown).
+    shared bool everListened;
 
     this()
     {
@@ -264,7 +309,7 @@ final class EpollLoop : EventLoop, Scheduler
     {
         return LoopStats(inFlight, peakInFlight, workersCreated, workersRetired, idle.n,
             connCount, rejected, cancelledN, timedOutN, stalls, maxStallMs, h2Conns, h2Streams,
-            tlsHandshakes, tlsFailures, tlsServer.reloads, redirectsN);
+            tlsHandshakes, tlsFailures, tlsServer.reloads, redirectsN, handlerErrors, fibersPoisoned);
     }
 
     /// How many times the loop returned memory to the OS after a burst.
@@ -287,8 +332,10 @@ final class EpollLoop : EventLoop, Scheduler
         factory = f;
         t0 = MonoTime.currTime;
         currentScheduler = this;
+        installCrashReport(cfg.fiberStackBytes);
         scope (exit)
         {
+            removeCrashReportStack();
             currentScheduler = null;
             teardown();
         }
@@ -297,6 +344,7 @@ final class EpollLoop : EventLoop, Scheduler
         nowMs = elapsedMs();
         nextSweepMs = nowMs + sweepEveryMs;
         atomicStore(ready, true);
+        atomicStore(everListened, true);
 
         epoll_event[256] evs;
         for (;;)
@@ -479,16 +527,21 @@ final class EpollLoop : EventLoop, Scheduler
             c.buf = Buffer.init;
             c.haveHead = false;
             c.sent100 = false;
+            c.chunked = c.chunkDone = false;
             c.headLen = c.total = c.sent = 0;
             c.worker = null;
             c.fresh = true;
             c.h2 = null;
             c.h2Paused = false;
+            c.lingering = false;
+            c.writersWaiting = 0;
+            c.waking = false;
             c.blockedSinceMs = 0;
             c.ssl = null;
             c.tlsFatal = false;
             c.redirect = li.redirect;
             c.peerIp = peer.sin_addr.s_addr;
+            c.peerPort = ntohs(peer.sin_port);
             c.deadlineMs = nowMs + cfg.idleTimeoutMs;
             if (cfg.tls.enabled && !li.redirect)
             {
@@ -573,6 +626,18 @@ final class EpollLoop : EventLoop, Scheduler
                 case Phase.handshake:
                     break;
             }
+            return;
+        }
+        if (c.phase == Phase.running && c.worker !is null && c.worker.waitingWrite
+            && (events & (EPOLLOUT | (c.ssl !is null ? EPOLLIN : 0))))
+        {
+            // a streamed response was waiting for the socket (over TLS a write can also wait on a read)
+            auto w = c.worker;
+            w.wakeEvents = events;
+            wake(w);
+            resume(w);
+            if (c.fd >= 0 && c.phase == Phase.reading)
+                drive(c);
             return;
         }
         if ((events & EPOLLOUT) && c.phase == Phase.writing)
@@ -661,8 +726,8 @@ final class EpollLoop : EventLoop, Scheduler
             immutable r = ioRead(c, c.buf.free_.ptr, c.buf.free_.length);
             if (r > 0)
             {
-                if (wasEmpty)
-                    c.deadlineMs = nowMs + cfg.headerTimeoutMs; // not extended on every byte
+                if (wasEmpty || (c.haveHead && c.chunked))
+                    c.deadlineMs = nowMs + cfg.headerTimeoutMs; // not extended on every byte, except while a chunked body makes progress
                 c.buf.len += r;
                 any = true;
                 // a full buffer goes to the parser first: once it knows the head, it sizes the
@@ -709,15 +774,41 @@ final class EpollLoop : EventLoop, Scheduler
             c.haveHead = true;
             c.headLen = h.headLength;
             c.total = h.headLength + h.contentLength;
-            if (c.total > c.buf.mem.length && !pool.grow(c.buf, c.total))
+            c.chunked = h.chunked;
+            c.chunkDone = false;
+            c.dec = ChunkedDecoder.init;
+            if (!c.chunked && c.total > c.buf.mem.length && !pool.grow(c.buf, c.total))
             {
                 sendErrorAndClose(c, 413);
                 return Step.failed;
             }
         }
+        if (c.chunked && !c.chunkDone)
+        {
+            // Decode what has arrived, in place: the body ends up contiguous right after the head, and the bytes still
+            // undigested (a partial chunk header, or the next pipelined request) follow it.
+            size_t avail = c.buf.len - c.headLen;
+            final switch (c.dec.feed(c.buf.mem[c.headLen .. $], avail, cfg.limits.maxBodyBytes, cfg.limits.maxHeadBytes))
+            {
+                case ChunkResult.needMore:
+                    c.buf.len = c.headLen + avail;
+                    break;
+                case ChunkResult.done:
+                    c.buf.len = c.headLen + avail;
+                    c.total = c.headLen + c.dec.decoded; // the body ends here; what follows is the next request
+                    c.chunkDone = true;
+                    break;
+                case ChunkResult.badRequest:
+                    sendErrorAndClose(c, 400);
+                    return Step.failed;
+                case ChunkResult.tooLarge:
+                    sendErrorAndClose(c, 413);
+                    return Step.failed;
+            }
+        }
         // Expect: 100-continue: the client waits for the go-ahead before sending the body.
         // The parser already refused (413/417) what is not worth receiving.
-        if (!c.sent100 && c.buf.len < c.total)
+        if (!c.sent100 && (c.chunked ? !c.chunkDone : c.buf.len < c.total))
         {
             Request tmp;
             parseRequestHead(cast(const(char)[]) c.buf.data, tmp, scratch[], cfg.limits);
@@ -727,6 +818,8 @@ final class EpollLoop : EventLoop, Scheduler
                 sendRaw(c, "HTTP/1.1 100 Continue\r\n\r\n");
             }
         }
+        if (c.chunked)
+            return c.chunkDone ? Step.ready : Step.needMore;
         return c.buf.len >= c.total ? Step.ready : Step.needMore;
     }
 
@@ -750,11 +843,12 @@ final class EpollLoop : EventLoop, Scheduler
         // the head stays alive while the fiber is suspended)
         parseRequestHead(cast(const(char)[]) c.buf.data, w.req, w.store[], cfg.limits);
         w.req.body = c.buf.mem[c.headLen .. c.total];
+        w.req.peer = IpAddress.fromNetworkOrderV4(c.peerIp, c.peerPort);
         if (stopping)
             w.req.keepAlive = false; // draining: the response announces Connection: close
         w.conn = c;
         w.output.clear();
-        w.cancelled = w.timedOut = w.failed = w.closeAfter = false;
+        w.resetResponseState();
         c.worker = w;
         c.phase = Phase.running;
         c.deadlineMs = nowMs + cfg.requestTimeoutMs;
@@ -781,24 +875,357 @@ final class EpollLoop : EventLoop, Scheduler
     {
         w.conn = null;
         w.stream = null;
+        // Its body/header slices would keep the (possibly huge) buffer alive in an idle worker: an interior pointer keeps a
+        // whole GC block reachable.
+        w.req = Request.init;
+        w.store[] = HeaderField.init;
         inFlight--;
         w.output.shrinkTo(64 << 10); // a response peak does not stay pinned to the fiber
-        if (idle.n < cfg.maxIdleWorkers)
+        if (w.poisoned)
+            fibersPoisoned++;
+        if (!w.poisoned && idle.n < cfg.maxIdleWorkers)
             idle.push(w);
         else
         {
-            // really ends the fiber (the stack goes back to the OS) and releases the object
+            // really ends the fiber (the stack goes back to the OS) and releases the object, with its Context
             w.retiring = true;
             w.call();
             destroy(w);
-            workersRetired++;
+            if (!w.poisoned)
+                workersRetired++;
         }
+    }
+
+    // ------------------------------------------------------------------ the response sink
+    //
+    // `Worker` implements `ResponseSink` by calling these. A response is built in `w.output`; on HTTP/1.1 it is sent by
+    // the loop after the handler returns (the usual, buffered case) or by the fiber itself as soon as `streamHighWaterBytes`
+    // are buffered or `flush` is called, waiting on the socket when it is full. On HTTP/2 the same rules apply to the
+    // stream's own buffer ("committing" hands HEADERS and the bytes so far to the session).
+
+    private void sinkStart(Worker w, ref const ResponseHead head)
+    {
+        if (w.cancelled)
+            throw cancelledEx;
+        if (w.started)
+            throw new Exception("vela: ResponseSink.start was called twice");
+        w.started = true;
+        w.noBody = w.req.method == Method.HEAD || statusHasNoBody(head.status);
+        w.remaining = head.contentLength;
+        // The time allowed to produce the response is over. From here on a blocked write has its own limit, and the
+        // whole stream an optional one: a Server-Sent Events connection can live for hours.
+        immutable limit = cfg.streamTimeoutMs ? nowMs + cfg.streamTimeoutMs : 0;
+        if (w.stream !is null)
+        {
+            w.h2head = head;
+            w.stream.deadlineMs = limit;
+            return;
+        }
+        w.conn.deadlineMs = limit;
+        bool keep = w.req.keepAlive && !stopping;
+        if (head.contentLength < 0 && !w.noBody)
+        {
+            if (w.req.http11)
+                w.chunked = true;
+            else
+                keep = false; // an HTTP/1.0 client cannot be sent a chunked body: the body ends when the connection closes
+        }
+        if (!keep)
+            w.closeAfter = true;
+        writeResponseHead(w.output, head, keep, w.chunked);
+    }
+
+    private void sinkWrite(Worker w, scope const(char)[] data)
+    {
+        if (w.cancelled)
+            throw cancelledEx;
+        if (!w.started)
+            throw new Exception("vela: ResponseSink.write before start");
+        if (w.ended)
+            throw new Exception("vela: ResponseSink.write after end");
+        if (w.noBody || data.length == 0)
+            return;
+        if (w.remaining >= 0)
+        {
+            if (data.length > w.remaining)
+                throw new Exception("vela: the response body is longer than its Content-Length");
+            w.remaining -= data.length;
+        }
+        if (w.stream !is null)
+            return sinkWriteH2(w, data);
+        if (w.chunked)
+        {
+            char[18] hex = void;
+            size_t i = hex.length;
+            ulong v = data.length;
+            do
+            {
+                hex[--i] = "0123456789abcdef"[v & 15];
+                v >>= 4;
+            }
+            while (v);
+            w.output.put(hex[i .. $]);
+            w.output.put("\r\n");
+            w.output.put(data);
+            w.output.put("\r\n");
+        }
+        else if (data.length >= cfg.streamHighWaterBytes)
+        {
+            // a big piece (a file chunk, a large JSON body): send it from the caller's memory, without copying it
+            flushOutput(w);
+            sendFully(w, data.ptr, data.length);
+            return;
+        }
+        else
+            w.output.put(data);
+        if (w.output.length >= cfg.streamHighWaterBytes)
+            flushOutput(w);
+    }
+
+    private void sinkFlush(Worker w)
+    {
+        if (w.cancelled)
+            throw cancelledEx;
+        if (!w.started || w.noBody && w.stream is null && w.output.length == 0)
+            return;
+        if (w.stream !is null)
+            return sinkFlushH2(w);
+        flushOutput(w);
+    }
+
+    private void sinkEnd(Worker w)
+    {
+        if (w.cancelled)
+            throw cancelledEx;
+        if (!w.started)
+            throw new Exception("vela: ResponseSink.end before start");
+        if (w.ended)
+            return;
+        w.ended = true;
+        if (!w.noBody && w.remaining > 0)
+            throw new Exception("vela: the response body is shorter than its Content-Length");
+        if (w.stream !is null)
+            return sinkEndH2(w);
+        if (w.chunked && !w.noBody)
+            w.output.put("0\r\n\r\n");
+    }
+
+    /// Sends everything buffered in `w.output`, waiting for the socket as needed.
+    private void flushOutput(Worker w)
+    {
+        if (w.output.length)
+        {
+            sendFully(w, w.output.data.ptr, w.output.length);
+            w.output.clear();
+        }
+    }
+
+    private void sendFully(Worker w, const(char)* p, size_t len)
+    {
+        Conn c = w.conn;
+        size_t off;
+        while (off < len)
+        {
+            if (w.cancelled)
+                throw cancelledEx;
+            immutable n = ioSend(c, p + off, len - off);
+            if (n > 0)
+            {
+                off += n;
+                w.flushedAny = true;
+                continue;
+            }
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n < 0 && errno == EAGAIN)
+            {
+                waitWritable(w);
+                continue;
+            }
+            w.cancelled = true; // the peer is gone: unwind; finish() closes the connection
+            throw cancelledEx;
+        }
+    }
+
+    /// Suspends the fiber until the connection can take more bytes (EPOLLOUT edge), `writeTimeoutMs` at most.
+    /// A reader that stopped reading gets its connection closed.
+    private void waitWritable(Worker w) @trusted
+    {
+        w.waitingWrite = true;
+        beginWait(w, cfg.writeTimeoutMs);
+        Fiber.yield();
+        w.waitingWrite = false;
+        if (w.cancelled)
+            throw cancelledEx;
+        if (w.wakeEvents == 0)
+        {
+            w.cancelled = true; // the timer fired: the client does not read
+            throw cancelledEx;
+        }
+    }
+
+    // ---- HTTP/2
+
+    private void sinkWriteH2(Worker w, scope const(char)[] data)
+    {
+        if (!w.committed)
+        {
+            w.output.put(data);
+            if (w.output.length >= cfg.streamHighWaterBytes)
+                commitH2(w);
+            return;
+        }
+        w.conn.h2.sendData(w.stream, data);
+        flushH2(w.conn);
+        waitH2Drain(w);
+    }
+
+    private void sinkFlushH2(Worker w)
+    {
+        if (w.noBody)
+            return;
+        if (!w.committed)
+            return commitH2(w);
+        flushH2(w.conn);
+        waitH2Drain(w);
+    }
+
+    private void sinkEndH2(Worker w)
+    {
+        if (!w.committed)
+            return; // finishH2 sends head and body together
+        w.conn.h2.endResponse(w.stream);
+        w.h2done = true;
+    }
+
+    /// HEADERS and the body so far go to the session; from now on the stream is written to as it is produced.
+    private void commitH2(Worker w)
+    {
+        Conn c = w.conn;
+        auto s = c.h2;
+        s.beginResponse(w.stream, w.h2head, false);
+        w.committed = true;
+        w.flushedAny = true;
+        if (w.output.length)
+        {
+            s.sendData(w.stream, w.output.data);
+            w.output.clear();
+        }
+        flushH2(c);
+        waitH2Drain(w);
+    }
+
+    /// Suspends the handler while its stream has more than the high-water mark waiting to be sent.
+    private void waitH2Drain(Worker w) @trusted
+    {
+        Conn c = w.conn;
+        while (!w.cancelled && c.fd >= 0 && c.h2 !is null && w.stream !is null
+            && c.h2.pendingBytes(w.stream) >= cfg.streamHighWaterBytes)
+        {
+            w.waitingWrite = true;
+            c.writersWaiting++;
+            beginWait(w, cfg.writeTimeoutMs);
+            Fiber.yield();
+            w.waitingWrite = false;
+            if (c.writersWaiting)
+                c.writersWaiting--;
+            if (w.cancelled)
+                throw cancelledEx;
+            if (w.wakeEvents == 0)
+            {
+                w.cancelled = true; // the client does not read this stream
+                throw cancelledEx;
+            }
+        }
+        if (w.cancelled || c.fd < 0 || c.h2 is null)
+            throw cancelledEx;
+    }
+
+    /// Resumes the handlers that were waiting for their stream to drain, once it has. Called after the output moved.
+    private void wakeH2Writers(Conn c)
+    {
+        if (c.writersWaiting == 0 || c.waking)
+            return;
+        c.waking = true;
+        scope (exit)
+            c.waking = false;
+        for (int round = 0; round < 8 && c.fd >= 0 && c.h2 !is null && c.writersWaiting; round++)
+        {
+            Worker[8] ready;
+            size_t n;
+            foreach (st; c.h2.activeStreams)
+            {
+                auto w = cast(Worker) st.task;
+                if (w !is null && w.waitingWrite && w.waiting && c.h2.pendingBytes(st) <= cfg.streamHighWaterBytes / 2)
+                {
+                    if (n == ready.length)
+                        break;
+                    ready[n++] = w;
+                }
+            }
+            if (n == 0)
+                break;
+            foreach (i; 0 .. n)
+            {
+                auto w = ready[i];
+                if (w.waiting && w.waitingWrite)
+                {
+                    w.wakeEvents = EPOLLOUT;
+                    wake(w);
+                    resume(w);
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ failures inside handlers
+
+    /// Full traces are limited to this many per second; the rest are counted and summarized.
+    private enum maxFailureTraces = 5;
+
+    /// A handler (or the glue around it) threw something the app did not handle. Logs the whole thing -- type, message,
+    /// file:line and stack trace -- with the request, at most `maxFailureTraces` times per second.
+    private void noteHandlerFailure(Worker w, Throwable t)
+    {
+        handlerErrors++;
+        flushFailureSummary();
+        if (failLogged >= maxFailureTraces)
+        {
+            failSuppressed++;
+            return;
+        }
+        failLogged++;
+        auto m = methodName(w.req.method);
+        string text;
+        try
+            text = t.toString();
+        catch (Throwable)
+            text = t.msg;
+        immutable kind = typeid(t).name;
+        fprintf(stderr, "vela: unhandled %.*s in %.*s %.*s:\n%.*s\n", cast(int) kind.length, kind.ptr,
+            cast(int) m.length, m.ptr, cast(int) w.req.path.length, w.req.path.ptr, cast(int) text.length, text.ptr);
+    }
+
+    /// When the one-second window is over, reports what it suppressed and opens a new one. Also called by the sweep,
+    /// so the summary appears even if no further failure arrives.
+    private void flushFailureSummary()
+    {
+        immutable now = elapsedMs();
+        if (now - failWindowMs < 1000)
+            return;
+        if (failSuppressed)
+            fprintf(stderr, "vela: %zu more handler failures in the last second (traces suppressed)\n", failSuppressed);
+        failWindowMs = now;
+        failLogged = 0;
+        failSuppressed = 0;
     }
 
     private void resume(Worker w)
     {
         immutable t = MonoTime.currTime;
+        crashWorker = w;
         w.call();
+        crashWorker = null;
         if (cfg.stallWarnMs)
         {
             immutable ms = (MonoTime.currTime - t).total!"msecs";
@@ -826,7 +1253,7 @@ final class EpollLoop : EventLoop, Scheduler
             cast(int) m.length, m.ptr, cast(int) w.req.path.length, w.req.path.ptr);
     }
 
-    /// The handler returned (or was cancelled): decides what to send.
+    /// The handler returned (or was cancelled): decides what is left to send.
     private void finish(Worker w)
     {
         if (w.stream !is null)
@@ -834,7 +1261,7 @@ final class EpollLoop : EventLoop, Scheduler
         Conn c = w.conn;
         if (w.cancelled)
         {
-            if (w.timedOut)
+            if (w.timedOut && !w.started)
             {
                 timedOutN++;
                 w.output.clear();
@@ -845,13 +1272,28 @@ final class EpollLoop : EventLoop, Scheduler
             }
             else
             {
-                cancelledN++;
-                closeConn(c); // client already gone
+                // the client is gone, or the response had already started and cannot be replaced by an error
+                if (w.timedOut)
+                    timedOutN++;
+                else
+                    cancelledN++;
+                closeConn(c);
                 return;
             }
         }
-        else if (w.failed)
+        else if (w.failed || !w.started || !w.ended)
         {
+            if (!w.started && !w.failed)
+            {
+                auto m = methodName(w.req.method);
+                fprintf(stderr, "vela: the handler returned without sending a response (%.*s %.*s)\n",
+                    cast(int) m.length, m.ptr, cast(int) w.req.path.length, w.req.path.ptr);
+            }
+            if (w.flushedAny)
+            {
+                closeConn(c); // half of the response is out: it can only be cut off (the client sees a truncated body)
+                return;
+            }
             w.output.clear();
             writeResponseHead(w.output, 500, "text/plain; charset=utf-8", 21, null, false);
             w.output.put("Internal Server Error");
@@ -899,6 +1341,7 @@ final class EpollLoop : EventLoop, Scheduler
         c.buf.compact(c.total); // what is left over is the next request (pipelining)
         c.haveHead = false;
         c.sent100 = false;
+        c.chunked = c.chunkDone = false;
         c.headLen = c.total = c.sent = 0;
         if (c.buf.len == 0)
             pool.release(c.buf); // idle: do not hold the buffer
@@ -991,6 +1434,7 @@ final class EpollLoop : EventLoop, Scheduler
         c.buf.compact(c.total);
         c.haveHead = false;
         c.sent100 = false;
+        c.chunked = c.chunkDone = false;
         c.headLen = c.total = c.sent = 0;
         if (c.buf.len == 0)
             pool.release(c.buf);
@@ -1151,6 +1595,9 @@ final class EpollLoop : EventLoop, Scheduler
         c.phase = Phase.h2;
         c.fresh = false;
         c.h2Paused = false;
+        c.lingering = false;
+        c.writersWaiting = 0;
+        c.waking = false;
         c.blockedSinceMs = 0;
         c.deadlineMs = 0;
         h2Conns++;
@@ -1182,6 +1629,7 @@ final class EpollLoop : EventLoop, Scheduler
         c.buf.compact(c.total);
         c.haveHead = false;
         c.sent100 = false;
+        c.chunked = c.chunkDone = false;
         c.headLen = c.total = 0;
         switchToH2(c, s);
         dispatchH2(c); // stream 1 starts now; the client preface may already be in the buffer
@@ -1193,6 +1641,8 @@ final class EpollLoop : EventLoop, Scheduler
     {
         if (events & EPOLLERR)
             return closeConn(c);
+        if (c.lingering)
+            return drainLingering(c, events);
         if (events & EPOLLOUT)
         {
             flushH2(c);
@@ -1263,6 +1713,7 @@ final class EpollLoop : EventLoop, Scheduler
             return;
         }
         flushH2(c);
+        wakeH2Writers(c); // a WINDOW_UPDATE may have let a streamed response move
     }
 
     /// Hands the session's events to fibers: cancellations first, then new requests.
@@ -1294,10 +1745,11 @@ final class EpollLoop : EventLoop, Scheduler
         h2Streams++;
         Worker w = acquireWorker();
         w.req = st.req;
+        w.req.peer = IpAddress.fromNetworkOrderV4(c.peerIp, c.peerPort);
         w.conn = c;
         w.stream = st;
         w.output.clear();
-        w.cancelled = w.timedOut = w.failed = w.closeAfter = false;
+        w.resetResponseState();
         st.task = w;
         st.deadlineMs = nowMs + cfg.requestTimeoutMs;
         resume(w);
@@ -1312,33 +1764,59 @@ final class EpollLoop : EventLoop, Scheduler
         if (c.fd < 0 || c.h2 is null)
         {
             // the connection is gone: closeH2 detaches every stream itself
-            st.task = null;
+            if (!w.h2done)
+                st.task = null;
             releaseWorker(w);
             return;
         }
         auto s = c.h2;
-        if (w.cancelled && !w.timedOut)
+        if (w.h2done)
         {
-            cancelledN++;
-            s.detach(st); // the peer reset it: nothing to send
+            // the body was streamed and endResponse gave the stream back
             releaseWorker(w);
             return flushH2(c);
         }
-        if (w.timedOut)
+        if (w.cancelled && !w.timedOut)
         {
-            timedOutN++;
-            w.output.clear();
-            static immutable body504 = `{"detail":"request time limit exceeded"}`;
-            writeResponseHead(w.output, 504, "application/json", body504.length, null, true);
-            w.output.put(body504);
+            cancelledN++;
+            if (st.resetByPeer)
+                s.detach(st); // the peer reset it: nothing to send
+            else
+                s.cancelStream(st, H2Error.cancel); // we gave up on it (a reader that stopped reading)
+            releaseWorker(w);
+            return flushH2(c);
         }
-        else if (w.failed)
+        if (w.timedOut || w.failed || !w.started || !w.ended)
         {
+            if (w.timedOut)
+                timedOutN++;
+            else if (!w.started && !w.failed)
+            {
+                auto m = methodName(w.req.method);
+                fprintf(stderr, "vela: the handler returned without sending a response (%.*s %.*s)\n",
+                    cast(int) m.length, m.ptr, cast(int) w.req.path.length, w.req.path.ptr);
+            }
+            if (w.committed)
+            {
+                // HEADERS are out: the status can no longer change, only the stream can be cut off
+                s.cancelStream(st, w.timedOut ? H2Error.cancel : H2Error.internal);
+                releaseWorker(w);
+                return flushH2(c);
+            }
             w.output.clear();
-            writeResponseHead(w.output, 500, "text/plain; charset=utf-8", 21, null, true);
-            w.output.put("Internal Server Error");
+            if (w.timedOut)
+            {
+                static immutable body504 = `{"detail":"request time limit exceeded"}`;
+                w.output.put(body504);
+                w.h2head = ResponseHead(504, "application/json", null, body504.length);
+            }
+            else
+            {
+                w.output.put("Internal Server Error");
+                w.h2head = ResponseHead(500, "text/plain; charset=utf-8", null, 21);
+            }
         }
-        s.respond(st, w.output); // swaps buffers: the body is not copied
+        s.respond(st, w.h2head, w.output); // swaps buffers: the body is not copied
         releaseWorker(w);
         flushH2(c);
     }
@@ -1374,7 +1852,10 @@ final class EpollLoop : EventLoop, Scheduler
         }
         c.blockedSinceMs = 0;
         if (s.finished)
-            return closeConn(c);
+            return lingerClose(c);
+        wakeH2Writers(c);
+        if (c.fd < 0 || c.h2 is null)
+            return;
         // idle clock: starts when the last stream ends, stops while any stream is open
         if (s.busy)
             c.deadlineMs = 0;
@@ -1387,6 +1868,47 @@ final class EpollLoop : EventLoop, Scheduler
             // that were already waiting, so read them now (the caller is never driveH2)
             driveH2Later(c);
         }
+    }
+
+    /// How long a finished HTTP/2 connection keeps discarding input before it is closed anyway.
+    private enum lingerMs = 1000;
+
+    /// Closes a finished cleartext HTTP/2 connection without a reset. close(2) with unread bytes in the receive
+    /// queue makes the kernel answer RST, and the peer may then lose the frames we just sent (GOAWAY) or see
+    /// "connection reset" instead of a clean end (h2spec 7/1 failed about 1 run in 20 because of this). So: send
+    /// FIN, keep the socket for up to `lingerMs` and discard what still arrives, and close on EOF or timeout.
+    /// (TLS closes at once: its close_notify has its own protocol.)
+    private void lingerClose(Conn c)
+    {
+        if (c.ssl !is null)
+            return closeConn(c);
+        if (c.lingering)
+            return; // already waiting for the peer
+        c.lingering = true;
+        c.h2Paused = false;
+        c.deadlineMs = nowMs + lingerMs;
+        if (shutdown(c.fd, SHUT_WR) != 0)
+            return closeConn(c);
+        drainLingering(c, EPOLLIN);
+    }
+
+    /// Reads and discards until EAGAIN (keep waiting), EOF or error (close).
+    private void drainLingering(Conn c, uint events)
+    {
+        char[1024] sink = void;
+        for (;;)
+        {
+            immutable n = read(c.fd, sink.ptr, sink.length);
+            if (n > 0)
+                continue;
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n < 0 && errno == EAGAIN)
+                break;
+            return closeConn(c); // EOF (the peer closed too) or an error
+        }
+        if (events & (EPOLLHUP | EPOLLRDHUP))
+            closeConn(c);
     }
 
     /// Connections whose reading was paused and can go on; drained by `onH2Event`/sweep.
@@ -1410,6 +1932,12 @@ final class EpollLoop : EventLoop, Scheduler
     /// Deadlines of one HTTP/2 connection (called from `sweep`).
     private void sweepH2(Conn c)
     {
+        if (c.lingering)
+        {
+            if (nowMs >= c.deadlineMs)
+                closeConn(c);
+            return;
+        }
         auto s = c.h2;
         s.tick(nowMs);
         if (c.blockedSinceMs && nowMs - c.blockedSinceMs > cfg.writeTimeoutMs)
@@ -1628,6 +2156,8 @@ final class EpollLoop : EventLoop, Scheduler
     /// comparisons per second; a timer wheel only comes in if the profile asks for it (M4).
     private void sweep()
     {
+        if (failSuppressed)
+            flushFailureSummary();
         foreach (c; conns)
         {
             if (c is null || c.fd < 0 || c.deadlineMs == 0 || c.deadlineMs > nowMs || c.phase == Phase.h2)
@@ -1753,6 +2283,18 @@ final class EpollLoop : EventLoop, Scheduler
         trims++;
         import core.memory : GC;
 
+        // The GC returns a pool to the OS only when it is entirely free. The idle workers (a Context is several KiB, a
+        // page-sized block) and the cached buffers were allocated during the burst, between its big blocks, and would pin
+        // those pools; the next burst recreates them in microseconds.
+        while (idle.n)
+        {
+            auto w = idle.pop();
+            w.retiring = true;
+            w.call();
+            destroy(w);
+            workersRetired++;
+        }
+        pool.dropCache();
         GC.collect();
         GC.minimize();
         version (CRuntime_Glibc)
@@ -1870,21 +2412,140 @@ private bool hostForRedirect(const(char)[] h, out const(char)[] host) pure nothr
 
 private __gshared EpollLoop[] gLoops;
 
+// ---- crash report: a stack overflow in a fiber is a SIGSEGV that ends the whole process with no hint of the cause.
+// Each worker thread gets an alternate signal stack (the faulting stack is the one that is full) and this handler
+// writes one line saying which request was running, then returns: SA_RESETHAND restored the default action, so the
+// faulting instruction runs again and the process dies as usual, with its core dump.
+
+private Worker crashWorker;   // thread-local: the fiber running right now (null while the loop itself runs)
+private uint crashStackKiB;   // thread-local: ServerConfig.fiberStackBytes of this worker
+
+private extern (C) void onCrash(int sig, siginfo_t* info, void*) nothrow @nogc @system
+{
+    auto w = crashWorker;
+    if (w is null)
+        return; // not in a handler: nothing useful to add
+    char[512] buf = void;
+    size_t n;
+    void put(scope const(char)[] t) nothrow @nogc
+    {
+        foreach (c; t)
+            if (n < buf.length)
+                buf[n++] = c;
+    }
+    void putNum(ulong v, uint base) nothrow @nogc
+    {
+        char[20] d = void;
+        size_t k = d.length;
+        do
+        {
+            d[--k] = "0123456789abcdef"[v % base];
+            v /= base;
+        }
+        while (v);
+        put(d[k .. $]);
+    }
+    put("vela: segmentation fault (address 0x");
+    putNum(cast(ulong) info.si_addr, 16);
+    put(") while running ");
+    put(methodName(w.req.method));
+    put(" ");
+    put(w.req.path.length > 120 ? w.req.path[0 .. 120] : w.req.path);
+    put(". If the handler recurses deeply or keeps large arrays on the stack, raise ServerConfig.fiberStackBytes (now ");
+    putNum(crashStackKiB, 10);
+    put(" KiB).\n");
+    write(2, buf.ptr, n);
+}
+
+/// Alternate stack for this thread plus the process-wide handler (installed once).
+private void installCrashReport(uint stackBytes) nothrow @nogc @system
+{
+    import core.stdc.stdlib : malloc;
+    import core.atomic : cas;
+
+    crashStackKiB = stackBytes >> 10;
+    enum altBytes = 64 * 1024;
+    stack_t ss;
+    ss.ss_sp = malloc(altBytes);
+    ss.ss_size = altBytes;
+    ss.ss_flags = 0;
+    if (ss.ss_sp is null || sigaltstack(&ss, null) != 0)
+        return;
+    static shared bool installed;
+    if (cas(&installed, false, true))
+    {
+        sigaction_t sa;
+        sa.sa_sigaction = &onCrash;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+        sigaction(SIGSEGV, &sa, null);
+        sigaction(SIGBUS, &sa, null);
+    }
+}
+
+private void removeCrashReportStack() nothrow @nogc @system
+{
+    import core.stdc.stdlib : free;
+
+    stack_t cur;
+    if (sigaltstack(null, &cur) == 0 && cur.ss_sp !is null)
+    {
+        stack_t off;
+        off.ss_flags = SS_DISABLE;
+        sigaltstack(&off, null);
+        free(cur.ss_sp);
+    }
+}
+
 private extern (C) void onSignal(int) nothrow @nogc
 {
     foreach (l; gLoops)
         l.stop();
 }
 
-private Thread startWorker(EpollLoop lp, ServerConfig cfg, HandlerFactory f)
+/// Set when a worker's `WorkerInit` threw or a worker could not start; read after the threads are joined.
+private shared bool gStartupFailed;
+
+private void stopAllLoops() nothrow @nogc
 {
-    auto t = new Thread({ lp.run(cfg, f); });
+    foreach (l; gLoops)
+        l.stop();
+}
+
+/// Runs `init` and reports a failure in one line. Returns null on failure.
+private HandlerFactory buildWorker(WorkerInit init) nothrow
+{
+    try
+        return init();
+    catch (Throwable t)
+    {
+        fprintf(stderr, "vela: building the app failed: %.*s (%.*s:%d)\n", cast(int) t.msg.length, t.msg.ptr,
+            cast(int) t.file.length, t.file.ptr, cast(int) t.line);
+        return null;
+    }
+}
+
+private Thread startWorker(EpollLoop lp, ServerConfig cfg, WorkerInit init)
+{
+    auto t = new Thread({
+        // the App (and everything the build function creates) is born on this worker's own thread
+        auto f = buildWorker(init);
+        if (f is null)
+        {
+            atomicStore(gStartupFailed, true);
+            stopAllLoops(); // the other workers cannot serve a half-started server
+            return;
+        }
+        lp.run(cfg, f);
+    });
     t.start();
     return t;
 }
 
-/// Starts `cfg.workers` loops (one per core if 0) and blocks until SIGINT/SIGTERM.
-void runEpollServer(ServerConfig cfg, HandlerFactory factory)
+/// Starts `cfg.workers` loops (one per core if 0), each building its own handler with `init` on its own thread, and
+/// blocks until SIGINT/SIGTERM. Returns false if the server could not start (TLS configuration, `init` threw, a
+/// listener could not bind); the caller decides what to do about it.
+bool runEpollServer(ServerConfig cfg, WorkerInit init)
 {
     uint n = cfg.workers;
     if (n == 0)
@@ -1901,9 +2562,11 @@ void runEpollServer(ServerConfig cfg, HandlerFactory factory)
         if (auto err = probe.load(cfg.tls, cfg.http2, keys))
         {
             fprintf(stderr, "%.*s\n", cast(int) err.length, err.ptr);
-            return;
+            return false;
         }
     }
+    gLoops = null;
+    atomicStore(gStartupFailed, false);
     foreach (_; 0 .. n)
     {
         auto l = new EpollLoop;
@@ -1911,6 +2574,12 @@ void runEpollServer(ServerConfig cfg, HandlerFactory factory)
             l.shareTicketKeys(keys);
         gLoops ~= l;
     }
+
+    // Worker 0 builds first, here on the main thread, before any other thread exists: a bad build function is
+    // reported once, and nothing else starts.
+    auto factory0 = buildWorker(init);
+    if (factory0 is null)
+        return false;
 
     sigaction_t sa;
     sa.sa_handler = &onSignal;
@@ -1927,8 +2596,13 @@ void runEpollServer(ServerConfig cfg, HandlerFactory factory)
 
     Thread[] threads;
     foreach (i; 1 .. n)
-        threads ~= startWorker(gLoops[i], cfg, factory);
-    gLoops[0].run(cfg, factory); // worker 0 runs on the main thread
+        threads ~= startWorker(gLoops[i], cfg, init);
+    gLoops[0].run(cfg, factory0); // worker 0 runs on the main thread
     foreach (t; threads)
         t.join();
+    // a loop that never became ready did not manage to listen (port in use, bad address...)
+    bool ok = !atomicLoad(gStartupFailed);
+    foreach (l; gLoops)
+        ok = ok && atomicLoad(l.everListened);
+    return ok;
 }

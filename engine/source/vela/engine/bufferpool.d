@@ -1,17 +1,20 @@
-/// Per-worker buffer pool, outside the GC heap.
+/// Per-worker buffer pool on the GC heap (blocks the collector never scans: `NO_SCAN`).
 ///
-/// Fixed size classes (4, 16, 64 KiB). Idle connections return their
-/// buffer to the pool: 10 thousand idle keep-alive connections do not hold 160 MiB.
-/// The pool keeps at most `maxCachedBytes`; the excess goes back to the OS.
-/// Larger requests (a body up to `Limits.maxBodyBytes`) get an exact-size buffer that is never
-/// cached: it goes back to the OS as soon as the request is done.
+/// Slices of these buffers reach user code (the request body, header values, `const(char)[]` parameters). The memory is
+/// the GC's, not malloc's, so a slice a handler keeps after the request is memory-safe: it keeps its block alive. It may
+/// show bytes of a later request that reused the buffer; that is a bug in the user's code, not memory corruption.
+///
+/// Fixed size classes (4, 16, 64 KiB). Idle connections return their buffer to the pool: 10 thousand idle keep-alive
+/// connections do not hold 160 MiB. The pool keeps at most `maxCachedBytes`; the excess is simply dropped (nothing is
+/// ever freed by hand: a user slice may still point into it) and the collector reclaims it.
+/// Larger requests (a body up to `Limits.maxBodyBytes`) get an exact-size buffer that is never cached: it becomes garbage
+/// as soon as the request is done and no slice of it survives.
 /// Single-threaded by design (one pool per worker), hence no locks.
 module vela.engine.bufferpool;
 
 @safe:
 
-import core.stdc.stdlib : malloc, free;
-import core.exception : onOutOfMemoryError;
+import vela.http.buffer : allocBlock;
 
 struct Buffer
 {
@@ -49,13 +52,6 @@ struct BufferPool
 
     @disable this(this);
 
-    ~this() @trusted nothrow @nogc
-    {
-        foreach (ref list; free_)
-            foreach (b; list)
-                free(b.ptr);
-    }
-
     /// Lends a buffer with at least `minSize` bytes.
     Buffer acquire(size_t minSize) @trusted nothrow
     {
@@ -64,12 +60,7 @@ struct BufferPool
             c++;
         outstanding++;
         if (c == oversize)
-        {
-            auto big = cast(ubyte*) malloc(minSize);
-            if (big is null)
-                onOutOfMemoryError();
-            return Buffer(big[0 .. minSize], 0, oversize);
-        }
+            return Buffer((cast(ubyte*) allocBlock(minSize))[0 .. minSize], 0, oversize);
         if (free_[c].length)
         {
             auto m = free_[c][$ - 1];
@@ -77,13 +68,10 @@ struct BufferPool
             cachedBytes -= m.length;
             return Buffer(m, 0, c);
         }
-        auto p = cast(ubyte*) malloc(classSize[c]);
-        if (p is null)
-            onOutOfMemoryError();
-        return Buffer(p[0 .. classSize[c]], 0, c);
+        return Buffer((cast(ubyte*) allocBlock(classSize[c]))[0 .. classSize[c]], 0, c);
     }
 
-    /// Gives it back. Above the ceiling, frees it straight to the OS.
+    /// Gives it back. Above the ceiling (or when oversize) the buffer is just dropped for the collector.
     void release(ref Buffer b) @trusted nothrow
     {
         if (b.isNull)
@@ -94,9 +82,17 @@ struct BufferPool
             free_[b.cls] ~= b.mem; // the list itself is small and stable after warm-up
             cachedBytes += b.mem.length;
         }
-        else
-            free(b.mem.ptr);
         b = Buffer.init;
+    }
+
+    /// Forgets the cached buffers so the collector can reclaim them. Used after a burst, when the loop is quiet: cached
+    /// page-sized blocks sit between the big ones of the burst and keep their GC pools from being returned to the OS.
+    /// The cache refills on demand.
+    void dropCache() nothrow
+    {
+        foreach (ref list; free_)
+            list = null;
+        cachedBytes = 0;
     }
 
     /// Moves the data to a buffer of at least `minSize` bytes (the next class, or an exact-size

@@ -1,0 +1,157 @@
+# Deploying on a VPS (HTTPS, no proxy in front)
+
+This guide takes an application from `dub build` to serving browsers over HTTPS and HTTP/2 on
+ports 443 and 80, with a Let's Encrypt certificate that renews without restarts. It assumes a
+Linux server (Debian/Ubuntu commands), a domain `example.com` pointing at it, and an application
+user `vela`. Everything here is what `tools/check.sh` exercises, except the Let's Encrypt part,
+which needs a real domain.
+
+## 1. Build
+
+```sh
+dub build -b release --compiler=ldc2      # LDC gives the fastest binary
+sudo install -D -m 0755 ./myapp /opt/myapp/myapp
+sudo apt install libssl3                  # OpenSSL 3, loaded at run time
+```
+
+## 2. The server configuration
+
+```d
+import vela;
+
+void main()
+{
+    auto app = new App;
+    // ... routes ...
+
+    // HSTS: browsers that saw it once go straight to HTTPS for a year
+    app.use((Context ctx, Next next) {
+        ctx.setHeader("Strict-Transport-Security", "max-age=31536000");
+        next();
+    });
+
+    ServerConfig cfg;
+    cfg.port = 443;
+    cfg.tls.certFile = "/etc/vela/tls/cert.pem";   // copied there by certbot's deploy hook (below)
+    cfg.tls.keyFile = "/etc/vela/tls/key.pem";
+    cfg.tls.redirectPort = 80;                      // ACME challenges + 308 to https
+    cfg.tls.acmeWebroot = "/var/www/acme";
+    app.serve(cfg);
+}
+```
+
+What the two ports do:
+
+- **443**: TLS 1.2/1.3; ALPN gives browsers HTTP/2 and everything else HTTP/1.1.
+- **80**: never reaches your handlers. `GET /.well-known/acme-challenge/<token>` is answered from
+  `/var/www/acme/.well-known/acme-challenge/<token>`; any other request gets
+  `308 Permanent Redirect` to the same host and path on `https://`.
+
+Without `tls.certFile`, the same binary serves cleartext HTTP/1.1 and h2c, for running behind a proxy.
+
+## 3. Certificates
+
+The server will not start without its certificate, and port 80 is the server's. So the first
+certificate comes from certbot's own web server, before vela runs; renewals then go through
+vela's port 80.
+
+```sh
+sudo apt install certbot
+sudo mkdir -p /var/www/acme /etc/vela/tls
+
+# first certificate: certbot listens on port 80 itself (vela is not running yet)
+sudo certbot certonly --standalone -d example.com
+```
+
+A deploy hook copies the files where the application user can read them. It writes temporary
+files and renames them, so vela never reads a half-written key:
+
+```sh
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/vela.sh > /dev/null <<'EOF'
+#!/bin/sh
+set -e
+d=/etc/vela/tls
+install -m 0640 -o root -g vela "$RENEWED_LINEAGE/privkey.pem" "$d/key.pem.new"
+install -m 0644 -o root -g vela "$RENEWED_LINEAGE/fullchain.pem" "$d/cert.pem.new"
+mv "$d/key.pem.new" "$d/key.pem"
+mv "$d/cert.pem.new" "$d/cert.pem"
+EOF
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/vela.sh
+sudo RENEWED_LINEAGE=/etc/letsencrypt/live/example.com /etc/letsencrypt/renewal-hooks/deploy/vela.sh
+```
+
+Start vela (section 4), then switch renewals to the webroot it serves (certbot 2.3 or newer; this
+also runs a test renewal against your server):
+
+```sh
+sudo certbot reconfigure --cert-name example.com --webroot -w /var/www/acme
+sudo certbot renew --dry-run
+```
+
+From now on certbot's timer renews the certificate, the hook replaces the two files, and every
+worker notices within `tls.reloadCheckMs` (10 s) and loads them. Open connections keep the old
+certificate; new ones get the new one. If a file fails to load, vela logs
+`vela: TLS: ... (keeping the previous certificate)` and keeps serving.
+
+## 4. systemd
+
+```ini
+# /etc/systemd/system/myapp.service
+[Unit]
+Description=myapp
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=vela
+Group=vela
+WorkingDirectory=/opt/myapp
+ExecStart=/opt/myapp/myapp
+# ports 80 and 443 without running as root
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+# SIGTERM is a graceful stop: in-flight requests finish (shutdownGraceMs, 10 s), HTTP/2 gets GOAWAY
+KillSignal=SIGTERM
+TimeoutStopSec=15
+Restart=on-failure
+LimitNOFILE=65536
+# hardening: a read-only system; add ReadWritePaths= for anything your application writes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/vela /var/www/acme
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```sh
+sudo useradd --system --no-create-home vela
+sudo systemctl daemon-reload && sudo systemctl enable --now myapp
+sudo ufw allow 80,443/tcp
+curl -I http://example.com/          # 308 to https://example.com/
+curl -I https://example.com/         # HTTP/2 200
+```
+
+Without systemd: `sudo setcap cap_net_bind_service=+ep /opt/myapp/myapp` lets the binary bind
+ports below 1024 as an ordinary user (redo it after each new build).
+
+## 5. Logs and limits
+
+- `vela: TLS handshake failed from <ip>: <reason>` and `vela: HTTP/2 connection error from <ip>: <code>`
+  appear at most once per second per worker, with a count of the lines skipped. Clients that just
+  disconnect mid-handshake (port scanners, health checks) are counted (`LoopStats.tlsFailures`), not
+  logged. `cfg.logConnectionErrors = false` silences them.
+- Memory: each TLS connection costs about 15 KiB in OpenSSL on top of the request; 1,000 requests in
+  flight over HTTPS peak at ~44 MB. On a 512 MB VPS the defaults are fine; `maxInFlight` (1,024 per
+  worker) and `maxConnections` (10,000 per worker) are the knobs.
+- One worker per core by default (`cfg.workers`). Each worker loads its own copy of the certificate.
+
+## Known limits
+
+- **IPv4 only**: the listeners bind IPv4 addresses (`cfg.host`, default `0.0.0.0`). An AAAA record
+  pointing at the server will not reach vela yet; publish only an A record.
+- Handlers do not see the client's address yet (it is only in the connection logs).
+- No OCSP stapling and no client certificates (mutual TLS).
+- The redirect port is for `redirectPort` only; serving the application itself in cleartext next to
+  HTTPS is not supported (run a second process if you need it).

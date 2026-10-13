@@ -56,7 +56,7 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 | `examples/hello`, `examples/api` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI. |
 | `tests/` | `web/` (no network), `h2/` (HTTP/2 session, no network), `net/` (real sockets), `db/` (needs Postgres), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
 | `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh` (curl, python-h2, h2spec), and the helpers that start a throwaway Postgres / test upstream. |
-| `docs/quickstart.md`, `README.md` | User-facing docs. Keep them in sync with behavior. |
+| `docs/quickstart.md`, `docs/deploy.md`, `README.md` | User-facing docs. Keep them in sync with behavior. |
 
 Dependency direction: `http` ← `web`, `http` ← `engine` ← `drivers/*`; `source/vela/server.d` is the only module that knows both
 `web` and `engine`. Do not introduce a dependency from the core to any driver.
@@ -112,6 +112,12 @@ Tests that need PostgreSQL, Python or OpenSSL skip themselves with a warning whe
   reset taught this; `tests/net/tls_net.d` covers it.
 - Never call `SSL_shutdown` after a fatal TLS error (`Conn.tlsFatal`) or during the handshake.
 - Each worker has its own `SSL_CTX` (no locks); ticket keys are shared so resumption works across workers.
+- The redirect port (`tls.redirectPort`) is answered in `answerRedirectPort`, never by the app: keep it that way
+  (no fibers, no handlers). ACME tokens are validated as base64url before touching the file system.
+- Connection logs go through `logConnError` (rate-limited, address recorded at accept). Do not log clients that
+  just close mid-handshake: scanners and health checks would flood the log.
+- `docs/deploy.md` is executable documentation: its config example must compile and its deploy hook must work
+  with the reload logic; re-check both when changing `TlsConfig` or the reload.
 
 ## Pitfalls that already cost time
 
@@ -139,4 +145,5 @@ Tests that need PostgreSQL, Python or OpenSSL skip themselves with a warning whe
 ## Out of scope for now
 
 Performance work (M4: benchmarks, SIMD head search, GC tuning, `sendfile`), kqueue (M5) and io_uring (M6), chunked request bodies,
-a second (cleartext) listener next to the TLS one, response trailers and streamed bodies (gRPC). Do not start these unless asked.
+serving the app in cleartext next to TLS, IPv6 listeners, the client address in `Request`, OCSP stapling, response trailers and
+streamed bodies (gRPC). Do not start these unless asked.

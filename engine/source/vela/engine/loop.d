@@ -32,6 +32,13 @@ struct TlsConfig
     /// How often each worker checks both files for changes (renewal) and reloads them; 0 = never.
     /// New connections get the new certificate; a file that fails to load is logged and the old one kept.
     uint reloadCheckMs = 10_000;
+    /// Also listen in cleartext on this port (usually 80). Requests there never reach the application:
+    /// ACME HTTP-01 challenges are answered from `acmeWebroot`, everything else gets a 308 to the same
+    /// host and path over HTTPS. 0 = no cleartext listener.
+    ushort redirectPort;
+    /// The directory given to `certbot certonly --webroot -w <dir>`: files it writes under
+    /// `<dir>/.well-known/acme-challenge/` are served on `redirectPort`. Empty = no challenges.
+    string acmeWebroot;
 
     bool enabled() const pure nothrow @nogc @safe => certFile.length != 0;
 }
@@ -62,6 +69,9 @@ struct ServerConfig
     uint http2ConnectionWindowBytes = 1 << 20; /// connection receive window: request body in flight across all streams
     /// HTTPS (see `TlsConfig`). The handshake must finish within `headerTimeoutMs`.
     TlsConfig tls;
+    /// Logs failed TLS handshakes and HTTP/2 connection errors to stderr with the client's address,
+    /// at most one line per second per worker (the rest are counted in the next line).
+    bool logConnectionErrors = true;
     Limits limits;
 }
 
@@ -84,6 +94,7 @@ struct LoopStats
     size_t tlsHandshakes;    /// TLS handshakes completed since the start
     size_t tlsFailures;      /// TLS handshakes that failed or timed out
     size_t tlsReloads;       /// certificate reloads of this worker
+    size_t redirects;        /// requests answered on `tls.redirectPort` (308 or ACME challenge)
 }
 
 /// I/O backend. Planned implementations:

@@ -30,6 +30,7 @@ import core.sys.posix.sys.time : timeval;
 import core.sys.posix.unistd : close, read;
 import std.conv : to;
 import std.string : indexOf;
+import std.conv : octal;
 
 // ---------------------------------------------------------------- test app
 
@@ -661,6 +662,251 @@ void testConfigErrors()
     ok("configuration errors: missing certificate, missing key, mismatched key; the loop does not start");
 }
 
+/// A port nobody listens on right now (bind to 0, read it back, close).
+ushort freePort()
+{
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in a;
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(0x7f000001);
+    bind(fd, cast(sockaddr*)&a, a.sizeof);
+    socklen_t l = a.sizeof;
+    getsockname(fd, cast(sockaddr*)&a, &l);
+    close(fd);
+    return ntohs(a.sin_port);
+}
+
+/// Cleartext HTTP/1.1 on an open socket: sends `req`, reads one response (head + Content-Length body).
+string exchange(int fd, string req)
+{
+    send(fd, req.ptr, req.length, 0);
+    string got;
+    char[4096] b;
+    for (;;)
+    {
+        auto he = got.indexOf("\r\n\r\n");
+        if (he >= 0)
+        {
+            size_t want = 0;
+            auto cl = got.indexOf("Content-Length: ");
+            if (cl >= 0 && cl < he)
+                want = got[cl + 16 .. got.indexOf("\r\n", cl)].to!size_t;
+            if (req.indexOf("HEAD ") == 0)
+                want = 0;
+            if (got.length >= he + 4 + want)
+                return got[0 .. he + 4 + want];
+        }
+        auto n = read(fd, b.ptr, b.length);
+        if (n <= 0)
+            return got;
+        got ~= b[0 .. n].idup;
+    }
+}
+
+string header(string resp, string name)
+{
+    auto i = resp.indexOf("\r\n" ~ name ~ ": ");
+    if (i < 0)
+        return null;
+    auto s = i + 4 + name.length;
+    return resp[s .. resp.indexOf("\r\n", s)];
+}
+
+void testRedirectPort()
+{
+    import std.file : mkdirRecurse, write, symlink = symlink;
+
+    auto webroot = dir ~ "/acme";
+    mkdirRecurse(webroot ~ "/.well-known/acme-challenge");
+    write(webroot ~ "/.well-known/acme-challenge/tok-EN_123", "tok-EN_123.thumbprint");
+    write(dir ~ "/secret.txt", "do not serve");
+    symlink(dir ~ "/secret.txt", webroot ~ "/.well-known/acme-challenge/link");
+    auto huge = new char[9000];
+    huge[] = 'h';
+    write(webroot ~ "/.well-known/acme-challenge/huge", huge);
+
+    ServerConfig cfg;
+    cfg.tls.redirectPort = freePort();
+    cfg.tls.acmeWebroot = webroot;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+    immutable rp = s.loop.boundRedirectPort;
+    assert(rp == cfg.tls.redirectPort);
+    immutable https = "https://example.com:" ~ s.port.to!string;
+
+    // redirects keep host, path and query, honor keep-alive and preserve the method (308)
+    auto fd = dial(rp);
+    auto r = exchange(fd, "GET /users/7?x=1&y=%20 HTTP/1.1\r\nHost: example.com\r\n\r\n");
+    assert(r.indexOf("HTTP/1.1 308 Permanent Redirect\r\n") == 0, r);
+    assert(header(r, "Location") == https ~ "/users/7?x=1&y=%20", r);
+    r = exchange(fd, "POST /api HTTP/1.1\r\nHost: example.com:80\r\nContent-Length: 3\r\n\r\nabc");
+    assert(header(r, "Location") == https ~ "/api", r);
+    r = exchange(fd, "GET / HTTP/1.1\r\nHost: [::1]:80\r\n\r\n");
+    assert(header(r, "Location") == "https://[::1]:" ~ s.port.to!string ~ "/", r);
+    close(fd);
+
+    // no Host, or a Host that is not a host name: 400
+    fd = dial(rp);
+    assert(exchange(fd, "GET / HTTP/1.0\r\n\r\n").indexOf("HTTP/1.1 400") == 0);
+    close(fd);
+    fd = dial(rp);
+    assert(exchange(fd, "GET / HTTP/1.1\r\nHost: evil.com/x\r\n\r\n").indexOf("HTTP/1.1 400") == 0);
+    close(fd);
+
+    // ACME challenges: served, HEAD without body; anything else under the prefix is a 404
+    fd = dial(rp);
+    r = exchange(fd, "GET /.well-known/acme-challenge/tok-EN_123 HTTP/1.1\r\nHost: example.com\r\n\r\n");
+    assert(r.indexOf("HTTP/1.1 200 OK\r\n") == 0 && r[$ - 21 .. $] == "tok-EN_123.thumbprint", r);
+    assert(header(r, "Content-Type") == "text/plain");
+    r = exchange(fd, "HEAD /.well-known/acme-challenge/tok-EN_123 HTTP/1.1\r\nHost: example.com\r\n\r\n");
+    assert(r.indexOf("HTTP/1.1 200 OK\r\n") == 0 && header(r, "Content-Length") == "21", r);
+    foreach (bad; ["missing", "link", "huge", "..", "a%2F..%2F..%2Fsecret.txt", "x.y", ""])
+    {
+        r = exchange(fd, "GET /.well-known/acme-challenge/" ~ bad ~ " HTTP/1.1\r\nHost: example.com\r\n\r\n");
+        if (bad.length)
+            assert(r.indexOf("HTTP/1.1 404") == 0, bad ~ ": " ~ r);
+        else
+            assert(r.indexOf("HTTP/1.1 308") == 0, r); // the bare prefix is not a challenge
+        assert(r.indexOf("do not serve") < 0);
+    }
+    close(fd);
+
+    // HTTP/2 prior knowledge is not offered on the redirect port
+    fd = dial(rp);
+    auto pri = cast(string) clientPreface;
+    send(fd, pri.ptr, pri.length, 0);
+    ubyte[64] b;
+    auto n = read(fd, b.ptr, b.length);
+    close(fd);
+    assert(n > 12 && (cast(char[]) b[0 .. 12]) == "HTTP/1.1 501");
+
+    // the TLS port is unaffected
+    auto c = new TlsClient(s.port, ca, ["h2", "http/1.1"]);
+    assert(c.alpn == "h2");
+    c.hang();
+    assert(s.loop.stats().redirects == 14, s.loop.stats().redirects.to!string); // 5 redirects/400s + 9 challenges
+
+    // a redirect port that is already taken: the loop does not start
+    int squat = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in a;
+    a.sin_family = AF_INET;
+    a.sin_addr.s_addr = htonl(0x7f000001);
+    bind(squat, cast(sockaddr*)&a, a.sizeof);
+    listen(squat, 1);
+    socklen_t l = a.sizeof;
+    getsockname(squat, cast(sockaddr*)&a, &l);
+    ServerConfig taken;
+    taken.port = 0;
+    taken.workers = 1;
+    taken.host = "127.0.0.1";
+    taken.reusePort = false;
+    taken.tls.certFile = ca;
+    taken.tls.keyFile = dir ~ "/a.key";
+    taken.tls.redirectPort = ntohs(a.sin_port);
+    auto loop = new EpollLoop;
+    loop.run(taken, handlerFactory(buildApp()));
+    assert(!atomicLoad(loop.ready), "a busy redirect port must stop the server from starting");
+    close(squat);
+    ok("redirect port: 308 with host/path/query kept, keep-alive, 400 for bad Host, ACME files only (no traversal, "
+        ~ "symlinks or large files), no HTTP/2, busy port refused");
+}
+
+/// Runs `dg` with stderr redirected to a file; returns what was written.
+string captureStderr(scope void delegate() dg)
+{
+    import core.sys.posix.unistd : dup, dup2;
+    import core.sys.posix.fcntl : open, O_WRONLY, O_CREAT, O_TRUNC;
+    import core.stdc.stdio : fflush, stderr;
+    import std.file : readText;
+
+    auto path = dir ~ "/stderr.log";
+    auto z = path ~ '\0';
+    fflush(stderr);
+    immutable saved = dup(2);
+    immutable f = open(z.ptr, O_WRONLY | O_CREAT | O_TRUNC, octal!"644");
+    dup2(f, 2);
+    close(f);
+    scope (exit)
+    {
+        fflush(stderr);
+        dup2(saved, 2);
+        close(saved);
+    }
+    dg();
+    fflush(stderr);
+    return readText(path);
+}
+
+void testLogging()
+{
+    ServerConfig cfg;
+    cfg.headerTimeoutMs = 400;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+
+    auto log = captureStderr({
+        // three failures in a row: one line, then the next line counts the two skipped
+        auto bad = new TlsClient(s.port, ca("b"));
+        bad.hang();
+        auto fd = dial(s.port);
+        send(fd, "GET / HTTP/1.1\r\n\r\n".ptr, 18, 0);
+        ubyte[8] b;
+        read(fd, b.ptr, b.length);
+        close(fd);
+        fd = dial(s.port);
+        close(fd); // closed without a handshake: counted, never logged
+        Thread.sleep(1100.msecs);
+        bad = new TlsClient(s.port, ca("b"));
+        bad.hang();
+        Thread.sleep(100.msecs);
+    });
+    import std.algorithm : count;
+
+    assert(log.count("vela: TLS handshake failed from 127.0.0.1: ") == 2, log);
+    assert(log.indexOf("certificate unknown") >= 0 || log.indexOf("alert") >= 0, log);
+    assert(log.indexOf("(1 similar messages suppressed)") >= 0, log); // the cleartext client; not the one that just closed
+    assert(log.indexOf("closed") < 0 && log.indexOf("eof") < 0, log);
+
+    log = captureStderr({
+        // an HTTP/2 connection error, and a client that never acknowledges our SETTINGS
+        Thread.sleep(1100.msecs); // past the rate limit of the lines above
+        auto c = new TlsClient(s.port, ca);
+        h2Start(c);
+        c.send(frame(0, 0, 0, cast(const(ubyte)[]) "x")); // DATA on stream 0
+        while (c.more()) {}
+        c.hang();
+        Thread.sleep(1100.msecs);
+        c = new TlsClient(s.port, ca);
+        c.send(cast(const(ubyte)[]) clientPreface ~ frame(4, 0, 0, null)); // ...and never sends the ACK
+        immutable t0 = MonoTime.currTime;
+        uint code = uint.max;
+        while (c.more()) {}
+        auto p = c.pending;
+        for (size_t i = 0; i + 9 <= p.length; i += 9 + ((p[i] << 16) | (p[i + 1] << 8) | p[i + 2]))
+            if (p[i + 3] == 7)
+                code = (p[i + 13] << 24) | (p[i + 14] << 16) | (p[i + 15] << 8) | p[i + 16];
+        assert(code == H2Error.settingsTimeout, "GOAWAY(SETTINGS_TIMEOUT) expected, got " ~ code.to!string);
+        assert((MonoTime.currTime - t0).total!"msecs" < 1500);
+        c.hang();
+        Thread.sleep(100.msecs);
+    });
+    assert(log.indexOf("vela: HTTP/2 connection error from 127.0.0.1: PROTOCOL_ERROR") >= 0, log);
+    assert(log.indexOf("vela: HTTP/2 connection error from 127.0.0.1: SETTINGS_TIMEOUT") >= 0, log);
+
+    ServerConfig quiet;
+    quiet.logConnectionErrors = false;
+    auto q = start(quiet);
+    scope (exit) stop(q);
+    log = captureStderr({
+        auto bad = new TlsClient(q.port, ca("b"));
+        bad.hang();
+        Thread.sleep(100.msecs);
+    });
+    assert(log.length == 0, log);
+    ok("logging: handshake failures and HTTP/2 errors with the client address, one line per second, "
+        ~ "suppressed count; SETTINGS_TIMEOUT; logConnectionErrors = false is silent");
+}
+
 void testManyConnections()
 {
     auto s = start(ServerConfig.init);
@@ -718,6 +964,8 @@ void main()
     testHandshakeFailures();
     testReload();
     testConfigErrors();
+    testRedirectPort();
+    testLogging();
     testManyConnections();
     printf("all TLS network tests passed\n");
 }

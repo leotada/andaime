@@ -231,7 +231,8 @@ cfg.tls.certFile = "/etc/letsencrypt/live/example.com/fullchain.pem";
 cfg.tls.keyFile = "/etc/letsencrypt/live/example.com/privkey.pem";
 ```
 
-Renewed certificates are picked up without a restart. Without a certificate, use cleartext HTTP/2 between
+Renewed certificates are picked up without a restart, and `cfg.tls.redirectPort = 80` answers Let's Encrypt
+challenges and redirects to HTTPS. [deploy.md](deploy.md) is the step-by-step guide for a VPS. Without a certificate, use cleartext HTTP/2 between
 services or behind a proxy that speaks h2c (Caddy, HAProxy, Envoy, Cloud Run); the README has the details.
 
 ## 10. Readable compile errors

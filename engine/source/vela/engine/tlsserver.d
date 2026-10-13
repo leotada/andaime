@@ -279,10 +279,16 @@ private extern (C) int selectHttp1(SSL*, const(ubyte)** out_, ubyte* outLen, con
 
 // ----------------------------------------------------------------------------- connections
 
-enum Handshake : ubyte { done, again, failed }
+/// `closed`: the client went away mid-handshake (port scanners, TCP health checks, abandoned
+/// speculative connections): counted, but not worth a log line.
+enum Handshake : ubyte { done, again, failed, closed }
 
-/// Advances the handshake as far as the socket allows.
-Handshake tlsHandshake(SSL* s) @system nothrow @nogc
+private enum uint unexpectedEof = 294; // SSL_R_UNEXPECTED_EOF_WHILE_READING
+private enum uint reasonMask = 0x7fffff; // ERR_REASON_MASK
+
+/// Advances the handshake as far as the socket allows. On failure `reason` holds OpenSSL's
+/// explanation (for the log) and `why` the slice of it that was filled.
+Handshake tlsHandshake(SSL* s, ref char[160] reason, out const(char)[] why) @system nothrow @nogc
 {
     tls.ERR_clear_error();
     immutable r = tls.SSL_do_handshake(s);
@@ -291,6 +297,21 @@ Handshake tlsHandshake(SSL* s) @system nothrow @nogc
     immutable e = tls.SSL_get_error(s, r);
     if (e == SSL_ERROR_WANT_READ || e == SSL_ERROR_WANT_WRITE)
         return Handshake.again;
+    immutable code = tls.ERR_get_error();
+    if (code == 0 || (code & reasonMask) == unexpectedEof)
+    {
+        tls.ERR_clear_error();
+        return Handshake.closed;
+    }
+    else
+    {
+        reason[] = 0;
+        tls.ERR_error_string_n(code, reason.ptr, reason.length);
+        size_t n = 0;
+        while (n < reason.length && reason[n])
+            n++;
+        why = reason[0 .. n];
+    }
     tls.ERR_clear_error();
     return Handshake.failed;
 }

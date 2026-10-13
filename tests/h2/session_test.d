@@ -565,7 +565,7 @@ unittest // floods end with ENHANCE_YOUR_CALM; tick forgives a steady rate
     {
         p.send(frame(6, 0, 0, new ubyte[8]));
         if (i % 100 == 99)
-            p.s.tick();
+            p.s.tick(0);
     }
     assert(!p.s.fatal);
     ubyte[] burst;
@@ -588,6 +588,26 @@ unittest // floods end with ENHANCE_YOUR_CALM; tick forgives a steady rate
     foreach (i; 0 .. 4)
         p.send(frame(9, 0, 1, new ubyte[16_000]));
     assert(p.s.fatal && p.s.lastError == H2Error.enhanceYourCalm);
+}
+
+unittest // SETTINGS must be acknowledged in time (§6.5.3)
+{
+    H2Config cfg;
+    cfg.settingsTimeoutMs = 1000;
+    auto p = new Peer(cfg, false);
+    p.s.nowMs = 100;
+    p.send(cast(ubyte[]) clientPreface.dup ~ frame(4, 0, 0, null)); // our SETTINGS go out at t = 100
+    p.frames();
+    p.s.tick(1000);
+    assert(!p.s.fatal);
+    p.s.tick(1101);
+    expectGoAway(p, H2Error.settingsTimeout, "no SETTINGS ACK");
+    assert(h2ErrorName(p.s.lastError) == "SETTINGS_TIMEOUT");
+
+    p = new Peer(cfg, false);
+    p.send(cast(ubyte[]) clientPreface.dup ~ frame(4, 0, 0, null) ~ frame(4, flagAck, 0, null));
+    p.s.tick(1_000_000);
+    assert(!p.s.fatal, "an acknowledged SETTINGS never times out");
 }
 
 unittest // graceful GOAWAY: running streams finish, new ones are ignored

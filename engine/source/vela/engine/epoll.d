@@ -34,7 +34,7 @@ import core.stdc.stdio : printf, fprintf, stderr, perror;
 import core.sys.posix.sys.socket;
 import core.sys.posix.netinet.in_;
 import core.sys.posix.netinet.tcp : TCP_NODELAY;
-import core.sys.posix.arpa.inet : inet_pton;
+import core.sys.posix.arpa.inet : inet_pton, inet_ntop;
 import core.sys.posix.unistd : close, read, write, sysconf, _SC_NPROCESSORS_ONLN;
 import core.sys.posix.signal;
 import core.sys.linux.epoll;
@@ -72,6 +72,14 @@ private class Item
     this(Kind k) nothrow @nogc @safe { kind = k; }
 }
 
+/// A listening socket. `redirect`: the cleartext port next to a TLS listener (ACME + 308).
+private final class ListenItem : Item
+{
+    int fd = -1;
+    bool redirect;
+    this(bool r) nothrow @safe { super(Kind.listener); redirect = r; }
+}
+
 private enum Phase : ubyte { reading, running, writing, closed, h2, handshake }
 
 private struct Stack(T)
@@ -106,6 +114,8 @@ private final class Conn : Item
     size_t sent;           /// bytes of worker.output already sent
     long deadlineMs;       /// loop's monotonic clock; 0 = no deadline
     bool fresh;            /// no request served yet (HTTP/2 prior knowledge only at the start)
+    bool redirect;         /// accepted on the redirect port: answered by the engine, never the app
+    uint peerIp;           /// client IPv4 address (network order), recorded at accept for the logs
     // HTTP/2 (Phase.h2)
     H2Session h2;
     bool h2Paused;         /// stopped reading: too much output queued for a peer that does not read
@@ -186,8 +196,13 @@ final class EpollLoop : EventLoop, Scheduler
     private ServerConfig cfg;
     private HandlerFactory factory;
 
-    private int ep = -1, listenFd = -1, wakeFd = -1;
-    private Item listenItem, wakeItem;
+    private int ep = -1, wakeFd = -1;
+    private ListenItem mainListener, redirectListener;
+    private Item wakeItem;
+    private size_t redirectsN;
+    private long lastConnLogMs = -1_000_000;
+    private size_t suppressedConnLogs;
+    private char[160] tlsReason;
     private BufferPool pool;
     private HeaderField[maxHeaders] scratch;
     private ByteBuffer errOut;
@@ -223,6 +238,8 @@ final class EpollLoop : EventLoop, Scheduler
 
     /// Port this loop listens on (useful with `port = 0`); valid when `ready`.
     ushort boundPort;
+    /// Port of the cleartext redirect listener (`tls.redirectPort`), 0 when there is none.
+    ushort boundRedirectPort;
     shared bool ready;
 
     this()
@@ -247,7 +264,7 @@ final class EpollLoop : EventLoop, Scheduler
     {
         return LoopStats(inFlight, peakInFlight, workersCreated, workersRetired, idle.n,
             connCount, rejected, cancelledN, timedOutN, stalls, maxStallMs, h2Conns, h2Streams,
-            tlsHandshakes, tlsFailures, tlsServer.reloads);
+            tlsHandshakes, tlsFailures, tlsServer.reloads, redirectsN);
     }
 
     /// How many times the loop returned memory to the OS after a burst.
@@ -361,20 +378,37 @@ final class EpollLoop : EventLoop, Scheduler
                 return false;
             }
         }
-        listenFd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
-        if (listenFd < 0)
+        mainListener = listenOn(cfg.port, false, boundPort);
+        if (mainListener is null)
+            return false;
+        if (cfg.tls.enabled && cfg.tls.redirectPort)
+        {
+            redirectListener = listenOn(cfg.tls.redirectPort, true, boundRedirectPort);
+            if (redirectListener is null)
+                return false;
+        }
+        return true;
+    }
+
+    /// Opens, binds and registers one listening socket. Null on failure (already reported).
+    private ListenItem listenOn(ushort port, bool redirect, out ushort bound)
+    {
+        immutable fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        if (fd < 0)
         {
             perror("vela: socket");
-            return false;
+            return null;
         }
+        auto li = new ListenItem(redirect);
+        li.fd = fd;
         int one = 1;
-        setsockopt(listenFd, SOL_SOCKET, SO_REUSEADDR, &one, one.sizeof);
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, one.sizeof);
         if (cfg.reusePort)
-            setsockopt(listenFd, SOL_SOCKET, SO_REUSEPORT, &one, one.sizeof);
+            setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, one.sizeof);
 
         sockaddr_in addr;
         addr.sin_family = AF_INET;
-        addr.sin_port = htons(cfg.port);
+        addr.sin_port = htons(port);
         char[64] host = 0;
         if (cfg.host.length == 0 || cfg.host.length >= host.length)
             addr.sin_addr.s_addr = htonl(INADDR_ANY);
@@ -384,37 +418,51 @@ final class EpollLoop : EventLoop, Scheduler
             if (inet_pton(AF_INET, host.ptr, &addr.sin_addr) != 1)
             {
                 fprintf(stderr, "vela: invalid host: %s\n", host.ptr);
-                return false;
+                close(fd);
+                return null;
             }
         }
-        if (bind(listenFd, cast(sockaddr*)&addr, addr.sizeof) < 0)
+        if (bind(fd, cast(sockaddr*)&addr, addr.sizeof) < 0)
         {
-            perror("vela: bind");
-            return false;
+            fprintf(stderr, "vela: bind to port %d: ", cast(int) port);
+            perror(null);
+            close(fd);
+            return null;
         }
-        if (listen(listenFd, cast(int) cfg.backlog) < 0)
+        if (listen(fd, cast(int) cfg.backlog) < 0)
         {
             perror("vela: listen");
-            return false;
+            close(fd);
+            return null;
         }
         sockaddr_in got;
         socklen_t gl = got.sizeof;
-        getsockname(listenFd, cast(sockaddr*)&got, &gl);
-        boundPort = ntohs(got.sin_port);
+        getsockname(fd, cast(sockaddr*)&got, &gl);
+        bound = ntohs(got.sin_port);
 
-        listenItem = new Item(Kind.listener);
         epoll_event ev;
         ev.events = EPOLLIN; // level-triggered: if connections remain after the batch, the next wait reports them
-        ev.data.ptr = cast(void*) listenItem;
-        epoll_ctl(ep, EPOLL_CTL_ADD, listenFd, &ev);
-        return true;
+        ev.data.ptr = cast(void*) li;
+        epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev);
+        return li;
     }
 
-    private void acceptSome()
+    private void closeListener(ref ListenItem li)
+    {
+        if (li is null || li.fd < 0)
+            return;
+        epoll_ctl(ep, EPOLL_CTL_DEL, li.fd, null);
+        close(li.fd);
+        li.fd = -1;
+    }
+
+    private void acceptSome(ListenItem li)
     {
         foreach (_; 0 .. 64)
         {
-            immutable fd = accept4(listenFd, null, null, SOCK_NONBLOCK | SOCK_CLOEXEC);
+            sockaddr_in peer;
+            socklen_t pl = peer.sizeof;
+            immutable fd = accept4(li.fd, cast(sockaddr*)&peer, &pl, SOCK_NONBLOCK | SOCK_CLOEXEC);
             if (fd < 0)
                 return; // EAGAIN, EMFILE...: the next wait tries again
             if (connCount >= cfg.maxConnections || stopping)
@@ -439,8 +487,10 @@ final class EpollLoop : EventLoop, Scheduler
             c.blockedSinceMs = 0;
             c.ssl = null;
             c.tlsFatal = false;
+            c.redirect = li.redirect;
+            c.peerIp = peer.sin_addr.s_addr;
             c.deadlineMs = nowMs + cfg.idleTimeoutMs;
-            if (cfg.tls.enabled)
+            if (cfg.tls.enabled && !li.redirect)
             {
                 c.ssl = tlsServer.accept(fd);
                 if (c.ssl is null)
@@ -472,7 +522,7 @@ final class EpollLoop : EventLoop, Scheduler
         {
             case Kind.listener:
                 if (!stopping)
-                    acceptSome();
+                    acceptSome(cast(ListenItem) cast(void*) it);
                 break;
             case Kind.wake:
                 ulong v;
@@ -562,7 +612,7 @@ final class EpollLoop : EventLoop, Scheduler
             if (c.fd < 0 || c.phase != Phase.reading)
                 return;
             // prior knowledge is a cleartext feature: over TLS, HTTP/2 is chosen by ALPN (RFC 9113 §3.3)
-            if (cfg.http2 && c.fresh && c.ssl is null && !c.buf.isNull && c.buf.len >= 2 && c.buf.mem[0] == 'P'
+            if (cfg.http2 && c.fresh && c.ssl is null && !c.redirect && !c.buf.isNull && c.buf.len >= 2 && c.buf.mem[0] == 'P'
                 && c.buf.mem[1] == 'R' && !stopping)
             {
                 // "PR": no HTTP/1 method starts like that; the session checks the full preface
@@ -572,6 +622,11 @@ final class EpollLoop : EventLoop, Scheduler
             final switch (tryParse(c))
             {
                 case Step.ready:
+                    if (c.redirect)
+                    {
+                        answerRedirectPort(c);
+                        break;
+                    }
                     if (cfg.http2 && !stopping && tryUpgrade(c))
                         return;
                     startRequest(c);
@@ -875,7 +930,146 @@ final class EpollLoop : EventLoop, Scheduler
         }
     }
 
+    // ------------------------------------------------------------------ redirect port (cleartext next to TLS)
+
+    /// Answers a complete request on the redirect port: an ACME HTTP-01 challenge from
+    /// `tls.acmeWebroot`, or a 308 to the same host and target over HTTPS. Keep-alive is honored;
+    /// the request never reaches the application.
+    private void answerRedirectPort(Conn c)
+    {
+        Request req;
+        parseRequestHead(cast(const(char)[]) c.buf.data, req, scratch[], cfg.limits);
+        redirectsN++;
+        errOut.clear();
+        enum string acmePrefix = "/.well-known/acme-challenge/";
+        if (cfg.tls.acmeWebroot.length && req.path.length > acmePrefix.length
+            && req.path[0 .. acmePrefix.length] == acmePrefix)
+        {
+            serveChallenge(req, req.path[acmePrefix.length .. $]);
+        }
+        else
+        {
+            const(char)[] host;
+            if (req.target == "*" || !hostForRedirect(req.header("host"), host))
+                writeResponseHead(errOut, 400, null, 0, null, req.keepAlive);
+            else
+            {
+                // "https://" host [":" port] target; the parser already rejected control characters
+                char[512] loc = void;
+                size_t n = 0;
+                void add(scope const(char)[] s)
+                {
+                    immutable k = s.length < loc.length - n ? s.length : loc.length - n;
+                    loc[n .. n + k] = s[0 .. k];
+                    n += k;
+                }
+                add("https://");
+                add(host);
+                if (boundPort != 443)
+                {
+                    char[8] num = void;
+                    size_t i = num.length;
+                    uint p = boundPort;
+                    do { num[--i] = cast(char)('0' + p % 10); p /= 10; } while (p);
+                    add(":");
+                    add(num[i .. $]);
+                }
+                add(req.target);
+                if (n == loc.length)
+                    writeResponseHead(errOut, 414, null, 0, null, req.keepAlive);
+                else
+                {
+                    HeaderField[1] h = [HeaderField("Location", loc[0 .. n])];
+                    writeResponseHead(errOut, 308, null, 0, h[], req.keepAlive);
+                }
+            }
+        }
+        sendRaw(c, errOut.data); // a few hundred bytes on a socket we have not written to yet
+        if (!req.keepAlive || stopping)
+            return closeConn(c);
+        c.fresh = false;
+        c.buf.compact(c.total);
+        c.haveHead = false;
+        c.sent100 = false;
+        c.headLen = c.total = c.sent = 0;
+        if (c.buf.len == 0)
+            pool.release(c.buf);
+        c.deadlineMs = nowMs + cfg.idleTimeoutMs;
+    }
+
+    /// `<webroot>/.well-known/acme-challenge/<token>`: the token is base64url (RFC 8555 §8.3), so
+    /// it cannot climb out of the directory; symlinks are not followed; at most 8 KiB.
+    private void serveChallenge(ref const Request req, const(char)[] token)
+    {
+        import core.sys.posix.fcntl : open, O_RDONLY, O_NOFOLLOW, O_CLOEXEC;
+        import core.sys.posix.sys.stat : fstat, stat_t, S_ISREG;
+
+        bool valid = token.length >= 1 && token.length <= 255;
+        foreach (ch; token)
+            valid &= (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_';
+        if (!valid || (req.method != Method.GET && req.method != Method.HEAD))
+            return writeResponseHead(errOut, 404, null, 0, null, req.keepAlive);
+        char[4096] path = void;
+        enum string dirPart = "/.well-known/acme-challenge/";
+        immutable root = cfg.tls.acmeWebroot;
+        if (root.length + dirPart.length + token.length + 1 > path.length)
+            return writeResponseHead(errOut, 404, null, 0, null, req.keepAlive);
+        size_t n = 0;
+        path[n .. n + root.length] = root[];
+        n += root.length;
+        path[n .. n + dirPart.length] = dirPart[];
+        n += dirPart.length;
+        path[n .. n + token.length] = token[];
+        n += token.length;
+        path[n] = 0;
+        immutable fd = open(path.ptr, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        if (fd < 0)
+            return writeResponseHead(errOut, 404, null, 0, null, req.keepAlive);
+        scope (exit) close(fd);
+        stat_t st;
+        char[8192] content = void;
+        if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > content.length)
+            return writeResponseHead(errOut, 404, null, 0, null, req.keepAlive);
+        size_t got = 0;
+        while (got < st.st_size)
+        {
+            immutable r = read(fd, content.ptr + got, content.length - got);
+            if (r <= 0)
+                break;
+            got += r;
+        }
+        writeResponseHead(errOut, 200, "text/plain", got, null, req.keepAlive);
+        if (req.method == Method.GET)
+            errOut.put(content[0 .. got]);
+    }
+
     // ------------------------------------------------------------------ TLS
+
+    /// One line per second per worker at most, with the client's address; the lines skipped in
+    /// between are counted in the next one.
+    private void logConnError(Conn c, const(char)[] what, const(char)[] detail)
+    {
+        if (!cfg.logConnectionErrors)
+            return;
+        if (nowMs - lastConnLogMs < 1000)
+        {
+            suppressedConnLogs++;
+            return;
+        }
+        lastConnLogMs = nowMs;
+        char[64] ip = 0;
+        in_addr a;
+        a.s_addr = c.peerIp;
+        if (inet_ntop(AF_INET, &a, ip.ptr, cast(socklen_t) ip.length) is null)
+            ip[0 .. 7] = "unknown";
+        if (suppressedConnLogs)
+            fprintf(stderr, "vela: %.*s from %s: %.*s (%zu similar messages suppressed)\n", cast(int) what.length,
+                what.ptr, ip.ptr, cast(int) detail.length, detail.ptr, suppressedConnLogs);
+        else
+            fprintf(stderr, "vela: %.*s from %s: %.*s\n", cast(int) what.length, what.ptr, ip.ptr,
+                cast(int) detail.length, detail.ptr);
+        suppressedConnLogs = 0;
+    }
 
     /// read(2) on the connection, through TLS when there is a session.
     private ptrdiff_t ioRead(Conn c, void* p, size_t n)
@@ -898,20 +1092,27 @@ final class EpollLoop : EventLoop, Scheduler
         if (events & EPOLLERR)
         {
             tlsFailures++;
+            logConnError(c, "TLS handshake failed", "socket error");
             return closeConn(c);
         }
-        final switch (tlsHandshake(c.ssl))
+        const(char)[] why;
+        final switch (tlsHandshake(c.ssl, tlsReason, why))
         {
             case Handshake.again:
                 if (events & (EPOLLHUP | EPOLLRDHUP))
                 {
                     tlsFailures++;
-                    closeConn(c); // the client left halfway
+                    closeConn(c); // the client left halfway: counted, not logged
                 }
                 return;
+            case Handshake.closed:
+                tlsFailures++;
+                c.tlsFatal = true;
+                return closeConn(c);
             case Handshake.failed:
                 tlsFailures++;
                 c.tlsFatal = true;
+                logConnError(c, "TLS handshake failed", why);
                 return closeConn(c);
             case Handshake.done:
                 break;
@@ -939,6 +1140,7 @@ final class EpollLoop : EventLoop, Scheduler
         hc.connectionWindowSize = cfg.http2ConnectionWindowBytes;
         hc.maxHeaders = maxHeaders;
         hc.limits = cfg.limits;
+        hc.settingsTimeoutMs = cfg.headerTimeoutMs; // a client this slow to acknowledge is gone
         return new H2Session(hc);
     }
 
@@ -1209,7 +1411,7 @@ final class EpollLoop : EventLoop, Scheduler
     private void sweepH2(Conn c)
     {
         auto s = c.h2;
-        s.tick();
+        s.tick(nowMs);
         if (c.blockedSinceMs && nowMs - c.blockedSinceMs > cfg.writeTimeoutMs)
             return closeConn(c); // the client does not read
         if (s.busy == 0 && c.deadlineMs && nowMs >= c.deadlineMs)
@@ -1433,6 +1635,7 @@ final class EpollLoop : EventLoop, Scheduler
             if (c.phase == Phase.handshake)
             {
                 tlsFailures++;
+                logConnError(c, "TLS handshake failed", "timed out (headerTimeoutMs)");
                 closeConn(c); // handshake too slow (or never started)
                 continue;
             }
@@ -1497,7 +1700,11 @@ final class EpollLoop : EventLoop, Scheduler
         if (!c.buf.isNull)
             pool.release(c.buf);
         if (c.h2 !is null)
+        {
+            if (c.h2.fatal && c.h2.lastError != H2Error.noError)
+                logConnError(c, "HTTP/2 connection error", h2ErrorName(c.h2.lastError));
             closeH2(c);
+        }
         if (c.worker !is null)
         {
             auto w = c.worker;
@@ -1562,12 +1769,8 @@ final class EpollLoop : EventLoop, Scheduler
     {
         stopping = true;
         stopDeadlineMs = nowMs + cfg.shutdownGraceMs;
-        if (listenFd >= 0)
-        {
-            epoll_ctl(ep, EPOLL_CTL_DEL, listenFd, null);
-            close(listenFd);
-            listenFd = -1;
-        }
+        closeListener(mainListener);
+        closeListener(redirectListener);
     }
 
     private void closeIdleConns()
@@ -1603,13 +1806,64 @@ final class EpollLoop : EventLoop, Scheduler
             w.call();
             destroy(w);
         }
-        if (listenFd >= 0)
-        {
-            close(listenFd);
-            listenFd = -1;
-        }
+        closeListener(mainListener);
+        closeListener(redirectListener);
         atomicStore(ready, false);
     }
+}
+
+/// The host part of a Host header, validated for use in a redirect: a DNS name or IPv4 address
+/// (letters, digits, '.', '-') or a bracketed IPv6 literal; the port, if any, is dropped.
+private bool hostForRedirect(const(char)[] h, out const(char)[] host) pure nothrow @nogc @safe
+{
+    if (h.length == 0 || h.length > 255)
+        return false;
+    if (h[0] == '[')
+    {
+        size_t e = 1;
+        while (e < h.length && h[e] != ']')
+        {
+            immutable ch = h[e];
+            if (!((ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F') || ch == ':' || ch == '.'))
+                return false;
+            e++;
+        }
+        if (e == h.length || e == 1)
+            return false;
+        host = h[0 .. e + 1];
+        return e + 1 == h.length || h[e + 1] == ':';
+    }
+    size_t e = 0;
+    while (e < h.length && h[e] != ':')
+    {
+        immutable ch = h[e];
+        if (!((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '-'))
+            return false;
+        e++;
+    }
+    if (e == 0)
+        return false;
+    foreach (ch; h[e .. $][e < h.length ? 1 : 0 .. $])
+        if (ch < '0' || ch > '9')
+            return false;
+    host = h[0 .. e];
+    return true;
+}
+
+@safe unittest
+{
+    const(char)[] h;
+    assert(hostForRedirect("example.com", h) && h == "example.com");
+    assert(hostForRedirect("example.com:80", h) && h == "example.com");
+    assert(hostForRedirect("127.0.0.1:8080", h) && h == "127.0.0.1");
+    assert(hostForRedirect("[::1]:80", h) && h == "[::1]");
+    assert(hostForRedirect("[2001:db8::1]", h) && h == "[2001:db8::1]");
+    assert(!hostForRedirect("", h));
+    assert(!hostForRedirect("evil.com/path", h));
+    assert(!hostForRedirect("a b", h));
+    assert(!hostForRedirect("x.com:80x", h));
+    assert(!hostForRedirect("[::1", h));
+    assert(!hostForRedirect("user@host", h));
 }
 
 // ======================================================================= multiple workers
@@ -1667,6 +1921,9 @@ void runEpollServer(ServerConfig cfg, HandlerFactory factory)
     printf("vela (epoll, %u worker%s) at %s://%.*s:%d\n", n, n == 1 ? "".ptr : "s".ptr,
         cfg.tls.enabled ? "https".ptr : "http".ptr,
         cast(int) cfg.host.length, cfg.host.ptr, cast(int) cfg.port);
+    if (cfg.tls.enabled && cfg.tls.redirectPort)
+        printf("vela: port %d redirects to https%s\n", cast(int) cfg.tls.redirectPort,
+            cfg.tls.acmeWebroot.length ? " and serves ACME challenges".ptr : "".ptr);
 
     Thread[] threads;
     foreach (i; 1 .. n)

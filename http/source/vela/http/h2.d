@@ -94,6 +94,8 @@ struct H2Config
     uint maxHeaders = 32;             /// fields per request; above that, 431
     uint floodLimit = 1000;           /// cost of control frames/resets before ENHANCE_YOUR_CALM (halves every `tick`)
     size_t outputHighWater = 64 << 10; /// DATA stops being queued while this much output is pending
+    /// A client that has not acknowledged our SETTINGS by then gets GOAWAY(SETTINGS_TIMEOUT) (§6.5.3).
+    uint settingsTimeoutMs = 10_000;
     Limits limits;                    /// maxHeadBytes = decoded header list; maxTargetBytes = :path; maxBodyBytes
 }
 
@@ -224,6 +226,8 @@ final class H2Session
     private size_t prefaceSeen;
     private bool settingsSeen;
     private bool started;
+    private bool settingsAcked;
+    private long settingsSentMs;
 
     /// GOAWAY sent (graceful or not): no new streams will be processed.
     bool goAwaySent;
@@ -278,7 +282,8 @@ final class H2Session
         peerMaxFrame = defaultFrameSize;
         flood = 0;
         prefaceSeen = 0;
-        settingsSeen = started = false;
+        settingsSeen = started = settingsAcked = false;
+        settingsSentMs = 0;
         goAwaySent = goAwayReceived = fatal = false;
         lastError = H2Error.noError;
         needBytes = clientPreface.length;
@@ -305,6 +310,7 @@ final class H2Session
         if (started)
             return;
         started = true;
+        settingsSentMs = nowMs;
         ubyte[18] p;
         size_t n = 0;
         void setting(ushort id, uint v) nothrow @nogc @safe
@@ -560,9 +566,11 @@ final class H2Session
     size_t busy() const nothrow @nogc => streams.length + zombies;
 
     /// Called periodically (every few hundred ms): forgets old flood points.
-    void tick() nothrow @nogc
+    void tick(long now) nothrow
     {
         flood /= 2;
+        if (started && !settingsAcked && !fatal && cfg.settingsTimeoutMs && now - settingsSentMs > cfg.settingsTimeoutMs)
+            connectionError(H2Error.settingsTimeout);
     }
 
     /// A stream that never completed its request in time: answered with `status` (408).
@@ -748,6 +756,7 @@ final class H2Session
         {
             if (payload.length)
                 return connectionError(H2Error.frameSize);
+            settingsAcked = true;
             return;
         }
         if (payload.length % 6)
@@ -1506,6 +1515,15 @@ private bool unpad(ubyte flags, scope const(ubyte)[] payload, out const(ubyte)[]
         return false;
     data = payload[1 .. $ - payload[0]];
     return true;
+}
+
+/// The RFC 9113 name of an error code, for logs.
+string h2ErrorName(H2Error e) pure nothrow @nogc
+{
+    static immutable string[14] names = ["NO_ERROR", "PROTOCOL_ERROR", "INTERNAL_ERROR", "FLOW_CONTROL_ERROR",
+        "SETTINGS_TIMEOUT", "STREAM_CLOSED", "FRAME_SIZE_ERROR", "REFUSED_STREAM", "CANCEL", "COMPRESSION_ERROR",
+        "CONNECT_ERROR", "ENHANCE_YOUR_CALM", "INADEQUATE_SECURITY", "HTTP_1_1_REQUIRED"];
+    return e < names.length ? names[e] : "UNKNOWN_ERROR";
 }
 
 /// Hop-by-hop fields that HTTP/2 forbids (§8.2.2).

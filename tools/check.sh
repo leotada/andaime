@@ -45,6 +45,16 @@ $DC $I -i -run tests/net/tls_net.d
 echo "== HTTP/2 and HTTPS interoperability (curl, python-h2, h2spec; each skips itself when missing)"
 DC=$DC tools/h2_interop.sh || fail=1
 
+echo "== real browser (Chromium via Playwright: HTTPS, h2, redirect port, HTTP/1.1 fallback; skips without them)"
+btmp=$(mktemp -d)
+$DC $I -i -of"$btmp/browser_serve" tests/net/browser_serve.d > /dev/null
+if command -v python3 > /dev/null && command -v openssl > /dev/null; then
+    python3 tests/net/browser_test.py "$btmp/browser_serve" || fail=1
+else
+    echo "warning: python3 or openssl missing; skipping the real-browser test"
+fi
+rm -rf "$btmp"
+
 echo "== M3: PostgreSQL (async libpq), HTTP/HTTPS client and thread pool"
 tools/with_postgres.sh $DC $I -i -run tests/db/pg_net.d
 tools/with_upstream.sh $DC $I -i -run tests/net/client_net.d

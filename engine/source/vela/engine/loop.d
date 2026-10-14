@@ -54,6 +54,10 @@ struct ServerConfig
 {
     string host = "0.0.0.0";
     ushort port = 8080;
+    /// Bind a listening socket and accept connections. False skips the bind and does not load TLS; the loop still
+    /// polls, so background fibers can `sleep` and `awaitFd`. The process stays up while those fibers are in flight
+    /// and, after stop, leaves once they finish. At `shutdownGraceMs` the ones still sleeping are cancelled.
+    bool accept = true;
     uint workers = 0;                /// 0 = number of cores
     uint backlog = 1024;
     uint maxConnections = 10_000;    /// per worker
@@ -81,7 +85,7 @@ struct ServerConfig
     /// other peer the header is ignored (anyone can send it). An invalid entry fails startup.
     const(string)[] trustedProxies;
     string forwardedHeader = "X-Forwarded-For"; /// the header `ctx.clientIp()` reads behind a trusted proxy
-    uint shutdownGraceMs = 10_000;   /// wait for in-flight requests on stop
+    uint shutdownGraceMs = 10_000;   /// on stop, wait for in-flight requests and background fibers; then cancel any still sleeping
     uint stallWarnMs = 50;           /// warning when a handler holds the worker longer than this without yielding; 0 turns it off
     bool reusePort = true;           /// SO_REUSEPORT: one listener per worker
     bool trimAfterBurst = true;      /// returns memory to the OS 1 s after a burst (runs the GC)
@@ -105,7 +109,7 @@ struct ServerConfig
 /// Counters of one worker (read without a lock: for metrics and tests only).
 struct LoopStats
 {
-    size_t inFlight;       /// fibers in use now (running, suspended or sending)
+    size_t inFlight;       /// fibers in use now (requests and background fibers: running, suspended or sending)
     size_t peakInFlight;
     size_t workersCreated; /// fibers created since the start
     size_t workersRetired; /// fibers torn down because of too many idle ones

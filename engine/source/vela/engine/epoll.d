@@ -10,6 +10,10 @@
 /// or the request deadline expires, the handler's next wait throws
 /// `RequestCancelled`; the stack unwinds running `scope(exit)` and destructors.
 ///
+/// Background fibers (`spawn`) are the same `Worker` with no connection and no HTTP/2 stream. They count toward
+/// `inFlight`. `ServerConfig.accept = false` skips the listening socket and TLS; the loop still polls. On stop they
+/// finish the current wait until `shutdownGraceMs`, then teardown cancels the ones still sleeping.
+///
 /// Pools: idle fibers above `maxIdleWorkers` are torn down (the stack goes back
 /// to the OS); network buffers go to the `BufferPool`, which has its own ceiling.
 ///
@@ -45,7 +49,7 @@ import vela.http.h2;
 import vela.http.chunked : ChunkedDecoder, ChunkResult;
 import vela.engine.bufferpool;
 import vela.engine.loop;
-import vela.engine.fiberio;
+import vela.engine.fiberio : Scheduler, currentScheduler, RequestCancelled, IoEvent, workerIndex, setStopRequested;
 import vela.engine.tls : SSL;
 import vela.engine.tlsserver;
 
@@ -195,6 +199,8 @@ private final class Worker : Fiber, ResponseSink
     bool flushedAny;       /// some response bytes already reached the transport: a 500 is no longer possible
     bool waitingWrite;     /// suspended until the connection (or the stream's output) can take more
     bool poisoned;        /// an `Error` escaped the handler: cleanup code may not have run, so this fiber is never reused
+    bool background;       /// `spawn`: no connection and no HTTP/2 stream
+    void delegate() @safe bg; /// the background work, while `background`
     bool waiting, timerPending;
     uint waitGen;
     int waitFd = -1;
@@ -237,7 +243,17 @@ private final class Worker : Fiber, ResponseSink
                 return;
             done = false;
             try
-                cb(req, this);
+            {
+                if (bg !is null)
+                {
+                    // No request and no sink. Drop the delegate before the call so a pooled fiber does not pin it.
+                    auto work = bg;
+                    bg = null;
+                    work();
+                }
+                else
+                    cb(req, this);
+            }
             catch (RequestCancelled)
                 cancelled = true;
             catch (ResponseAborted)
@@ -365,6 +381,11 @@ final class EpollLoop : EventLoop, Scheduler
     private size_t trims;
     private long maxStallMs, lastStallLogMs = -1_000_000;
     private bool stopping;
+    private bool polling;                       /// `run` has a factory and can create fibers
+    private void delegate() @safe[] earlyWork; /// `spawn` during WorkerInit, before `polling`
+    private Stack!Worker spawnQ;               /// fibers to start from the loop, never from inside a fiber
+    private Worker[] bgFibers;
+    private size_t bgN;
     private shared bool stopReq;
     private RequestCancelled cancelledEx;
 
@@ -421,6 +442,7 @@ final class EpollLoop : EventLoop, Scheduler
         factory = f;
         t0 = MonoTime.currTime;
         currentScheduler = this;
+        setStopRequested(false);
         installCrashReport(cfg.fiberStackBytes);
         scope (exit)
         {
@@ -428,12 +450,18 @@ final class EpollLoop : EventLoop, Scheduler
             currentScheduler = null;
             teardown();
         }
-        if (!openListener())
+        // `accept = false`: no listening socket and no TLS. The epoll fd and its wake eventfd already exist
+        // (see the constructor); epoll_wait still runs so background fibers can sleep.
+        if (cfg.accept && !openListener())
             return;
         nowMs = elapsedMs();
         nextSweepMs = nowMs + sweepEveryMs;
+        polling = true;
+        launchEarly(); // WorkerInit may have queued fibers; they sleep before the first wait
+        nowMs = elapsedMs();
         atomicStore(ready, true);
-        atomicStore(everListened, true);
+        if (cfg.accept)
+            atomicStore(everListened, true);
 
         epoll_event[256] evs;
         for (;;)
@@ -459,12 +487,14 @@ final class EpollLoop : EventLoop, Scheduler
                 onEvent(cast(Item) evs[i].data.ptr, evs[i].events);
             drainResumeQ();
             drainWsWakes();
+            drainSpawnQ();
             flushPendingQ();
             flushDead();
 
             fireTimers();
             drainResumeQ();
             drainWsWakes();
+            drainSpawnQ();
             flushPendingQ();
             flushDead();
 
@@ -473,6 +503,7 @@ final class EpollLoop : EventLoop, Scheduler
                 sweep();
                 drainResumeQ();
                 drainWsWakes();
+                drainSpawnQ();
                 flushPendingQ();
                 flushDead();
                 trimIfQuiet();
@@ -485,6 +516,9 @@ final class EpollLoop : EventLoop, Scheduler
             {
                 closeIdleConns();
                 flushDead();
+                drainSpawnQ();
+                // Background fibers count in `inFlight`. With no listener they are what keeps the process up:
+                // leave once they finish, or at the deadline (teardown cancels the ones still sleeping).
                 if (inFlight == 0 && connCount == 0)
                     break;
                 if (nowMs >= stopDeadlineMs)
@@ -762,7 +796,7 @@ final class EpollLoop : EventLoop, Scheduler
         wake(w);
         Conn c = w.conn;
         resume(w);
-        if (c.fd >= 0 && c.phase == Phase.reading)
+        if (c !is null && c.fd >= 0 && c.phase == Phase.reading)
             drive(c);
     }
 
@@ -1011,6 +1045,12 @@ final class EpollLoop : EventLoop, Scheduler
 
     private void releaseWorker(Worker w)
     {
+        if (w.background)
+        {
+            w.background = false;
+            w.bg = null;
+            untrackBackground(w);
+        }
         w.conn = null;
         w.stream = null;
         w.tunnel = null;
@@ -1032,6 +1072,99 @@ final class EpollLoop : EventLoop, Scheduler
             destroy(w);
             if (!w.poisoned)
                 workersRetired++;
+        }
+    }
+
+    // ------------------------------------------------------------------ background fibers (`spawn`)
+    //
+    // Same `Worker` as a request, with no connection. `spawn` only queues: a fiber is resumed from the loop
+    // (`drainSpawnQ` / `launchEarly`), never from inside another fiber. They count in `inFlight`. On stop they
+    // keep running until they return; at `shutdownGraceMs`, teardown cancels the ones still sleeping.
+
+    private void trackBackground(Worker w)
+    {
+        if (bgN == bgFibers.length)
+            bgFibers.length = bgFibers.length ? bgFibers.length * 2 : 8;
+        bgFibers[bgN++] = w;
+    }
+
+    private void untrackBackground(Worker w)
+    {
+        foreach (i; 0 .. bgN)
+        {
+            if (bgFibers[i] !is w)
+                continue;
+            bgFibers[i] = bgFibers[--bgN];
+            bgFibers[bgN] = null;
+            return;
+        }
+    }
+
+    private void armBackground(void delegate() @safe work)
+    {
+        Worker w = acquireWorker();
+        w.req = Request.init;
+        w.conn = null;
+        w.stream = null;
+        w.done = false;
+        w.waiting = false;
+        w.timerPending = false;
+        w.waitFd = -1;
+        w.poisoned = false;
+        w.resetResponseState();
+        w.background = true;
+        w.bg = work;
+        trackBackground(w);
+        spawnQ.push(w);
+    }
+
+    /// Starts fibers queued by `spawn`. Called only from the loop thread, outside any fiber.
+    private void drainSpawnQ()
+    {
+        assert(Fiber.getThis() is null);
+        while (!spawnQ.empty)
+        {
+            auto w = spawnQ.pop();
+            if (!w.background || w.done)
+                continue;
+            resume(w);
+        }
+    }
+
+    /// Work queued before `polling` (WorkerInit runs before `run` sets the factory).
+    private void launchEarly()
+    {
+        auto q = earlyWork;
+        earlyWork = null;
+        foreach (work; q)
+            armBackground(work);
+        drainSpawnQ();
+    }
+
+    private void finishBackground(Worker w)
+    {
+        releaseWorker(w);
+    }
+
+    /// Sleeping background fibers get `RequestCancelled` so their stack unwinds. Others (queued, not started)
+    /// are dropped without running.
+    private void cancelSleepingBackground()
+    {
+        if (bgN == 0)
+            return;
+        auto snap = bgFibers[0 .. bgN].dup;
+        foreach (w; snap)
+            if (w !is null && w.background && !w.done && w.waiting)
+                cancelWorker(w, false);
+    }
+
+    private void dropQueuedSpawns()
+    {
+        while (!spawnQ.empty)
+        {
+            auto w = spawnQ.pop();
+            if (w.background && !w.done)
+                releaseWorker(w);
         }
     }
 
@@ -1358,8 +1491,12 @@ final class EpollLoop : EventLoop, Scheduler
         catch (Throwable)
             text = t.msg;
         immutable kind = typeid(t).name;
-        fprintf(stderr, "vela: unhandled %.*s in %.*s %.*s:\n%.*s\n", cast(int) kind.length, kind.ptr,
-            cast(int) m.length, m.ptr, cast(int) w.req.path.length, w.req.path.ptr, cast(int) text.length, text.ptr);
+        if (w.background)
+            fprintf(stderr, "vela: unhandled %.*s in a background fiber:\n%.*s\n", cast(int) kind.length, kind.ptr,
+                cast(int) text.length, text.ptr);
+        else
+            fprintf(stderr, "vela: unhandled %.*s in %.*s %.*s:\n%.*s\n", cast(int) kind.length, kind.ptr,
+                cast(int) m.length, m.ptr, cast(int) w.req.path.length, w.req.path.ptr, cast(int) text.length, text.ptr);
     }
 
     /// When the one-second window is over, reports what it suppressed and opens a new one. Also called by the sweep,
@@ -1403,6 +1540,12 @@ final class EpollLoop : EventLoop, Scheduler
         if (now - lastStallLogMs < 1000)
             return;
         lastStallLogMs = now;
+        if (w.background)
+        {
+            fprintf(stderr, "vela: warning: a background fiber held the worker for %ld ms without yielding; "
+                ~ "wait with sleep/awaitFd or move the heavy work out of the loop\n", ms);
+            return;
+        }
         auto m = methodName(w.req.method);
         fprintf(stderr, "vela: warning: a handler held the worker for %ld ms without yielding (%.*s %.*s); "
             ~ "wait with sleep/awaitFd or move the heavy work out of the loop\n", ms,
@@ -1412,6 +1555,8 @@ final class EpollLoop : EventLoop, Scheduler
     /// The handler returned (or was cancelled): decides what is left to send.
     private void finish(Worker w)
     {
+        if (w.background)
+            return finishBackground(w);
         if (w.stream !is null)
             return finishH2(w);
         if (w.upgraded)
@@ -2964,6 +3109,22 @@ final class EpollLoop : EventLoop, Scheduler
         return cast(Worker) Fiber.getThis() !is null;
     }
 
+    override bool isStopping() nothrow @nogc @safe => stopping;
+
+    // @trusted: queues a fiber on this thread's own loop. It is resumed from the loop after the caller yields,
+    // never from inside another fiber.
+    override void spawn(void delegate() @safe work) @trusted
+    {
+        if (work is null)
+            return;
+        if (!polling)
+        {
+            earlyWork ~= work;
+            return;
+        }
+        armBackground(work);
+    }
+
     override uint awaitFd(int fd, uint events, long timeoutMs) @trusted
     {
         auto w = cast(Worker) Fiber.getThis();
@@ -3080,7 +3241,7 @@ final class EpollLoop : EventLoop, Scheduler
             wake(w);
             Conn c = w.conn;
             resume(w);
-            if (c.fd >= 0 && c.phase == Phase.reading)
+            if (c !is null && c.fd >= 0 && c.phase == Phase.reading)
                 drive(c);
         }
         // a wait that ends early leaves dead Timers in the heap: clean up when they pass half
@@ -3150,7 +3311,7 @@ final class EpollLoop : EventLoop, Scheduler
         foreach (c; conns)
             if (c !is null && c.fd >= 0 && c.phase == Phase.upgraded)
                 sweepUpgraded(c);
-        if (cfg.tls.enabled)
+        if (cfg.accept && cfg.tls.enabled)
             if (auto msg = tlsServer.maybeReload(cfg.tls, nowMs))
                 fprintf(stderr, "%.*s\n", cast(int) msg.length, msg.ptr);
     }
@@ -3293,6 +3454,7 @@ final class EpollLoop : EventLoop, Scheduler
     private void beginStop()
     {
         stopping = true;
+        setStopRequested(true); // visible even after `currentScheduler` is cleared during teardown
         stopDeadlineMs = nowMs + cfg.shutdownGraceMs;
         closeListener(mainListener);
         closeListener(redirectListener);
@@ -3330,6 +3492,11 @@ final class EpollLoop : EventLoop, Scheduler
 
     private void teardown()
     {
+        // The scheduler is already cleared, so `spawn` from an unwinding fiber does nothing.
+        // Sleeping background fibers receive RequestCancelled. Queued ones are dropped without running.
+        polling = false;
+        cancelSleepingBackground();
+        dropQueuedSpawns();
         // tears down whatever is still suspended: each handler receives RequestCancelled
         foreach (c; conns)
             if (c !is null && c.fd >= 0 && c.phase == Phase.running)
@@ -3341,6 +3508,8 @@ final class EpollLoop : EventLoop, Scheduler
             if (c !is null && c.fd >= 0)
                 closeConn(c);
         flushDead();
+        dropQueuedSpawns(); // a cancelled handler may have spawned on the way out
+        earlyWork = null;
         while (!idle.empty)
         {
             auto w = idle.pop();
@@ -3525,13 +3694,23 @@ private HandlerFactory buildWorker(WorkerInit init) nothrow
     }
 }
 
-private Thread startWorker(EpollLoop lp, ServerConfig cfg, WorkerInit init)
+/// This thread's worker index and scheduler, set before `WorkerInit` so it can `spawn` and read `workerIndex`.
+private void bindWorker(int index, EpollLoop lp) @safe nothrow @nogc
+{
+    workerIndex = index;
+    currentScheduler = lp;
+    setStopRequested(false); // a previous server on this thread must not look stopped during WorkerInit
+}
+
+private Thread startWorker(EpollLoop lp, ServerConfig cfg, WorkerInit init, int index)
 {
     auto t = new Thread({
         // the App (and everything the build function creates) is born on this worker's own thread
+        bindWorker(index, lp);
         auto f = buildWorker(init);
         if (f is null)
         {
+            currentScheduler = null;
             atomicStore(gStartupFailed, true);
             stopAllLoops(); // the other workers cannot serve a half-started server
             return;
@@ -3554,7 +3733,7 @@ bool runEpollServer(ServerConfig cfg, WorkerInit init)
         n = cpus > 0 ? cast(uint) cpus : 1;
     }
     TicketKeys keys;
-    if (cfg.tls.enabled)
+    if (cfg.accept && cfg.tls.enabled)
     {
         // fail before starting any worker, with one message (each worker loads its own context)
         TlsServer probe;
@@ -3570,16 +3749,20 @@ bool runEpollServer(ServerConfig cfg, WorkerInit init)
     foreach (_; 0 .. n)
     {
         auto l = new EpollLoop;
-        if (cfg.tls.enabled)
+        if (cfg.accept && cfg.tls.enabled)
             l.shareTicketKeys(keys);
         gLoops ~= l;
     }
 
-    // Worker 0 builds first, here on the main thread, before any other thread exists: a bad build function is
-    // reported once, and nothing else starts.
+    // Worker 0 builds first, here on this thread, before any other thread exists: a bad build function is
+    // reported once, and nothing else starts. Its index is set here; the others set theirs in `startWorker`.
+    bindWorker(0, gLoops[0]);
     auto factory0 = buildWorker(init);
     if (factory0 is null)
+    {
+        currentScheduler = null;
         return false;
+    }
 
     sigaction_t sa;
     sa.sa_handler = &onSignal;
@@ -3587,22 +3770,29 @@ bool runEpollServer(ServerConfig cfg, WorkerInit init)
     sigaction(SIGINT, &sa, null);
     sigaction(SIGTERM, &sa, null);
 
-    printf("vela (epoll, %u worker%s) at %s://%.*s:%d\n", n, n == 1 ? "".ptr : "s".ptr,
-        cfg.tls.enabled ? "https".ptr : "http".ptr,
-        cast(int) cfg.host.length, cfg.host.ptr, cast(int) cfg.port);
-    if (cfg.tls.enabled && cfg.tls.redirectPort)
-        printf("vela: port %d redirects to https%s\n", cast(int) cfg.tls.redirectPort,
-            cfg.tls.acmeWebroot.length ? " and serves ACME challenges".ptr : "".ptr);
+    if (!cfg.accept)
+        printf("vela (epoll, %u worker%s) not accepting connections\n", n, n == 1 ? "".ptr : "s".ptr);
+    else
+    {
+        printf("vela (epoll, %u worker%s) at %s://%.*s:%d\n", n, n == 1 ? "".ptr : "s".ptr,
+            cfg.tls.enabled ? "https".ptr : "http".ptr,
+            cast(int) cfg.host.length, cfg.host.ptr, cast(int) cfg.port);
+        if (cfg.tls.enabled && cfg.tls.redirectPort)
+            printf("vela: port %d redirects to https%s\n", cast(int) cfg.tls.redirectPort,
+                cfg.tls.acmeWebroot.length ? " and serves ACME challenges".ptr : "".ptr);
+    }
 
     Thread[] threads;
     foreach (i; 1 .. n)
-        threads ~= startWorker(gLoops[i], cfg, init);
+        threads ~= startWorker(gLoops[i], cfg, init, cast(int) i);
     gLoops[0].run(cfg, factory0); // worker 0 runs on the main thread
     foreach (t; threads)
         t.join();
-    // a loop that never became ready did not manage to listen (port in use, bad address...)
+    // a loop that never became ready did not manage to listen (port in use, bad address...).
+    // With `accept = false` there is no listener; staying up and then stopping is success.
     bool ok = !atomicLoad(gStartupFailed);
-    foreach (l; gLoops)
-        ok = ok && atomicLoad(l.everListened);
+    if (cfg.accept)
+        foreach (l; gLoops)
+            ok = ok && atomicLoad(l.everListened);
     return ok;
 }

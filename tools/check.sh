@@ -127,6 +127,7 @@ s_net() {
     $DC $I -i -run tests/net/epoll_net.d
     $DC $I -i -run tests/net/workers_net.d
     $DC $I -i -run tests/net/stream_net.d
+    $DC $I -i -run tests/net/spawn_net.d
 }
 
 s_h2_net() {
@@ -382,7 +383,7 @@ section "HTTP/2: session (frames, streams, flow control, errors, limits) and mut
 section "WebSocket: message layer mutation fuzz (frames, fragments, control frames, close codes, limits)" s_ws_session
 section "example tests (TestClient, no network)" s_example_tests
 section "hot path without GC allocation (HTTP/1.1, HTTP/2, WebSocket messages)" s_hot_path
-section "network tests (EpollLoop + fibers: cancellation, ceiling, deadlines, pools)" s_net
+section "network tests (EpollLoop + fibers: cancellation, ceiling, deadlines, pools, background fibers)" s_net
 section "HTTP/2 network tests (h2c, multiplexing, cancellation, deadlines, flow control, upgrade, stop)" s_h2_net
 section "WebSocket network tests (takeover, broadcast, backpressure, pings, close handshake, graceful stop, client, over HTTP/2)" s_ws_net
 section "HTTPS (ALPN, HTTP/1.1 and HTTP/2 over TLS, handshake limits, cancellation, certificate reload, wss)" s_tls_net

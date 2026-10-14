@@ -9,6 +9,7 @@ import vela.web.application : App;
 import vela.web.stream : sendResponse;
 import vela.web.context : Context;
 import vela.engine.loop : ServerConfig, HandlerFactory, RequestCallback, WorkerInit;
+import vela.engine.fiberio : workerIndex;
 import core.stdc.stdlib : exit;
 import core.sync.mutex : Mutex;
 import vela.engine.devserver : runDevServer;
@@ -50,22 +51,45 @@ void serve(App function() @system build, ushort port = 8080)
 }
 
 /// ditto
-void serve(App function() @system build, ServerConfig cfg)
+void serve(App function() @system build, ServerConfig cfg, void delegate() @safe onWorker0 = null)
 {
-    serve(() @trusted => build(), cfg); // sound: `build` is user code like any other delegate we call via callBuild
+    serve(() @trusted => build(), cfg, onWorker0); // sound: `build` is user code like any other delegate we call via callBuild
 }
 
 /// ditto
-void serve(App delegate() @system build, ServerConfig cfg)
+void serve(App delegate() @system build, ServerConfig cfg, void delegate() @safe onWorker0 = null)
 {
-    if (!tryServe(build, cfg))
+    if (!tryServe(build, cfg, onWorker0))
         (() @trusted => exit(1))(); // sound: ends the process; the engine already said why on stderr
+}
+
+/// ditto. A function (a lambda with no captures) is not a delegate; `null` still selects the delegate overload.
+void serve(F)(App function() @system build, ServerConfig cfg, F onWorker0)
+if (is(F == void function() @safe))
+{
+    serve(() @trusted => build(), cfg, onWorker0); // sound: `build` is user code like any other delegate we call via callBuild
+}
+
+/// ditto
+void serve(F)(App delegate() @system build, ServerConfig cfg, F onWorker0)
+if (is(F == void function() @safe))
+{
+    if (onWorker0 is null)
+        serve(build, cfg);
+    else
+    {
+        auto call = onWorker0;
+        serve(build, cfg, () { call(); });
+    }
 }
 
 /// Like `serve`, but returns false instead of exiting when the server could not start (the build function threw or
 /// returned an App twice, the port is taken, the TLS files are bad). Returns true after a graceful stop. For tests and
 /// for programs that want to handle the failure themselves.
-bool tryServe(App delegate() @system build, ServerConfig cfg)
+///
+/// `onWorker0`, when non-null, runs at the end of worker 0's init (the App is already built and frozen), on that
+/// worker's thread. That is the place to `spawn` background fibers. `null` keeps the previous behavior.
+bool tryServe(App delegate() @system build, ServerConfig cfg, void delegate() @safe onWorker0 = null)
 {
     // a bad proxy entry fails startup with one line, before any worker builds anything
     foreach (c; cfg.trustedProxies)
@@ -90,6 +114,8 @@ bool tryServe(App delegate() @system build, ServerConfig cfg)
         if (cfg.trustedProxies.length)
             app.trustProxies(cfg.trustedProxies, cfg.forwardedHeader);
         app.freeze();
+        if (onWorker0 !is null && workerIndex == 0)
+            onWorker0();
         return handlerFactory(app);
     };
     // @trusted: the engine is raw-syscall @system code, but it only ever calls back into `@safe` handlers
@@ -104,9 +130,29 @@ bool tryServe(App delegate() @system build, ServerConfig cfg)
 }
 
 /// ditto
-bool tryServe(App function() @system build, ServerConfig cfg)
+bool tryServe(App function() @system build, ServerConfig cfg, void delegate() @safe onWorker0 = null)
 {
-    return tryServe(() @trusted => build(), cfg); // sound: same as the `serve` overload
+    return tryServe(() @trusted => build(), cfg, onWorker0); // sound: same as the `serve` overload
+}
+
+/// ditto. A function (a lambda with no captures) is not a delegate; `null` still selects the delegate overload.
+bool tryServe(F)(App delegate() @system build, ServerConfig cfg, F onWorker0)
+if (is(F == void function() @safe))
+{
+    if (onWorker0 is null)
+        return tryServe(build, cfg);
+    auto call = onWorker0;
+    return tryServe(build, cfg, () { call(); });
+}
+
+/// ditto
+bool tryServe(F)(App function() @system build, ServerConfig cfg, F onWorker0)
+if (is(F == void function() @safe))
+{
+    if (onWorker0 is null)
+        return tryServe(build, cfg);
+    auto call = onWorker0;
+    return tryServe(() @trusted => build(), cfg, () { call(); }); // sound: same as the `serve` overload
 }
 
 /// The single place where the user's build function is called from `@safe` framework code.

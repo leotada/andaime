@@ -42,7 +42,8 @@ on this repository, read [AGENTS.md](AGENTS.md).
 - **One fiber per request** on an epoll loop, one worker per core, each with its own `App`. Database, HTTP client and DNS calls
   suspend only the fiber; heavy work goes to a bounded thread pool (`offload`). A client that leaves cancels the handler.
 - **HTTP/1.1, HTTP/2 and TLS** on one port (ALPN), certificate reload without restarts, request deadlines, a zero-copy HTTP/1.1
-  parser (chunked uploads included) fuzzed with ASan. See [docs/http2.md](docs/http2.md) and [docs/tls.md](docs/tls.md).
+  parser (chunked uploads included) fuzzed with ASan. HTTP/2 (RFC 9113) over TLS and in cleartext (h2c): h2spec 146/146 over
+  TLS, tested with Chromium, curl, python-h2 and behind Caddy. See [docs/http2.md](docs/http2.md) and [docs/tls.md](docs/tls.md).
 - **Safety:** the framework is `@safe`; handlers may be `@safe` (recommended) or `@system`. Request data you keep is
   memory-safe: `string` and `Header!"X"` are copies, and a kept `const(char)[]` view lives on the GC heap (it may show a later
   request's bytes, never freed memory). A handler that throws an `Error` gets a 500, a full stack trace in the log, and its fiber

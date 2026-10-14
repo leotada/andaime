@@ -1,5 +1,10 @@
 # HTTP/2
 
+vela implements HTTP/2 as defined by RFC 9113 (with HPACK, RFC 7541): over TLS through ALPN, and in cleartext (h2c) by prior
+knowledge or `Upgrade: h2c`. It passes h2spec (146/146 over TLS) and is tested against Chromium, curl, python-h2 and Caddy as
+an h2c reverse proxy (see [Verification](#verification)); the optional parts it leaves out are listed under
+[Behavior](#behavior).
+
 HTTP/2 is on by default, on the same port as HTTP/1.1: over TLS when the server has a certificate (ALPN chooses, see
 [tls.md](tls.md)), in cleartext (h2c) otherwise. Nothing changes in the application: the same handlers, middleware and
 `TestClient`; `ctx.request.protocol` tells which protocol a request came on.
@@ -28,7 +33,7 @@ not depend on them. One stream uploads at most one stream window per round trip,
 Browsers only speak HTTP/2 over TLS: use h2c service to service, or behind a proxy that speaks h2c to its upstreams
 (configuration checked against each one's docs):
 
-- Caddy: `reverse_proxy h2c://127.0.0.1:8080`.
+- Caddy: `reverse_proxy h2c://127.0.0.1:8080` (tested: `tools/proxy_interop.sh`).
 - HAProxy 1.9+: `server app 127.0.0.1:8080 proto h2`.
 - Envoy: an upstream cluster with `explicit_http_config.http2_protocol_options` and no TLS transport socket.
 - Google Cloud: Cloud Run with end-to-end HTTP/2 (container port named `h2c`); the Application Load Balancer with backend
@@ -59,7 +64,10 @@ Browsers only speak HTTP/2 over TLS: use h2c service to service, or behind a pro
 
 [h2spec](https://github.com/summerwind/h2spec) passes all 146 cases over TLS and 145 in cleartext. The remaining one (3.5/2, an
 invalid preface) cannot pass on a cleartext port that also serves HTTP/1.1: there it is a malformed HTTP/1.1 request, which
-correctly gets a 400. Also tested against curl (nghttp2) and python-h2, in cleartext and over TLS (`tools/h2_interop.sh`).
+correctly gets a 400. Also tested against curl (nghttp2) and python-h2, in cleartext and over TLS (`tools/h2_interop.sh`);
+against Chromium over TLS, where a page with 26 assets and API calls loads entirely over h2 (`tests/net/browser_test.py`); and
+behind Caddy as an h2c reverse proxy, including concurrent requests, Server-Sent Events and a 20 MiB stream
+(`tools/proxy_interop.sh`).
 
 Measured: 1,000 in-flight streams over 10 connections peak at ~16 MB of RSS; the HTTP/2 hot path (frames, HPACK, dispatch,
 framing the response) does not allocate on the GC.

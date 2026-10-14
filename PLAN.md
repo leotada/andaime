@@ -18,7 +18,9 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 **Not verified, so check these first:**
 - `.github/workflows/check.yml` was never run on GitHub (it parses as YAML and runs the same `check.sh`). The first CI run may
   need small fixes (action versions, package names).
-- The real-browser test (Chromium via Playwright) was skipped on this machine; CI runs it in its own job.
+- ~~The real-browser test (Chromium via Playwright) was skipped on this machine~~ Ran on 2026-10-13 (Chromium 156, Playwright
+  in a venv): all h2, redirect and HTTP/1.1 fallback pass. It had never passed as a section: its cleanup trap used a `local`
+  that was gone when the trap ran (`btmp: unbound variable`); fixed in `tools/check.sh`.
 - DMD "latest" and LDC "latest" (newer than 2.109/1.40) were not available here.
 
 **Calls that loosened a number or changed a default (veto any of them):**
@@ -56,6 +58,7 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 - [Phase 6 — Docs and AGENTS.md](#phase-6--docs-and-agentsmd)
 - [Phase 7 — Parked](#phase-7--parked-do-not-start-without-the-owner)
 - [Phase 8 — Performance](#phase-8--performance-m4-first-items)
+- [Phase 9 — Evidence for "HTTP/2 compatible"](#phase-9--evidence-for-http2-compatible)
 - [Open owner decisions](#open-owner-decisions-not-blocking)
 - [Appendix A — Evidence](#appendix-a--evidence-gathered-during-the-review)
 - [Appendix B — Definition of done](#appendix-b--definition-of-done-every-item)
@@ -1348,6 +1351,27 @@ response.
 - SIMD search for the end of the head, GC tuning, `sendfile` for static files (the rest of M4).
 - No profiler was available on the machine where 8.1-8.3 were done (`perf` missing): get one before going further, the
   estimates above are guesses.
+
+## Phase 9 — Evidence for "HTTP/2 compatible"
+
+Started on 2026-10-13 at the owner's request ("finish HTTP/2" -> what does it take to call vela HTTP/2 compatible). The server
+already covered RFC 9113; what was missing was evidence, not features. HTTP/2 code untouched (D3 still holds).
+
+### [x] 9.1 Run the real-browser test and h2spec locally — S
+
+> **Done.** Chromium over TLS: every resource h2; h2spec 2.6.0: 146/146 over TLS, 145/146 in cleartext (3.5/2, expected).
+> Fixed the browser section's cleanup trap (see "Not verified" above).
+
+### [x] 9.2 Behind a real h2c reverse proxy — S
+
+> **Done.** `tools/proxy_interop.sh` (new `check.sh` section, skips with 77 without Caddy; CI downloads Caddy 2.11.7, pinned by
+> SHA-512): curl -> Caddy (HTTP/1.1) -> vela (h2c). Handlers see HTTP/2; upload, 4 MiB download, 404, 40 concurrent 300 ms
+> requests in ~325 ms, SSE events arrive one at a time, a 20 MiB stream intact.
+
+### [ ] 9.3 Candidates, not started
+
+- `h2load` (nghttp2) as a third-party load client in `tools/h2_interop.sh` (not installed on the machine where 9.1-9.2 were done).
+- Response trailers, needed before claiming gRPC (a new feature: needs D3 lifted).
 
 ## Open owner decisions (not blocking)
 

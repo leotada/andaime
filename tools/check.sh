@@ -137,6 +137,10 @@ s_interop() {
     tools/h2_interop.sh
 }
 
+s_proxy_interop() {
+    tools/proxy_interop.sh
+}
+
 s_crash() {
     tools/crash_check.sh
 }
@@ -146,8 +150,8 @@ s_stream_interop() {
 }
 
 s_browser() {
-    local btmp; btmp=$(mktemp -d)
-    trap 'rm -rf "$btmp"' EXIT
+    # (under $work, removed by the script's own trap: a trap on a "local" fires after the variable is gone)
+    local btmp="$work/browser"; mkdir -p "$btmp"
     if ! command -v python3 > /dev/null || ! command -v openssl > /dev/null; then
         echo "skip: python3 or openssl missing" >&2; return 77
     fi
@@ -358,6 +362,7 @@ section "HTTPS (ALPN, HTTP/1.1 and HTTP/2 over TLS, handshake limits, cancellati
 section "fiber stack overflow: the crash message names the request" s_crash
 section "HTTP/2 and HTTPS interoperability (curl, python-h2, h2spec)" s_interop
 section "streamed responses against curl (SSE and a 20 MiB stream, HTTP/1.1 and h2c)" s_stream_interop
+section "behind a reverse proxy over h2c (Caddy: requests, upload, concurrency, SSE, 20 MiB stream)" s_proxy_interop
 section "real browser (Chromium via Playwright: HTTPS, h2, redirect port, HTTP/1.1 fallback)" s_browser
 section "PostgreSQL (async libpq)" s_postgres
 section "HTTP/HTTPS client and thread pool" s_client

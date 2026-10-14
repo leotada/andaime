@@ -16,6 +16,9 @@ env:
   VELA_CI: "1"
   H2SPEC_VERSION: "2.6.0"
   H2SPEC_SHA256: "157ee0de702e01ad40e752dbf074b366027e550c8e7504f9450da2809e279318"
+  # tools/proxy_interop.sh: vela behind Caddy over h2c
+  CADDY_VERSION: "2.11.7"
+  CADDY_SHA512: "a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7"
 
 jobs:
   check:
@@ -68,6 +71,13 @@ jobs:
           echo "${H2SPEC_SHA256}  h2spec.tgz" | sha256sum -c -
           tar xzf h2spec.tgz -C "$RUNNER_TEMP"
           echo "H2SPEC=$RUNNER_TEMP/h2spec" >> "$GITHUB_ENV"
+
+      - name: Caddy
+        run: |
+          curl -sSL -o caddy.tgz "https://github.com/caddyserver/caddy/releases/download/v${CADDY_VERSION}/caddy_${CADDY_VERSION}_linux_amd64.tar.gz"
+          echo "${CADDY_SHA512}  caddy.tgz" | sha512sum -c -
+          tar xzf caddy.tgz -C "$RUNNER_TEMP" caddy
+          echo "CADDY=$RUNNER_TEMP/caddy" >> "$GITHUB_ENV"
 
       - name: tools/check.sh
         run: tools/check.sh

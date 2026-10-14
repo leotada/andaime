@@ -15,6 +15,11 @@ immutable ubyte[] h2Start = cast(immutable(ubyte)[]) (clientPreface ~ "\x00\x00\
 private H2Session session;
 private ubyte[] inbuf;
 private size_t inLen;
+// WebSockets over HTTP/2 (RFC 8441) the "engine" accepted: it consumes their input, echoes part of it, and ends them
+private H2Stream[8] tunnels;
+private size_t nTunnels;
+private Object engineTask;
+private long clock;
 
 void checkH2(scope const(ubyte)[] input)
 {
@@ -25,15 +30,21 @@ void checkH2(scope const(ubyte)[] input)
         cfg.limits.maxBodyBytes = 64 << 10;
         session = new H2Session(cfg);
         inbuf = new ubyte[256 << 10];
+        engineTask = new Object;
     }
     else
         session.reset();
     // feed the start, then the input in two pieces (split point taken from the input itself)
     inLen = 0;
+    clock = 0;
     append(h2Start);
     immutable split = input.length ? input[0] % (input.length + 1) : 0;
     feed(session, input[0 .. split]);
     feed(session, input[split .. $]);
+    // the engine gives every tunnel back before the session is reset (as closeH2 does)
+    foreach (t; tunnels[0 .. nTunnels])
+        session.endResponse(t);
+    nTunnels = 0;
     checkOutput(session);
 }
 
@@ -56,11 +67,33 @@ private void feed(H2Session s, scope const(ubyte)[] more)
     // the engine's side: answer whatever became ready, cancel whatever was reset
     H2Stream st;
     while (s.popReset(st))
+    {
+        foreach (i, t; tunnels[0 .. nTunnels])
+            if (t is st)
+            {
+                tunnels[i] = tunnels[--nTunnels];
+                break;
+            }
         s.detach(st);
+    }
     while (s.popReady(st))
     {
         assert(st.req.protocol == Protocol.http2 && st.req.path.length && st.req.path[0] == '/'
             || st.req.target == "*");
+        if (st.tunnel)
+        {
+            assert(st.req.method == Method.GET && st.req.connectProtocol == "websocket", "a tunnel is a GET + websocket");
+            if (nTunnels < tunnels.length)
+            {
+                st.task = engineTask; // the handler accepts the WebSocket
+                const ResponseHead ok = ResponseHead(200, null, null, -1);
+                s.beginResponse(st, ok, false);
+                tunnels[nTunnels++] = st;
+                continue;
+            }
+        }
+        else
+            assert(st.req.connectProtocol is null);
         static ByteBuffer o;
         o.clear();
         o.put("abc");
@@ -68,6 +101,30 @@ private void feed(H2Session s, scope const(ubyte)[] more)
         const ResponseHead head = ResponseHead(200, null, extra[], 3);
         s.respond(st, head, o);
     }
+    while (s.popInput(st))
+        assert(st.task is engineTask, "input for a stream the engine does not hold");
+    // the WebSockets' owners: consume what came, echo the start of it, end the ones whose peer ended (or that got 'q')
+    for (size_t i = 0; i < nTunnels;)
+    {
+        auto t = tunnels[i];
+        auto inp = s.tunnelInput(t);
+        assert(inp.length <= (256 << 10), "a tunnel holds more than a stream window");
+        immutable quit = inp.length && inp[0] == 'q';
+        if (inp.length)
+        {
+            s.sendData(t, cast(const(char)[]) inp[0 .. inp.length < 100 ? inp.length : 100]);
+            s.tunnelConsume(t, inp.length);
+        }
+        if (s.tunnelEnded(t) || quit)
+        {
+            s.endResponse(t);
+            tunnels[i] = tunnels[--nTunnels];
+            continue;
+        }
+        i++;
+    }
+    clock += 700;
+    s.tick(clock); // resets the tunnels whose peer never ended its side
     checkOutput(s);
 }
 

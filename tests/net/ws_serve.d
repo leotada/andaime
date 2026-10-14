@@ -1,4 +1,5 @@
-/// Server for tools/ws_interop.sh: WebSocket echo routes for other implementations to talk to. Usage: ws_serve <port>
+/// Server for tools/ws_interop.sh: WebSocket echo routes for other implementations to talk to, over HTTP/1.1 and HTTP/2
+/// (RFC 8441). Usage: ws_serve <port> [cert.pem key.pem]
 module ws_serve;
 
 import vela;
@@ -48,6 +49,11 @@ void main(string[] args) @system
     cfg.port = args[1].to!ushort;
     cfg.host = "127.0.0.1";
     cfg.workers = 1;
+    if (args.length > 3)
+    {
+        cfg.tls.certFile = args[2];
+        cfg.tls.keyFile = args[3];
+    }
     serve(() {
         auto app = new App;
         app.ws!("/echo", echo);

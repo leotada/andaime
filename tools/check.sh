@@ -137,6 +137,7 @@ s_h2_net() {
 s_ws_net() {
     ulimit -n 20000 2>/dev/null || true
     $DC $I -i -run tests/net/ws_net.d
+    $DC $I -i -run tests/net/ws_h2_net.d
 }
 
 s_ws_interop() {
@@ -218,6 +219,7 @@ loadgen_h2() { "$tmp/h2_loadgen" "$1" 10 100 1500; }
 loadgen_tls_h1() { "$tmp/tls_loadgen" "$1" 1000 "$tmp/cert.pem"; }
 loadgen_tls_h2() { "$tmp/tls_loadgen" "$1" 1000 "$tmp/cert.pem" h2; }
 loadgen_ws() { "$tmp/ws_loadgen" "$1" 1000 1500; }
+loadgen_ws_h2() { "$tmp/ws_loadgen" "$1" 1000 1500 h2 100; }
 
 memory_build() {
     ulimit -n 20000 2>/dev/null || ulimit -n 4096 2>/dev/null || true
@@ -237,6 +239,8 @@ s_memory() {
     memtest "HTTP/2 (10 connections x 100 streams)" $(( 30 * 1024 )) 1500 loadgen_h2 || rc=1
     # each open WebSocket holds a fiber, its request buffer and its WsConn (measured: ~21 MB peak for 1,000)
     memtest "WebSocket (1,000 open connections)" $(( 30 * 1024 )) 1500 loadgen_ws || rc=1
+    # the same over HTTP/2 (RFC 8441): a stream instead of a connection each (measured: ~19 MB peak)
+    memtest "WebSocket over HTTP/2 (10 connections x 100 streams)" $(( 30 * 1024 )) 1500 loadgen_ws_h2 || rc=1
     return $rc
 }
 
@@ -380,18 +384,18 @@ section "example tests (TestClient, no network)" s_example_tests
 section "hot path without GC allocation (HTTP/1.1, HTTP/2, WebSocket messages)" s_hot_path
 section "network tests (EpollLoop + fibers: cancellation, ceiling, deadlines, pools)" s_net
 section "HTTP/2 network tests (h2c, multiplexing, cancellation, deadlines, flow control, upgrade, stop)" s_h2_net
-section "WebSocket network tests (takeover, broadcast, backpressure, pings, close handshake, graceful stop, client)" s_ws_net
+section "WebSocket network tests (takeover, broadcast, backpressure, pings, close handshake, graceful stop, client, over HTTP/2)" s_ws_net
 section "HTTPS (ALPN, HTTP/1.1 and HTTP/2 over TLS, handshake limits, cancellation, certificate reload, wss)" s_tls_net
 section "fiber stack overflow: the crash message names the request" s_crash
 section "HTTP/2 and HTTPS interoperability (curl, python-h2, h2spec)" s_interop
 section "streamed responses against curl (SSE and a 20 MiB stream, HTTP/1.1 and h2c)" s_stream_interop
-section "WebSockets against python websockets (server and client, with and without permessage-deflate)" s_ws_interop
+section "WebSockets against python websockets (server and client, with and without permessage-deflate; RFC 8441 over h2c and TLS)" s_ws_interop
 section "behind a reverse proxy over h2c (Caddy: requests, upload, concurrency, SSE, 20 MiB stream)" s_proxy_interop
 section "real browser (Chromium via Playwright: HTTPS, h2, redirect port, HTTP/1.1 fallback)" s_browser
 section "PostgreSQL (async libpq)" s_postgres
 section "HTTP/HTTPS client and thread pool" s_client
 section "real API example end to end (Postgres + external API + auth + CORS + static files + OpenAPI)" s_api_e2e
-section "memory: 1,000 in-flight requests over HTTP/1.1 and HTTP/2, 1,000 open WebSockets (peak RSS < 30 MB)" s_memory
+section "memory: 1,000 in-flight requests over HTTP/1.1 and HTTP/2, 1,000 open WebSockets on each (peak RSS < 30 MB)" s_memory
 section "memory: 1,000 in-flight requests over HTTPS (peak RSS < 80 MB, depends on the OpenSSL version)" s_memory_tls
 section "memory: 200 uploads of 512 KiB at once (above the pool classes), memory comes back" s_memory_uploads
 section "compile-error tests (expected message + at most 2 error lines)" s_compile_fail

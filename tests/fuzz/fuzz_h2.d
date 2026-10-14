@@ -1,6 +1,7 @@
 /// Mutation fuzzer for the HTTP/2 session (runs in CI, deterministic per seed): starts from
 /// valid frame sequences and breaks them at the byte and at the frame level.
 /// Usage: fuzz_h2 [iterations] [seed]
+///        fuzz_h2 --seeds <dir>   writes the seed inputs there (libFuzzer's starting corpus, see tools/fuzz.sh)
 module fuzz_h2;
 
 import h2_invariants;
@@ -47,7 +48,15 @@ ubyte[][] seeds()
     ubyte[] indexed = [0x3f, 0xe1, 0x1f, 0x82, 0x86, 0x84, 0x40, 0x01, 'k', 0x01, 'v', 0xbe];
     // Huffman-coded :authority (RFC 7541 C.4.1)
     ubyte[] huff = [0x82, 0x86, 0x84, 0x41, 0x8c, 0xf1, 0xe3, 0xc2, 0xe5, 0xf2, 0x3a, 0x6b, 0xa0, 0xab, 0x90, 0xf4, 0xff];
+    // RFC 8441: a WebSocket as a stream (extended CONNECT), its bytes in DATA frames
+    auto wsc = fields([":method", "CONNECT"], [":protocol", "websocket"], [":scheme", "https"], [":path", "/ws"],
+        [":authority", "x"], ["sec-websocket-version", "13"]);
+    ubyte[] wsFrame = [0x81, 0x82, 1, 2, 3, 4, 'h' ^ 1, 'i' ^ 2];
     return [
+        frame(1, 0x4, 1, wsc) ~ frame(0, 0, 1, wsFrame) ~ frame(0, 1, 1, wsFrame),
+        frame(1, 0x4, 1, wsc) ~ frame(0, 0, 1, wsFrame) ~ frame(1, 0x5, 3, get) ~ frame(3, 0, 1, u32(8)),
+        frame(1, 0x4, 1, wsc) ~ frame(0, 0, 1, cast(ubyte[]) "quit") ~ frame(0, 0, 1, wsFrame) ~ frame(0, 1, 1, null),
+        frame(1, 0x4, 1, wsc) ~ frame(0, 0x8, 1, cast(ubyte[]) [2] ~ wsFrame ~ cast(ubyte[]) [0, 0]) ~ frame(8, 0, 1, u32(9)),
         frame(1, 0x5, 1, get),
         frame(1, 0x4, 1, post) ~ frame(0, 0, 1, cast(ubyte[]) "ab") ~ frame(0, 1, 1, cast(ubyte[]) "cde"),
         frame(1, 0x1, 3, get[0 .. 5]) ~ frame(9, 0, 3, get[5 .. 9]) ~ frame(9, 4, 3, get[9 .. $]),
@@ -128,6 +137,14 @@ ubyte[] mutate(ref Rng rng, const(ubyte)[] seed, ubyte[][] pool)
 
 void main(string[] args)
 {
+    if (args.length > 2 && args[1] == "--seeds")
+    {
+        import std.file : write;
+
+        foreach (i, s; seeds())
+            write(args[2] ~ "/seed" ~ i.to!string, cast(ubyte[]) [0] ~ s); // first byte: where checkH2 splits the input
+        return;
+    }
     immutable iterations = args.length > 1 ? args[1].to!size_t : 100_000;
     Rng rng = Rng(args.length > 2 ? args[2].to!ulong : 0x9e3779b97f4a7c15);
     auto pool = seeds();

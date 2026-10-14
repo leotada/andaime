@@ -20,6 +20,9 @@ case "$target" in
         # does not scan the GC heap, so it would report them. tools/check.sh's memory tests cover leaks.
         extra="-detect_leaks=0"
         leaks="detect_leaks=0:"
+        # start from the mutation fuzzer's seeds (requests, bodies, CONTINUATION, WebSockets over HTTP/2...): libFuzzer
+        # alone rarely builds a valid HPACK block with an extended CONNECT
+        ldmd2 -Ihttp/source -Itests/fuzz -i -run tests/fuzz/fuzz_h2.d --seeds "$corpus"
         maxlen=32768 ;;
     ws)
         # the target starts druntime itself (rt_init), whose module-constructor sorting keeps ~100 bytes of malloc that

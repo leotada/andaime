@@ -76,7 +76,7 @@ try:
         ctx.close()
         return resp, result, protos, failed, final
 
-    def check_result(result, failed, proto, label):
+    def check_result(result, failed, proto, label, ws_proto=None):
         if failed:
             fail("%s: failed requests %s" % (label, failed))
         if "error" in result:
@@ -94,6 +94,8 @@ try:
             fail("%s: WebSocket -> %s" % (label, ws))
         if not ws["extensions"].startswith("permessage-deflate"):
             fail("%s: WebSocket not compressed (extensions %r)" % (label, ws["extensions"]))
+        if ws["proto"] != (ws_proto or proto):
+            fail("%s: the WebSocket ran over %s, expected %s" % (label, ws["proto"], ws_proto or proto))
 
     with sync_playwright() as p:
         try:
@@ -110,7 +112,7 @@ try:
         if len(protos) < 29 or any(x != "h2" for x in protos):
             fail("expected h2 for every resource, got %s" % protos)
         print("ok  Chromium %s over HTTPS: page, 26 assets (2 MiB script) and 3 API calls, all h2; a wss WebSocket "
-              "with permessage-deflate" % version)
+              "with permessage-deflate as a stream of the same connection (RFC 8441)" % version)
 
         _, result, protos, failed, final = load(browser, "http://localhost:%d/" % rport)
         if final != "https://localhost:%d/" % port:
@@ -125,6 +127,23 @@ try:
         if any(x != "http/1.1" for x in protos):
             fail("with HTTP/2 disabled, expected http/1.1, got %s" % set(protos))
         print("ok  Chromium with HTTP/2 disabled: the same page over HTTP/1.1 (ALPN fallback)")
+        browser.close()
+
+        # the server without WebSockets over HTTP/2: the page stays on h2, the WebSocket gets its own HTTP/1.1 connection
+        srv.terminate()
+        srv.communicate(timeout=10)
+        srv = subprocess.Popen([sys.argv[1], str(port), str(rport), cert, key, pub, "no-h2-websockets"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        for _ in range(100):
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=0.2).close()
+                break
+            except OSError:
+                time.sleep(0.05)
+        browser = p.chromium.launch()
+        _, result, protos, failed, _ = load(browser, "https://localhost:%d/" % port)
+        check_result(result, failed, "h2", "http2WebSockets = false", ws_proto="http/1.1")
+        print("ok  Chromium with http2WebSockets = false: the page over h2, the WebSocket on its own HTTP/1.1 connection")
         browser.close()
 finally:
     srv.terminate()

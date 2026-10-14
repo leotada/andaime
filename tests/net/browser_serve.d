@@ -1,6 +1,7 @@
 /// Server for the real-browser test (`tests/net/browser_test.py`): an HTML page that loads static
 /// assets (including a 2 MiB script), calls a JSON API with GET and POST, over HTTPS with the
-/// cleartext redirect port. Usage: browser_serve <port> <redirectPort> <cert.pem> <key.pem> <publicDir>
+/// cleartext redirect port, and opens a WebSocket. Usage: browser_serve <port> <redirectPort> <cert.pem> <key.pem>
+/// <publicDir> [no-h2-websockets]
 module browser_serve;
 
 import vela;
@@ -42,14 +43,15 @@ Response page() => Response.html(`<!doctype html>
     body: JSON.stringify({name: 'from the browser'})});
   const made = await created.json();
   const proto = await (await fetch('/api/proto')).text();
-  // a WebSocket next to the page (Chromium opens it on its own HTTP/1.1 connection), compressed
+  // a compressed WebSocket next to the page: a stream of the page's HTTP/2 connection (RFC 8441), or its own
+  // HTTP/1.1 connection when HTTP/2 is off on either side; the server's first message says which
   const ws = await new Promise((ok, fail) => {
     const s = new WebSocket('wss://' + location.host + '/api/ws');
     const big = 'chunk of text '.repeat(10000);
     const got = [];
     s.onopen = () => { s.send('hello from the browser'); s.send(big); };
-    s.onmessage = e => { got.push(e.data); if (got.length == 2) s.close(1000, 'done'); };
-    s.onclose = e => ok({echo: got[0], bigOk: got[1] === big, extensions: s.extensions, code: e.code});
+    s.onmessage = e => { got.push(e.data); if (got.length == 3) s.close(1000, 'done'); };
+    s.onclose = e => ok({proto: got[0], echo: got[1], bigOk: got[2] === big, extensions: s.extensions, code: e.code});
     s.onerror = () => fail(new Error('WebSocket error'));
   });
   window.result = {item, status: created.status, made, proto, bigOk: window.bigOk === true, ws};
@@ -58,9 +60,11 @@ Response page() => Response.html(`<!doctype html>
 </script>
 </body></html>`);
 
-WebSocket echo()
+WebSocket echo(Context c)
 {
+    immutable over = proto(c);
     auto w = WebSocket((scope WsConn ws) @system {
+        ws.send(over);
         foreach (m; ws)
             ws.send(m.text);
     });
@@ -87,6 +91,7 @@ void main(string[] args) @system
     cfg.tls.certFile = args[3];
     cfg.tls.keyFile = args[4];
     cfg.tls.redirectPort = args[2].to!ushort;
+    cfg.http2WebSockets = args.length <= 6;
     serve(() {
         auto app = new App;
         app.get!("/", page);

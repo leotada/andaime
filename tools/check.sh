@@ -200,6 +200,8 @@ s_browser() {
 
 s_postgres() {
     tools/with_postgres.sh "$(build_test tests/db/pg_net.d)"
+    # pg_jobs.d imports vela.jobs and vela.jobs.pg. Those -I flags stay on this compile only.
+    tools/with_postgres.sh "$(I="$I -Ijobs/source -Idrivers/pgjobs/source" build_test tests/db/pg_jobs.d)"
 }
 
 s_client() {
@@ -347,7 +349,7 @@ s_compile_fail() {
 }
 
 # DUB packaging: sub-package dependencies and layering (vela:web must not import vela:engine, so building it alone
-# proves the direction), the vela-pg path dependency and both examples.
+# proves the direction), the vela-pg and vela-pg-jobs path dependencies and both examples.
 s_dub() {
     if ! command -v dub > /dev/null; then echo "skip: dub not installed" >&2; return 77; fi
     local rc=0
@@ -358,6 +360,7 @@ s_dub() {
     dub build $dubc -q :engine || rc=1
     dub build $dubc -q :jobs || rc=1
     (cd drivers/pg && dub build $dubc -q) || rc=1
+    dub build $dubc -q --root=drivers/pgjobs || rc=1
     (cd examples/hello && dub build $dubc -q) || rc=1
     (cd examples/api && dub build $dubc -q) || rc=1
     # the core must never import a driver; jobs depends on web and engine, not on vela-pg
@@ -418,7 +421,7 @@ section "streamed responses against curl (SSE and a 20 MiB stream, HTTP/1.1 and 
 section "WebSockets against python websockets (server and client, with and without permessage-deflate; RFC 8441 over h2c and TLS)" s_ws_interop
 section "behind a reverse proxy over h2c (Caddy: requests, upload, concurrency, SSE, 20 MiB stream)" s_proxy_interop
 section "real browser (Chromium via Playwright: HTTPS, h2, redirect port, HTTP/1.1 fallback)" s_browser
-section "PostgreSQL (async libpq)" s_postgres
+section "PostgreSQL (async libpq, job queue)" s_postgres
 section "HTTP/HTTPS client and thread pool" s_client
 section "real API example end to end (Postgres + external API + auth + CORS + static files + OpenAPI)" s_api_e2e
 section "memory: 1,000 in-flight requests over HTTP/1.1 and HTTP/2, 1,000 open WebSockets on each (peak RSS < 30 MB)" s_memory

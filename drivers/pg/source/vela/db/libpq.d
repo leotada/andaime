@@ -42,6 +42,16 @@ enum char PG_DIAG_SQLSTATE = 'C';
 
 alias NoticeProc = extern (C) void function(void* arg, const(char)* message) nothrow;
 
+/// One `LISTEN`/`NOTIFY` payload. `PQnotifies` returns this; `PQfreeNotify` frees it.
+/// `next` is libpq's private list link. Callers copy `relname` and `extra`, then free the node.
+extern (C) struct PGnotify
+{
+    char* relname;
+    int be_pid;
+    char* extra;
+    PGnotify* next;
+}
+
 /// Function table. It lives in a struct on purpose: loose `extern (C)` variables would become
 /// global symbols with the SAME name as libpq's functions, and the dynamic linker would make
 /// libpq itself call our pointers instead of its own code.
@@ -78,6 +88,8 @@ struct Api
     int function(PGcancel*, char*, int) PQcancel;
     void function(PGcancel*) PQfreeCancel;
     NoticeProc function(PGconn*, NoticeProc, void*) PQsetNoticeProcessor;
+    PGnotify* function(PGconn*) PQnotifies;
+    void function(PGnotify*) PQfreeNotify;
 }
 
 __gshared Api pq;

@@ -1205,7 +1205,8 @@ struct Uuid
 
 - An `application/x-www-form-urlencoded` body bound into a struct, with the same binder as `Query!T`. Any other
   content type → 415 with a `detail` message.
-- `multipart/form-data` (file uploads) is parked: it needs streamed request bodies.
+- Buffered `multipart/form-data` (file fields on `Form!T`, still capped by `maxBodyBytes`) was added later. Unbuffered
+  request bodies stay parked.
 
 ### [x] 5.8 Cookies — M
 
@@ -1287,7 +1288,8 @@ and the main quickstart examples.
 
 - New HTTP/2 or TLS features (D3).
 - WebSockets. Phase 4's sink should leave room for a connection takeover.
-- Streamed request bodies and `multipart/form-data` uploads.
+- Streamed (unbuffered) request bodies. Buffered `multipart/form-data` is implemented (file fields on `Form!T`, still
+  capped by `maxBodyBytes`).
 - Range requests (206) and `sendfile` for static files (M4 performance work).
 - DIP1000: revisit if D makes it the default. It would let `const(char)[]` views be checked by the compiler.
 - Process-per-core workers: revisit if GC contention shows up (see the measurement in Phase 2).

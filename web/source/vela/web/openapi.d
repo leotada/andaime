@@ -24,7 +24,7 @@ import vela.web.dto : schemaName, jsonKey, optional, jsonIgnore, minLength, maxL
 import vela.web.numtext : itoa, numText, ctNum;
 import vela.web.handler_traits : parseRoute, indexOfName;
 import vela.web.stream : Stream, EventStream, produces;
-import vela.web.models : isQueryModel, isFormModel, modelFieldOptional;
+import vela.web.models : isQueryModel, isFormModel, formHasFiles, modelFieldOptional, UploadedFile;
 import vela.http.texttype : isTextType, textTypeFormat;
 
 /// One-line operation text: `@summary("Fetch a user") UserResponse getUser(long id)`.
@@ -158,6 +158,8 @@ string schemaOf(T)(ref Components comps) @safe
         else
             return `{"type":"string"}`;
     }
+    else static if (is(T == UploadedFile))
+        return `{"type":"string","format":"binary"}`;
     else static if (is(T == Stream))
         return `{"type":"string","format":"binary"}`;
     else static if (is(T == EventStream))
@@ -255,9 +257,19 @@ private string structSchema(T)(ref Components comps) @safe
             static foreach (attr; __traits(getAttributes, T.tupleof[i]))
             {
                 static if (is(typeof(attr) == minLength))
-                    extra ~= `,"` ~ (is(F : const(char)[]) ? "minLength" : "minItems") ~ `":` ~ itoa(attr.value);
+                {
+                    static if (is(F == UploadedFile) || is(F == Optional!UploadedFile))
+                        extra ~= `,"minLength":` ~ itoa(attr.value);
+                    else
+                        extra ~= `,"` ~ (is(F : const(char)[]) ? "minLength" : "minItems") ~ `":` ~ itoa(attr.value);
+                }
                 else static if (is(typeof(attr) == maxLength))
-                    extra ~= `,"` ~ (is(F : const(char)[]) ? "maxLength" : "maxItems") ~ `":` ~ itoa(attr.value);
+                {
+                    static if (is(F == UploadedFile) || is(F == Optional!UploadedFile))
+                        extra ~= `,"maxLength":` ~ itoa(attr.value);
+                    else
+                        extra ~= `,"` ~ (is(F : const(char)[]) ? "maxLength" : "maxItems") ~ `":` ~ itoa(attr.value);
+                }
                 else static if (is(typeof(attr) == inRange))
                     extra ~= `,"minimum":` ~ numText(attr.min) ~ `,"maximum":` ~ numText(attr.max);
             }
@@ -272,7 +284,7 @@ private string structSchema(T)(ref Components comps) @safe
                     sch = sch[0 .. $ - 1] ~ extra ~ `}`;
             }
             props ~= (props.length ? "," : "") ~ q(key) ~ ":" ~ sch;
-            static if (!hasUda!(T, i, optional) && !isOptional!F)
+            static if (!hasUda!(T, i, optional) && !isOptional!F && !is(F == UploadedFile[]))
                 req ~= (req.length ? "," : "") ~ q(key);
         }}
     }
@@ -300,6 +312,7 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
         enum info = parseRoute(path);
         string params, bodySchema;
         string bodyMedia = "application/json";
+        bool formBoth; /// text-only form: urlencoded and multipart
         bool bodyRequired;
         bool canFail;
 
@@ -337,7 +350,10 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
             else static if (isFormModel!T)
             {
                 bodySchema = schemaOf!(typeof(T.value))(comps);
-                bodyMedia = "application/x-www-form-urlencoded";
+                static if (formHasFiles!(typeof(T.value)))
+                    bodyMedia = "multipart/form-data";
+                else
+                    formBoth = true;
                 bodyRequired = true;
                 canFail = true;
             }
@@ -403,8 +419,14 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
         if (params.length)
             o ~= `,"parameters":[` ~ params ~ `]`;
         if (bodySchema.length)
-            o ~= `,"requestBody":{"required":` ~ (bodyRequired ? "true" : "false")
-                ~ `,"content":{` ~ q(bodyMedia) ~ `:{"schema":` ~ bodySchema ~ `}}}`;
+        {
+            o ~= `,"requestBody":{"required":` ~ (bodyRequired ? "true" : "false") ~ `,"content":{`;
+            if (formBoth)
+                o ~= `"application/x-www-form-urlencoded":{"schema":` ~ bodySchema
+                    ~ `},"multipart/form-data":{"schema":` ~ bodySchema ~ `}}}`;
+            else
+                o ~= q(bodyMedia) ~ `:{"schema":` ~ bodySchema ~ `}}}`;
+        }
 
         // responses
         string resp;

@@ -40,8 +40,8 @@ A `@system` handler then fails to compile with a one-line message.
 
 | Value | Lifetime |
 |-------|----------|
-| `string` parameters, `Header!"X"`, `Cookie!"x"`, JSON bodies decoded into `string` fields | yours: copies on the GC heap |
-| `ctx.request.path`, `.query`, `.body`, `.header(...)`, `ctx.cookie(...)`, `const(char)[]` parameters | views into the connection's buffer, valid during the request |
+| `string` parameters, `Header!"X"`, `Cookie!"x"`, JSON bodies decoded into `string` fields, `UploadedFile.filename`, `UploadedFile.contentType` | yours: copies on the GC heap |
+| `ctx.request.path`, `.query`, `.body`, `.header(...)`, `ctx.cookie(...)`, `const(char)[]` parameters, `UploadedFile.bytes` | views into the connection's buffer, valid during the request |
 
 Keeping a view after the request is **memory-safe**: the buffer lives on the GC heap and stays allocated while you hold it. But
 the buffer is reused, so the view may later show bytes of another request. Copy what you keep (`.idup`).

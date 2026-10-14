@@ -8,9 +8,9 @@ improvement plan and its decision log. Everything is written in English: code, c
 
 | Package | Role | Depends on |
 |---------|------|------------|
-| `vela:http` (`http/`) | HTTP types, `Optional`, text types, zero-copy HTTP/1.1 parser and writer, chunked decoder, HTTP/2 session and HPACK. No I/O. | — |
-| `vela:web` (`web/`) | `App`, router, handler introspection, JSON, OpenAPI, middleware, cookies, streaming, `TestClient`. No sockets. | http |
-| `vela:engine` (`engine/`) | epoll loop, fibers, buffers, `offload`, HTTP/HTTPS client, OpenSSL. No routes. | http |
+| `vela:http` (`http/`) | HTTP types, `Optional`, text types, zero-copy HTTP/1.1 parser and writer, chunked decoder, HTTP/2 session and HPACK, WebSocket frames and messages. No I/O. | — |
+| `vela:web` (`web/`) | `App`, router, handler introspection, JSON, OpenAPI, middleware, cookies, streaming, WebSocket routes, `TestClient`. No sockets. | http |
+| `vela:engine` (`engine/`) | epoll loop, fibers, buffers, `offload`, HTTP/HTTPS and WebSocket client, OpenSSL, zlib. No routes. | http |
 | `vela-pg` (`drivers/pg/`) | PostgreSQL driver over async libpq. An independent package: the core never depends on it. | vela:engine |
 | `vela` (`source/vela/`) | `import vela;`, `server.d` (the only glue between web and engine), static files | all |
 
@@ -28,9 +28,9 @@ VELA_ONLY="memory" tools/check.sh    # only the sections whose name contains the
 VELA_STRICT=1 tools/check.sh         # a skipped section fails the run (CI does this)
 ```
 
-`check.sh` runs sections: unittests, the web layer, documentation examples, OpenAPI validity, the parser and HTTP/2 session
-with mutation fuzzing, the GC-free hot path, network tests (HTTP/1.1, HTTP/2, HTTPS), interoperability (curl, python-h2,
-h2spec, Caddy, Chromium), PostgreSQL, the HTTP client, the API example end to end, memory ceilings, compile-error tests, DUB
+`check.sh` runs sections: unittests, the web layer, documentation examples, OpenAPI validity, the parser, HTTP/2 session and
+WebSocket layer with mutation fuzzing, the GC-free hot path, network tests (HTTP/1.1, HTTP/2, HTTPS, WebSockets),
+interoperability (curl, python-h2, h2spec, python websockets, Caddy, Chromium), PostgreSQL, the HTTP client, the API example end to end, memory ceilings, compile-error tests, DUB
 builds and the compile-time budget. A section whose tool is missing exits 77 and is listed as skipped in the summary.
 
 ### Optional tools
@@ -40,7 +40,7 @@ Without them the matching sections are skipped. A setup that runs every section 
 | Tool | For | How |
 |------|-----|-----|
 | PostgreSQL | `vela-pg`, the API example | a local server (found automatically), or a container: `podman run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55432:5432 postgres:16` and `VELA_PG="host=127.0.0.1 port=55432 user=postgres dbname=postgres"` |
-| python3 + `h2`, `openapi-spec-validator` | HTTP/2 interop, OpenAPI validity | `pip install h2 openapi-spec-validator` (a venv is fine: put its `bin` first on `PATH`) |
+| python3 + `h2`, `openapi-spec-validator`, `websockets` (13+) | HTTP/2 and WebSocket interop, OpenAPI validity | `pip install h2 openapi-spec-validator 'websockets>=13'` (a venv is fine: put its `bin` first on `PATH`) |
 | h2spec 2.6.0 | HTTP/2 conformance | the release binary; `H2SPEC=/path/to/h2spec` |
 | Caddy 2 | h2c reverse-proxy test | the release binary; `CADDY=/path/to/caddy` |
 | Playwright + Chromium | the real-browser test | `pip install playwright && playwright install chromium` |
@@ -52,8 +52,9 @@ jobs.
 ### Other tools
 
 ```sh
-tools/fuzz.sh 300 parse              # libFuzzer + ASan on the HTTP/1 parser (needs LDC); "h2" for the HTTP/2 session
+tools/fuzz.sh 300 parse              # libFuzzer + ASan on the HTTP/1 parser (needs LDC); "h2": HTTP/2 session, "ws": WebSockets
 tools/h2_interop.sh                  # HTTP/2 against curl, python-h2 and h2spec
+tools/ws_interop.sh                  # WebSockets against python websockets (server and client, permessage-deflate)
 tools/proxy_interop.sh               # behind Caddy over h2c
 tools/bench.sh 10                    # requests per second of one worker, for before/after comparisons
 ```
@@ -61,7 +62,8 @@ tools/bench.sh 10                    # requests per second of one worker, for be
 ### Numbers the suite enforces
 
 - The hot path does not allocate on the GC (`tests/alloc/`).
-- Peak RSS under 30 MB for 1,000 in-flight requests over HTTP/1.1 and HTTP/2; under 80 MB over HTTPS (OpenSSL 3.5).
+- Peak RSS under 30 MB for 1,000 in-flight requests over HTTP/1.1 and HTTP/2, and for 1,000 open WebSockets; under 80 MB over
+  HTTPS (OpenSSL 3.5).
 - `examples/hello/source/app.d` type-checks in under 400 ms on DMD (fails above 440 ms; timing is noisy).
 - Every invalid handler signature is a one-line `static assert` with a case in `tests/compile_fail/` (at most 2 error lines).
 

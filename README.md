@@ -103,6 +103,19 @@ EventStream ticks() => EventStream((scope EventWriter w) {
 });
 ```
 
+**WebSockets**: the handler returns one after its parameters and middleware ran, so refusing is an ordinary response:
+
+```d
+WebSocket chat(string room, Header!"Authorization" auth)
+{
+    if (!allowed(auth.value)) throw new HttpError(403, "forbidden");
+    return WebSocket((scope WsConn ws) {
+        foreach (msg; ws) ws.send(room ~ ": " ~ msg.text);    // pings and the close handshake are handled
+    });
+}
+app.ws!("/chat/{room}", chat);
+```
+
 **Waiting without blocking**: PostgreSQL (`vela-pg`), an HTTP client and a thread pool:
 
 ```d
@@ -139,7 +152,7 @@ serve(&buildApp, cfg);
 |-|-|
 | [Getting started](docs/getting-started.md) | install, first route, CRUD, first test |
 | [Routing](docs/routing.md) · [Reading the request](docs/requests.md) · [Validation](docs/validation.md) · [Responses](docs/responses.md) | the handler contract |
-| [Middleware and errors](docs/middleware.md) · [Streaming](docs/streaming.md) · [Static files and OpenAPI](docs/static-files-and-openapi.md) | building an API |
+| [Middleware and errors](docs/middleware.md) · [Streaming](docs/streaming.md) · [WebSockets](docs/websocket.md) · [Static files and OpenAPI](docs/static-files-and-openapi.md) | building an API |
 | [Concurrency](docs/concurrency.md) · [Database](docs/database.md) · [HTTP client](docs/http-client.md) | waiting without blocking |
 | [Testing](docs/testing.md) · [Memory safety](docs/safety.md) | |
 | [Deploying](docs/deploy.md) · [HTTPS](docs/tls.md) · [HTTP/2](docs/http2.md) · [Configuration](docs/configuration.md) | production |
@@ -151,13 +164,14 @@ CRUD, controller, tests) and `examples/api` (Postgres, external API, auth, CORS,
 
 vela is young: the API may still change before a first release. What works is tested (see [CONTRIBUTING.md](CONTRIBUTING.md)):
 the web layer, the epoll server, HTTP/2 (RFC 9113; h2spec 146/146 over TLS; tested with Chromium, curl, python-h2 and Caddy),
-HTTPS, streaming, the PostgreSQL driver and the HTTP client.
+HTTPS, streaming, WebSockets (RFC 6455 with permessage-deflate; tested with Chromium and python's `websockets`), the
+PostgreSQL driver and the HTTP and WebSocket clients.
 
 Not supported yet:
 
 - Linux only for the real server (epoll); elsewhere `serve` runs a blocking development server.
-- WebSockets, streamed request bodies (bodies, including multipart uploads, are buffered up to `limits.maxBodyBytes`, 1 MiB
-  by default), Range requests.
+- WebSockets over HTTP/2 (RFC 8441; browsers use HTTP/1.1 for WebSockets anyway), streamed request bodies (bodies, including
+  multipart uploads, are buffered up to `limits.maxBodyBytes`, 1 MiB by default), Range requests.
 - Response trailers, so no gRPC; HTTP/2 server push and priorities.
 - IPv6 listeners, OCSP stapling, kqueue/io_uring backends.
 

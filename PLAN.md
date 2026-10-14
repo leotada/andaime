@@ -59,6 +59,7 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 - [Phase 7 — Parked](#phase-7--parked-do-not-start-without-the-owner)
 - [Phase 8 — Performance](#phase-8--performance-m4-first-items)
 - [Phase 9 — Evidence for "HTTP/2 compatible"](#phase-9--evidence-for-http2-compatible)
+- [Phase 10 — WebSockets](#phase-10--websockets)
 - [Open owner decisions](#open-owner-decisions-not-blocking)
 - [Appendix A — Evidence](#appendix-a--evidence-gathered-during-the-review)
 - [Appendix B — Definition of done](#appendix-b--definition-of-done-every-item)
@@ -1286,8 +1287,7 @@ and the main quickstart examples.
 
 ## Phase 7 — Parked (do not start without the owner)
 
-- New HTTP/2 or TLS features (D3).
-- WebSockets. Phase 4's sink should leave room for a connection takeover.
+- New HTTP/2 or TLS features (D3), including WebSockets over HTTP/2 (RFC 8441). WebSockets over HTTP/1.1 were done in Phase 10.
 - Streamed (unbuffered) request bodies. Buffered `multipart/form-data` is implemented (file fields on `Form!T`, still
   capped by `maxBodyBytes`).
 - Range requests (206) and `sendfile` for static files (M4 performance work).
@@ -1374,6 +1374,63 @@ already covered RFC 9113; what was missing was evidence, not features. HTTP/2 co
 
 - `h2load` (nghttp2) as a third-party load client in `tools/h2_interop.sh` (not installed on the machine where 9.1-9.2 were done).
 - Response trailers, needed before claiming gRPC (a new feature: needs D3 lifted).
+
+## Phase 10 — WebSockets
+
+Started on 2026-10-13 at the owner's request ("implement WebSockets"), on the `websockets` branch (a git worktree). Owner
+choices: **a handler returns `WebSocket`** (like `Stream`, P6: parameters and middleware first, so a refusal is an ordinary
+response), and the first version includes **a client** and **permessage-deflate**; no subprotocol API (the handler sets
+`Sec-WebSocket-Protocol` on the context) and no Autobahn run (python `websockets` and Chromium instead). HTTP/2 stays frozen
+(D3): no RFC 8441, a WebSocket route reached over HTTP/2 answers 426 (browsers use HTTP/1.1 for WebSockets anyway).
+Reference: `docs/websocket.md`; rules for contributors: `AGENTS.md`, "WebSockets".
+
+### [x] 10.1 Protocol, no I/O (`vela:http`) — M
+
+> **Done.** `vela.http.sha1` (SHA-1, standard base64), `vela.http.websocket`: frame codec (8-byte unmasking, every length class),
+> handshake check and accept key, permessage-deflate negotiation, and `WsConn`, the whole message layer (fragments, pings, the
+> close handshake with a 1 s timeout, 1002/1007/1009, ping/idle timing, shutdown 1001, deflate through a `WsDeflate`
+> interface) over an `UpgradedConn` (`vela.http.response`). `ResponseSink.upgrade` hands a connection over after a 101;
+> `writeResponseHead` no longer writes `Content-Length` on 1xx; `statusText(101)`.
+
+### [x] 10.2 Routes and dispatch (`vela:web`) — M
+
+> **Done.** `app.ws!(path, fn)` / `@Ws` (a GET, not in OpenAPI), `WebSocket` (`maxMessageBytes`, `pingInterval`,
+> `compression`), `runWebSocket` (426/400 refusals, the 101 through `checkResponse`, a new `WsConn` per connection, close 1000
+> on return and 1011 on an exception, new user call site `callWebSocket`), three `compile_fail` cases, `TestClient.websocket`
+> with a `WsScript`, `tests/web/websocket.d`. The layering holds: compression reaches the web layer as `Context.newDeflate`.
+
+### [x] 10.3 Connection takeover in the engine — L
+
+> **Done.** `Phase.upgraded` and `WsPort` in `epoll.d`: pending pipelined answers go out before the 101, early frames become
+> input, the request buffer stays until close (the handler's params point into it), reads by the owner, writes from any fiber
+> (whole frames, waiting for the drain like `waitH2Drain`), wake-ups decided in a fiber deferred to the end of the batch,
+> `finishUpgraded` + `lingerClose`, graceful stop (1001), `sweepUpgraded` for stuck output, `LoopStats.webSockets(Total)`.
+> `tests/net/ws_net.d` (11 tests, 8/8 repeated runs green) and a wss case in `tests/net/tls_net.d`.
+
+### [x] 10.4 Compression and the client — M
+
+> **Done.** `vela.engine.zlib` (dlopen `libz.so.1`, raw deflate with the 00 00 FF FF tail stripped, inflate with a size limit,
+> context takeover; messages under 64 bytes uncompressed; an 8-bit window is never compressed). `vela.engine.wsclient`:
+> `wsConnect` (`ws://`, `wss://`, deflate offer, getrandom masking keys) on `HttpClient`'s DNS/TCP/TLS (`openConn` and a few
+> helpers became `package`); cooperative inside a fiber, blocking outside.
+
+### [x] 10.5 Evidence — S
+
+> **Done.** `tools/ws_interop.sh` (new `check.sh` section): python `websockets` 16 as a client against vela (with and without
+> deflate, 3 MiB, ordering, ping, close codes) and as a server for `wsConnect`; CI installs `websockets>=13` with pip. The
+> browser test opens a compressed `wss://` WebSocket from Chromium 156. `tests/alloc/ws_hot_path.d`: 0 GC bytes in 100k echoes,
+> compressed or not. `tools/fuzz.sh ws` (3M runs clean) and `tests/fuzz/fuzz_ws.d` in `check.sh`. Memory: 1,000 open
+> WebSockets peak at ~21 MB RSS (checked < 30 MB). Compile budget: 391 -> 398 ms on the same machine, with an `/echo` route
+> added to `examples/hello`.
+
+### [ ] 10.6 Candidates, not started
+
+- The Autobahn|Testsuite (docker) as an optional interop section.
+- A subprotocol helper (`WebSocket.protocols`), if setting the header by hand proves error-prone.
+- A client send that finds the socket full while its owner waits stays queued until the owner's next wait; a per-connection
+  writer wait (as on the server) would fix it if it matters.
+- Fan-out across workers (a hub over `LISTEN/NOTIFY` in `vela-pg`, say).
+- WebSockets over HTTP/2 (RFC 8441), when D3 is lifted.
 
 ## Open owner decisions (not blocking)
 

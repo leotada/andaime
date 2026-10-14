@@ -61,6 +61,19 @@ c.from("203.0.113.7").get("/whoami");          // the TCP peer address (default 
 | `contentLength` | the announced length, -1 for a stream of unknown length |
 | `aborted` | a stream failed after it started (a real client would see a cut-off body) |
 
+## WebSockets
+
+`websocket(path, script, headers...)` plays a script of client frames to a [WebSocket route](websocket.md#testing) and returns
+what the server sent:
+
+```d
+auto r = c.websocket("/chat/a", WsScript().text("hi").ping("p").close(), hdr("Authorization", "Bearer secret"));
+assert(r.status == 101 && r.texts == ["a: hi"] && r.pongs == ["p"] && r.closeCode == 1000);
+```
+
+`WsScript` has `text`, `binary`, `continuation`, `ping`, `close` and `raw` (any bytes, to test the server's checks). A refused
+upgrade shows up in `r.status` and `r.response`.
+
 ## Tips
 
 - Build a fresh app per test (`TestClient(buildApp())`) so tests do not share state.

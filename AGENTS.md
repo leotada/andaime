@@ -36,15 +36,15 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 - **User-facing callbacks accept `@system`** (`Middleware`, `ErrorHandler`, `UserHandler`, route handlers, a text type's methods):
   user code may call C libraries without ceremony, and `@safe` code converts to them implicitly. The framework invokes user code
   only through `callMiddleware`, `callUser`, `callBuild` (the app build function, `server.d`), `callStream`/`callEvents` (stream
-  bodies, `stream.d`), `textFromString`/`textToString` (a user's text type, `vela.http.texttype`) and the `@trusted` lambda in
-  `dispatch`. Add no other call sites.
+  bodies, `stream.d`), `callWebSocket` (a WebSocket body, `web/.../websocket.d`), `textFromString`/`textToString` (a user's
+  text type, `vela.http.texttype`) and the `@trusted` lambda in `dispatch`. Add no other call sites.
 - `-version=VelaStrictSafe` (dub: `versions "VelaStrictSafe"`) makes `handlerError` reject `@system` handlers with a one-line
   message (`tests/compile_fail/system_handler.d` declares its flag with a `// FLAGS:` line). `tests/web/system_code.d` proves
   that `@system` handlers, middleware and error handlers work by default.
 - Every module starts with `@safe:` except the raw-syscall ones: `engine/.../epoll.d` and `devserver.d` stay `@system`;
   `EventLoop.run` is `@system` and `vela.server.serve` is the single `@trusted` entry point into them. Their overrides of
   `@safe` interfaces (`stop`, `awaitFd`, `sleepMs`, the `ResponseSink` methods) are small `@trusted` bodies.
-- FFI modules (`drivers/pg`, `engine/.../httpclient.d`, `tls.d`, `tlsserver.d`, `libpq.d`) expose `@trusted` facades; raw
+- FFI modules (`drivers/pg`, `engine/.../httpclient.d`, `wsclient.d`, `tls.d`, `tlsserver.d`, `zlib.d`, `libpq.d`) expose `@trusted` facades; raw
   pointers never leave them (`tlsserver.d`'s per-connection functions take an `SSL*` and are `@system`; only `epoll.d` calls
   them). Tests that need raw OpenSSL (`tests/net/tls_net.d`, `tls_loadgen.d`) declare a `vela.engine.*` module name to reach the
   package-protected table. Anything that hands out a raw view (`PgResult.text`) is `@system`.
@@ -63,15 +63,15 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 
 | Path | Role |
 |------|------|
-| `http/` (`vela:http`) | HTTP types, `Optional`, text types, IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK. No I/O. |
-| `web/` (`vela:web`) | `App`, `Group`, router, handler introspection, JSON, OpenAPI, CORS, cookies, streaming, models, middleware, `TestClient`. No sockets. |
-| `engine/` (`vela:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload`, HTTP/HTTPS client, OpenSSL (dlopen, `tls.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
+| `http/` (`vela:http`) | HTTP types, `Optional`, text types, IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64. No I/O. |
+| `web/` (`vela:web`) | `App`, `Group`, router, handler introspection, JSON, OpenAPI, CORS, cookies, streaming, WebSocket routes, models, middleware, `TestClient`. No sockets. |
+| `engine/` (`vela:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload`, HTTP/HTTPS client, WebSocket client (`wsclient.d`), OpenSSL (dlopen, `tls.d`), zlib (dlopen, `zlib.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
 | `drivers/pg/` (`vela-pg`) | PostgreSQL driver over async libpq (dlopen). **Independent package; the core must never depend on it.** |
 | `source/vela/` (`vela`) | `import vela;`, `server.d` (the only glue between web and engine), `staticfiles.d`. |
 | `examples/hello`, `examples/api` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI. |
 | `tests/` | `web/` (no network; helper modules in `web/support/`), `h2/` (HTTP/2 session), `net/` (real sockets), `db/` (needs Postgres), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
-| `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `proxy_interop.sh` (behind Caddy over h2c), `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, `bench.sh`, and the helpers that start a throwaway Postgres / test upstream. |
-| `docs/`, `README.md` | User-facing docs: `docs/README.md` is the index (guides: getting-started, routing, requests, validation, responses, middleware, streaming, static files/OpenAPI, concurrency, database, http-client, testing, safety; reference: deploy, tls, http2, configuration). Keep them in sync with behavior; code blocks whose first line is `// check` are compiled by `tools/doc_examples.sh`. Contributor material goes in `CONTRIBUTING.md`, not the README. |
+| `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `ws_interop.sh` (python `websockets`), `proxy_interop.sh` (behind Caddy over h2c), `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, `bench.sh`, and the helpers that start a throwaway Postgres / test upstream. |
+| `docs/`, `README.md` | User-facing docs: `docs/README.md` is the index (guides: getting-started, routing, requests, validation, responses, middleware, streaming, websocket, static files/OpenAPI, concurrency, database, http-client, testing, safety; reference: deploy, tls, http2, configuration). Keep them in sync with behavior; code blocks whose first line is `// check` are compiled by `tools/doc_examples.sh`. Contributor material goes in `CONTRIBUTING.md`, not the README. |
 | `.github/workflows/check.yml` | CI: DMD and LDC at the minimum and latest versions, strict mode; browser test and nightly fuzzing in their own jobs. |
 
 Dependency direction: `http` <- `web`, `http` <- `engine` <- `drivers/*`; `source/vela/server.d` is the only module that knows both
@@ -83,7 +83,8 @@ Dependency direction: `http` <- `web`, `http` <- `engine` <- `drivers/*`; `sourc
 tools/check.sh                 # full verification (DMD); DC=ldmd2 for LDC
 VELA_STRICT=1 tools/check.sh   # a skipped section fails the run (CI does this)
 VELA_ONLY="memory" tools/check.sh   # only the sections whose name contains the text
-tools/fuzz.sh [seconds] [parse|h2]  # libFuzzer + ASan on the HTTP/1 parser or the HTTP/2 session (needs LDC)
+tools/fuzz.sh [seconds] [parse|h2|ws]  # libFuzzer + ASan on the HTTP/1 parser, the HTTP/2 session or WebSockets (needs LDC)
+tools/ws_interop.sh            # WebSockets against python's `websockets` (server and client, permessage-deflate); also run by check.sh
 tools/bench.sh [seconds]       # throughput (req/s) of one worker, with and without pipelining; for before/after, not a gate
 tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SPEC=/path); also run by check.sh
 ```
@@ -93,7 +94,7 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 - **Skips**: a test or helper that cannot run prints `skip: <reason>` to stderr and exits **77**; `check.sh` lists the skips in its
   summary. `dmd -run` turns every non-zero code into 1, so tests that can skip are built first and run afterwards.
 - Timing checks are noisy: the compile budget fails above 440 ms (target 400), the HTTPS memory ceiling is 80 MB (OpenSSL 3.5).
-- Parser changes: add corpus files and run `tools/fuzz.sh 300 parse`. HTTP/2 changes: see below.
+- Parser changes: add corpus files and run `tools/fuzz.sh 300 parse`. HTTP/2 and WebSocket changes: see below.
 
 ## Concurrency model (read before touching `engine/` or `drivers/`)
 
@@ -142,6 +143,32 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 - The loop parses each head once: `parseHead` (in `tryParse`) fills the loop's `head`/`scratch`, and `parsedHead` hands it to
   `startRequest`, `tryUpgrade`, the `Expect` check and the redirect port, parsing again only if another connection's head or a
   grow came in between. Nothing else may write into `scratch`.
+- `sink.upgrade(head, protocol)` instead of `start` answers 101 and hands the connection over (an `UpgradedConn`); it returns null
+  where that is impossible (HTTP/2, `BufferedSink`, the devserver), before anything was sent. See the WebSocket section.
+
+## WebSockets (read before touching `http/.../websocket.d`, `web/.../websocket.d`, `wsclient.d` or `Phase.upgraded` in `epoll.d`)
+
+- Layers: `vela.http.websocket` has the codec, the handshake and `WsConn` (the whole message layer: fragments, pings, close
+  handshake, limits, ping/idle timing, deflate hooks) and does I/O only through `UpgradedConn` (`vela.http.response`). The engine
+  implements `UpgradedConn` on a server connection (`WsPort` in `epoll.d`), `wsclient.d` on a client one, `TestClient` in memory.
+  Protocol rules belong in `WsConn`, where the unittests, `tests/web/websocket.d` and the fuzzers reach them without sockets.
+- The web layer never imports the engine: compression reaches it as `Context.newDeflate` (a `WsDeflateFactory`), set by
+  `server.d` to `vela.engine.zlib`.
+- The takeover (`sinkUpgrade`): pending pipelined answers go into `wsOut` before the 101; bytes after the request in `c.buf`
+  become the first WebSocket input (`wsIn`); `c.buf` itself stays untouched until the connection closes, because the handler's
+  `Request` (and its captured params) point into it. The connection never goes back to HTTP.
+- Reads belong to the owner (the fiber that upgraded). Any fiber of the worker may write: `write` appends the whole frame to
+  `wsOut` before it can wait, so frames never interleave. Writers wait for the drain like `waitH2Drain`; a dead connection gives the
+  owner `RequestCancelled` and other fibers `WsClosed`. **Never resume a fiber from inside another fiber**: a wake-up decided in
+  fiber context goes through `wsDefer` and runs at the end of the batch (`drainWsWakes`).
+- A `WsPort` (and a `WsConn`) is per connection, never pooled: a `WsConn` kept by another fiber after its connection ended must
+  find it closed, never reach a later connection on the same pooled `Conn`. Every `WsConn` method checks its state before I/O.
+- When the owner returns, `finishUpgraded` sends what is left of `wsOut` (`writeTimeoutMs`) and closes with `lingerClose`;
+  graceful stop wakes the readers (`fill` returns `stopping`, `WsConn` closes with 1001). `sweepUpgraded` drops a connection
+  whose output is blocked longer than `writeTimeoutMs`.
+- HTTP/2 stays frozen: no RFC 8441. A WebSocket route reached over HTTP/2 answers 426.
+- A WebSocket change: cases in `tests/web/websocket.d` (TestClient) or `tests/net/ws_net.d` (sockets), `tools/ws_interop.sh`,
+  `tools/fuzz.sh 300 ws`, and the hot path (`tests/alloc/ws_hot_path.d`) stays GC-free.
 
 ## HTTP/2 (read before touching `http/.../h2.d` or the h2 part of `epoll.d`)
 
@@ -177,9 +204,14 @@ require (response sink, memory model). Everything below still applies to those.
 
 ## Pitfalls
 
-- dlopen function tables must live in a `struct` held by a `__gshared` instance (`pq`, `tls`), never in loose `extern (C)` variables
+- dlopen function tables must live in a `struct` held by a `__gshared` instance (`pq`, `tls`, `z`), never in loose `extern (C)` variables
   (they become global symbols that the C library then calls itself).
-- A user helper named `get`/`put`/`post` hides vela's free functions; use `vela.get!(...)(app)`.
+- A user helper named `get`/`put`/`post`/`ws` hides vela's free functions; use `vela.get!(...)(app)`.
+- DMD 2.109 segfaults on a call that relies on a default argument placed before a variadic parameter (`f(string a, S s = S.init,
+  T[] rest...)`): use an overload instead (`TestClient.websocket`). It also crashes, instead of reporting it, on some name clashes
+  between imported enums: when DMD dies with a segfault, try LDC for the real error message.
+- A libFuzzer target has no D `main`: one that needs druntime (the monotonic clock, say) calls `rt_init` in
+  `LLVMFuzzerInitialize` (`tests/fuzz/libfuzzer_ws.d`).
 - Middleware applies to every route of its App/Group whatever the registration order; the app freezes when it starts serving
   (`App.freeze`) and registration then throws `RouteError`. Group prefixes cannot contain `{param}`.
 - D's `args[i].ptr` of `main(string[] args)` is not NUL-terminated: use `std.conv` in tools, not `atoi`.
@@ -203,5 +235,5 @@ require (response sink, memory model). Everything below still applies to those.
 
 The rest of the performance work (M4: SIMD head search, GC tuning, `sendfile`; the benchmark, single parse and pipelined-response
 coalescing are done, see `PLAN.md` Phase 8), kqueue (M5) and io_uring (M6), streamed (unbuffered)
-request bodies, WebSockets, Range requests, serving the app in cleartext next to TLS, IPv6 listeners, OCSP
+request bodies, WebSockets over HTTP/2 (RFC 8441), Range requests, serving the app in cleartext next to TLS, IPv6 listeners, OCSP
 stapling, response trailers (gRPC), streaming responses in the HTTP client. Do not start these unless asked.

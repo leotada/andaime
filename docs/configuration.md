@@ -8,14 +8,14 @@
 | `workers` | 0 | 0 = one per core. Each worker builds its own App ([concurrency.md](concurrency.md#workers-and-state)) |
 | `backlog` | 1024 | listen backlog |
 | `maxConnections` | 10,000 | per worker |
-| `maxInFlight` | 1,024 | requests (and streams) in progress per worker; above it 503 + `Retry-After` (`REFUSED_STREAM` on h2) |
+| `maxInFlight` | 1,024 | requests (and streams, and open WebSockets) in progress per worker; above it 503 + `Retry-After` (`REFUSED_STREAM` on h2) |
 | `maxIdleWorkers` | 64 | idle fibers kept; the rest are torn down |
 | `fiberStackBytes` | 256 KiB | virtual stack per fiber; an overflow is a SIGSEGV that ends the process (the message names the request) |
 | `headerTimeoutMs` | 10,000 | first byte to end of head (slowloris); also the no-progress limit while a chunked body arrives |
 | `idleTimeoutMs` | 60,000 | idle keep-alive |
 | `requestTimeoutMs` | 30,000 | until the handler starts the response; past it the request is cancelled (504) |
 | `writeTimeoutMs` | 30,000 | a client that does not read; also each blocked write of a streamed response |
-| `streamHighWaterBytes` | 64 KiB | buffered bytes at which a streaming `write` goes out and waits for the transport |
+| `streamHighWaterBytes` | 64 KiB | buffered bytes at which a streaming `write` goes out and waits for the transport; also the bytes queued for a WebSocket above which `send` waits |
 | `streamTimeoutMs` | 0 | whole-stream limit; 0 = none |
 | `trustedProxies`, `forwardedHeader` | none, `X-Forwarded-For` | proxies whose forwarding header is believed (CIDR strings) |
 | `shutdownGraceMs` | 10,000 | wait for in-flight work on stop |
@@ -32,4 +32,5 @@ Other settings: `StaticConfig` (`serveStatic`), `OpenApiInfo` (`serveOpenApi`), 
 variables of the tests and tools (`VELA_STRICT`, `VELA_CI`, `VELA_PG`, `VELA_TLS_RSS_MB`...) are described in `tools/check.sh`.
 
 `LoopStats` (per worker, for metrics and tests): `inFlight`, `peakInFlight`, `connections`, `rejected`, `cancelled`, `timedOut`,
-`stalls`, `handlerErrors`, `fibersPoisoned`, `http2Connections`, `http2Streams`, `tlsHandshakes`, `tlsFailures`...
+`stalls`, `handlerErrors`, `fibersPoisoned`, `http2Connections`, `http2Streams`, `tlsHandshakes`, `tlsFailures`, `webSockets`,
+`webSocketsTotal`...

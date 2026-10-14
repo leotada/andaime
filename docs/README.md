@@ -14,6 +14,7 @@ things up.
 | [Responses](responses.md) | Return types, status codes, JSON, `Response`, headers, cookies |
 | [Middleware and error handling](middleware.md) | Writing middleware, order, `Local!T`, access log, request id, CORS, `onError` |
 | [Streaming](streaming.md) | `Stream` and Server-Sent Events, backpressure, cancellation |
+| [WebSockets](websocket.md) | `WebSocket` routes, `WsConn`, broadcasting, limits, compression, the `wsConnect` client, testing, proxies |
 | [Static files and OpenAPI](static-files-and-openapi.md) | `serveStatic`, `/openapi.json` and Swagger UI, documenting statuses |
 | [Concurrency](concurrency.md) | Workers, fibers, state between workers, waiting without blocking, `offload`, cancellation |
 | [Database](database.md) | The PostgreSQL driver (`vela-pg`) |

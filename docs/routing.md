@@ -9,6 +9,7 @@ app.post!("/users", createUser);
 app.put!("/users/{id}", replaceUser);
 app.patch!("/users/{id}", updateUser);
 app.del!("/users/{id}", deleteUser);          // `delete` is a D keyword
+app.ws!("/chat/{room}", chat);                // a WebSocket: the handler returns `WebSocket` (websocket.md)
 ```
 
 The handler is a function, a method of a controller (below) or a lambda; lambdas may capture variables of the build function:
@@ -23,7 +24,7 @@ app.get!("/hello/{name}", (string name) => greeting ~ ", " ~ name);
 Register everything inside the build function passed to `serve` ([concurrency.md](concurrency.md)). The app freezes when it
 starts serving (or on the first `TestClient` request); registering anything after that throws `RouteError`.
 
-> If your module defines its own function named `get`, `post`, `put`... it hides vela's. Call `vela.get!("/x", fn)(app)` then.
+> If your module defines its own function named `get`, `post`, `put`, `ws`... it hides vela's. Call `vela.get!("/x", fn)(app)` then.
 
 ## Path parameters
 

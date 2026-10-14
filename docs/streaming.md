@@ -1,10 +1,17 @@
 # Streaming responses
 
 Return a `Stream` when the body is produced while it is sent (an export, a large download), or an `EventStream` for
-Server-Sent Events (live updates, token-by-token output). A short tutorial is in [quickstart.md](quickstart.md); this is the
-reference.
+Server-Sent Events (live updates, token-by-token output).
 
 ```d
+// check
+@safe:
+
+import vela;
+import core.time : seconds;
+
+string[] rowsOf(string table) => ["id,name\n", "1,Ana\n"];
+
 Stream export_(string table)
 {
     return Stream("text/csv", (scope StreamWriter w) {
@@ -16,10 +23,30 @@ Stream export_(string table)
 EventStream clock()
 {
     return EventStream((scope EventWriter w) {
-        foreach (i; 0 .. 60) { w.send(timeNow()); sleep(1.seconds); }
+        foreach (i; 0 .. 60)
+        {
+            w.send("tick");            // "data: tick" and a blank line, flushed at once
+            sleep(1.seconds);          // the fiber waits; the worker serves other requests
+        }
     });
 }
+
+App buildApp()
+{
+    auto app = new App;
+    app.get!("/export/{table}", export_);
+    app.get!("/clock", clock);
+    return app;
+}
+
+void main() { serve(&buildApp, 8080); }
 ```
+
+```sh
+curl -N localhost:8080/clock           # one event per second
+```
+
+A browser reads Server-Sent Events with `new EventSource("/clock")`. Named events and ids: `w.send(data, "price", "42")`.
 
 ## Contract
 

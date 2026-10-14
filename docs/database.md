@@ -1,52 +1,116 @@
-# Database, external APIs and heavy work
+# PostgreSQL (`vela-pg`)
 
-Every wait below suspends only the request's fiber; the worker keeps serving other connections.
+`vela-pg` is a PostgreSQL driver over asynchronous libpq: a query suspends only the request's fiber, and the worker keeps
+serving other requests meanwhile. It is a separate DUB package, and libpq is loaded at run time, so applications that do not
+use it neither link nor install it.
+
+## Setup
+
+`dub.sdl`:
+
+```sdl
+dependency "vela" path="../dapi"
+dependency "vela-pg" path="../dapi/drivers/pg"
+```
+
+The machine needs libpq (`libpq5` on Debian/Ubuntu, `libpq5` or `postgresql-libs` elsewhere).
+
+## Queries
 
 ```d
-import vela.db;                       // dependency "vela-pg" path="drivers/pg"; needs libpq5 installed
+import vela;
+import vela.db;
 
 struct User { int id; string name; Optional!string email; }
 
-string user(int id)
+PgPool db() => pgPool("host=db.example.com dbname=app user=app");   // this worker's pool, created on first use
+
+User getUser(int id)
 {
-    auto db = pgPool("host=my-rds.example.rds.amazonaws.com dbname=app user=app");   // one pool per worker
-    auto u = db.query("select id, name, email from users where id = $1", id).rowsAs!User;
-    return u.length ? u[0].name : "?";
+    auto users = db.query("select id, name, email from users where id = $1", id).rowsAs!User;
+    if (users.length == 0)
+        throw new HttpError(404, "user not found");
+    return users[0];
 }
 
-string quote()
+@status(201)
+User createUser(JsonBody!NewUser body_)
 {
-    auto r = httpClient().get("https://api.example.com/v1/quote");   // verified HTTPS, keep-alive
-    return r.ok ? r.body : "unavailable";
+    return db.query("insert into users(name, email) values ($1, $2) returning id, name, email",
+        body_.name, body_.email).one!User;
 }
 
-string heavy()
+void touch(int id) { db.exec("update users set seen_at = now() where id = $1", id); }
+```
+
+- Parameters are `$1..$n` and are sent separately from the SQL: **never build SQL from user input**.
+- Parameter types: integers, `bool`, floating point, strings, `Optional!T` (empty = `NULL`) and your
+  [text types](requests.md#your-own-types-uuids-dates-money) (a `Uuid` goes to a `uuid` column as text: `$1::uuid`).
+- `rowsAs!T` maps every row to a struct, matching fields to columns by name (a missing column throws). `one!T` returns the
+  first row and throws when there is none.
+- A column that may be NULL is an `Optional!T`; the same type is `null` in JSON, so rows serialize with no conversion.
+- Lower level: `r.rows`, `r.cols`, `r.get!T(row, col)`, `r.isNull(row, col)`, `r.column("name")`, `r.affected()`.
+
+## Transactions
+
+```d
+long transfer(long from, long to, long cents)
 {
-    return offload(() => workThatCannotBeDoneCooperatively());   // thread pool (configureOffload)
+    return db.transaction((PgConn c) {
+        c.exec("update accounts set cents = cents - $2 where id = $1", from, cents);
+        c.exec("update accounts set cents = cents + $2 where id = $1", to, cents);
+        return c.query("insert into transfers(src, dst, cents) values ($1, $2, $3) returning id", from, to, cents)
+            .get!long(0, 0);
+    });
 }
 ```
 
-## PostgreSQL (`vela-pg`)
+`BEGIN` and `COMMIT` on one connection; `ROLLBACK` if the delegate throws.
 
-- A separate DUB package over asynchronous libpq, loaded with dlopen: the core depends neither on it nor on libpq.
-- Queries use `$1..$n` text parameters: never build SQL from user-supplied values.
-- A column that may be NULL is an `Optional!T` (the same type the web layer uses, so a row serializes to JSON `null`).
-- Your own types work as parameters and columns when they follow the text-type protocol (`fromString`/`toString`, see
-  `vela.http.texttype`): a `Uuid` goes to a `uuid` column as text and comes back through `fromString`.
-- If the client goes away or the deadline expires midway through a query, the driver asks the server to cancel and discards the
-  connection. The same goes for outgoing HTTP calls (the connection is closed).
-- `PgConfig.cacheStatements = true` uses prepared statements (up to 128 per connection, with a retry if the plan is
-  invalidated). It is off by default: do not use it behind PgBouncer in transaction mode.
-- Each worker has its own pool (`pgPool` is thread-local): total connections = workers x `PgConfig.maxConns`. Never pass a
-  connection between workers.
+## Errors
 
-## HTTP client
+| Exception | When |
+|-----------|------|
+| `PgError` | the server refused the query; `sqlState` has the code, `isUniqueViolation()`, `isForeignKeyViolation()` |
+| `PgTimeout` (a `PgError`) | `queryTimeout` passed; the server was asked to cancel |
 
-`httpClient()` is cooperative, with verified HTTPS, keep-alive, retry on a stale connection and deadlines. It returns whole
-bodies (streaming an upstream response is not supported yet). One client per worker.
+They are not `HttpError`s, so by default they become a 500. Map them in `app.onError` (a 409 for a unique violation, a 504 for a
+timeout); `examples/api` shows how.
 
-## `offload`
+## Pool and configuration
 
-CPU-heavy or blocking-library work goes through `offload(...)`, a bounded thread pool (`configureOffload`). It throws
-`PoolSaturated` when the queue is full; decide whether that becomes a 503. Cancellation of the request is delivered at the next
-wait; the offloaded work finishes by itself.
+```d
+PgPool db()
+{
+    PgConfig cfg;
+    cfg.conninfo = "host=db.example.com dbname=app user=app";   // or a postgresql:// URI
+    cfg.maxConns = 8;                     // per worker
+    cfg.connectTimeout = 10.seconds;
+    cfg.acquireTimeout = 5.seconds;       // waiting for a free connection
+    cfg.queryTimeout = 30.seconds;
+    cfg.idleTimeout = 5.minutes;
+    cfg.cacheStatements = false;          // prepared statements; not behind PgBouncer in transaction mode
+    return pgPool(cfg);
+}
+```
+
+- **One pool per worker** (`pgPool` is per thread): the database sees up to workers x `maxConns` connections. Never pass a
+  connection to another worker.
+- `cacheStatements = true` prepares each SQL text once per connection (up to 128), and retries when the plan was invalidated.
+- If the client goes away or the deadline passes during a query, the driver asks the server to cancel and discards the
+  connection.
+
+## Outside a request
+
+In `main` (migrations, a schema check before `serve`), the same calls block instead of suspending a fiber:
+
+```d
+auto c = PgConn.connect(databaseUrl, 10.seconds, 30.seconds);
+scope (exit) c.shutdown();
+c.exec("create table if not exists users(id serial primary key, name text not null)");
+```
+
+## Other databases
+
+There is no driver for other databases yet. A blocking client library can be used through `offload`
+([concurrency.md](concurrency.md#offload-the-thread-pool)); a new cooperative driver is built on `awaitFd`.

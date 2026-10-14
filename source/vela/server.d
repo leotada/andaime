@@ -30,7 +30,7 @@ version (linux)
 ///
 /// `build` must create a new App on every call and register all routes and middleware inside; it may run on several
 /// threads at once. The app is frozen when the worker starts serving. To share data between workers use a database, or
-/// `__gshared`/`shared` data behind a lock (see docs/quickstart.md, "Workers and state").
+/// `__gshared`/`shared` data behind a lock (see docs/concurrency.md, "Workers and state").
 void serve(App delegate() @system build, ushort port = 8080)
 {
     ServerConfig cfg;

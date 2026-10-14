@@ -5,7 +5,7 @@
 | Field | Default | Meaning |
 |-------|---------|---------|
 | `host`, `port` | `0.0.0.0`, 8080 | listener |
-| `workers` | 0 | 0 = one per core. Each worker builds its own App ([quickstart](quickstart.md), "Workers and state") |
+| `workers` | 0 | 0 = one per core. Each worker builds its own App ([concurrency.md](concurrency.md#workers-and-state)) |
 | `backlog` | 1024 | listen backlog |
 | `maxConnections` | 10,000 | per worker |
 | `maxInFlight` | 1,024 | requests (and streams) in progress per worker; above it 503 + `Retry-After` (`REFUSED_STREAM` on h2) |

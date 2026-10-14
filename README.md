@@ -124,6 +124,10 @@ auto quote = httpClient().get("https://api.example.com/quote").body;
 auto png = offload(() => renderChart(data));        // CPU-heavy work on a bounded thread pool
 ```
 
+**Background jobs** (`vela:jobs`): a struct is the payload, `perform` is the body, and the same binary can run as API,
+worker or both (`--role`). Retries, uniqueness, cron and a Postgres queue (`vela-pg-jobs`) are optional packages; see
+[Jobs and cron](docs/jobs-and-cron.md).
+
 **Tests** run in memory, without sockets:
 
 ```d
@@ -153,7 +157,7 @@ serve(&buildApp, cfg);
 | [Getting started](docs/getting-started.md) | install, first route, CRUD, first test |
 | [Routing](docs/routing.md) · [Reading the request](docs/requests.md) · [Validation](docs/validation.md) · [Responses](docs/responses.md) | the handler contract |
 | [Middleware and errors](docs/middleware.md) · [Streaming](docs/streaming.md) · [WebSockets](docs/websocket.md) · [Static files and OpenAPI](docs/static-files-and-openapi.md) | building an API |
-| [Concurrency](docs/concurrency.md) · [Database](docs/database.md) · [HTTP client](docs/http-client.md) | waiting without blocking |
+| [Concurrency](docs/concurrency.md) · [Database](docs/database.md) · [Jobs and cron](docs/jobs-and-cron.md) · [HTTP client](docs/http-client.md) | waiting without blocking, background work |
 | [Testing](docs/testing.md) · [Memory safety](docs/safety.md) | |
 | [Deploying](docs/deploy.md) · [HTTPS](docs/tls.md) · [HTTP/2](docs/http2.md) · [Configuration](docs/configuration.md) | production |
 

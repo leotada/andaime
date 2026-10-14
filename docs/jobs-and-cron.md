@@ -1,14 +1,17 @@
 # Background jobs and cron
 
-`vela:jobs` (`import vela.jobs;`) is the job package. The struct is the payload, `perform` is the body, and `@Job` names the queue. It does not talk to Postgres. The Postgres queue is a separate package, `vela-pg-jobs` (`import vela.jobs.pg;`), at the end of this page. The root `vela` package depends on neither, so `import vela;` does not bring jobs in.
+A job is a struct: the fields are the JSON payload, `perform` is the body, and `@Job` names the queue. The same signatures
+drive retries, uniqueness, cron and the OpenAPI-free compile-time checks. Enqueue from a handler; a separate process (or
+the same one in development) claims and runs the work on the epoll loop.
 
-`dub.sdl`:
+The package is `vela:jobs` (`import vela.jobs;`). It does not talk to Postgres. The durable queue is
+`vela-pg-jobs` (`import vela.jobs.pg;`), covered at the end. The root `vela` package depends on neither, so
+`import vela;` does not pull jobs in. Background jobs need the Linux epoll loop; `runJobs` refuses the blocking
+development server.
 
 ```sdl
 dependency "vela:jobs" path="../dapi"
 ```
-
-Background jobs need the epoll loop. `runJobs` refuses the non-Linux development server, which runs `spawn` inline.
 
 ## Declaring a job
 
@@ -26,6 +29,7 @@ struct SendMail
 
     void perform(ref JobContext ctx) @safe
     {
+        // ctx.id, ctx.attempt (1-based), ctx.maxAttempts, ctx.queue
     }
 }
 
@@ -41,12 +45,17 @@ void main()
 }
 ```
 
-- `@Job("mail")` is the queue. It is required. The stored job name is `jobName!SendMail`, the struct's fully qualified name, so two `SendMail` structs in different modules do not collide.
-- `void perform(ref JobContext ctx) @safe`. `ctx` carries `id`, `attempt` (1-based), `maxAttempts` and `queue`. There is no dependency injection: a pool or an HTTP client stays thread-local, as `db()` does in [database.md](database.md).
-- The payload is the JSON object of the struct fields (bool, numbers, string, enum, arrays, string-keyed maps, structs, `Optional!T`). A pointer, class, delegate or interface is a one-line compile error.
-- `TestJobStore` does not run by itself. `assertEnqueued!T(substring)` checks the job name, the queue from `@Job`, and that the JSON contains `substring`. It does not call `perform`. `drainJobs!T()` claims due rows and runs them. A row whose `run_at` is still in the future stays queued: `drainJobs` does not move the clock.
+- `@Job("mail")` is the **queue**. It is required. The stored job name is `jobName!SendMail` (the struct's fully
+  qualified name), so two `SendMail` structs in different modules do not collide.
+- `void perform(ref JobContext ctx) @safe`. There is no dependency injection: a pool or an HTTP client stays
+  thread-local, as `db()` does in [database.md](database.md).
+- The payload is the JSON of the struct fields: bool, numbers, string, enum, arrays, string-keyed maps, structs,
+  `Optional!T`. A pointer, class, delegate or interface is a one-line compile error (`vela.jobs:`).
+- `TestJobStore` never runs by itself. `assertEnqueued!T(substring)` checks the job name, the queue and a payload
+  substring; it does not call `perform`. `drainJobs!T()` claims due rows and runs them. A row whose `run_at` is still
+  in the future stays queued: `drainJobs` does not move the clock.
 
-## Retry
+## Retry and discard
 
 ```d
 // check
@@ -61,7 +70,7 @@ struct NotifyOnce
 
     void perform(ref JobContext ctx) @safe
     {
-        throw new Exception("upstream down");   // no @Retry: this attempt is discarded
+        throw new Exception("upstream down");   // no @Retry: discarded after this attempt
     }
 }
 
@@ -92,21 +101,23 @@ void main()
 }
 ```
 
-No `@Retry` means `maxAttempts` is 1. The failure is discarded, and the delay below is unused.
+- No `@Retry` means `maxAttempts` is 1: the failure is discarded.
+- `@Retry(maxAttempts, BackoffStrategy.exponential)`: after a failed attempt the next wait is
+  `min(6 hours, 1 second * 2^^(attempt - 1))`. `attempt` is 1-based (1 s, then 2 s, then 4 s, …). No jitter, so a test
+  can step the clock. The last attempt is discarded.
+- `throw new JobDiscard("...")` discards immediately; `@Retry` does not apply.
+- An `Error` (for example `AssertError`) is returned to `retryable` without spending the attempt, then propagates. The
+  fiber is retired.
 
-`@Retry(maxAttempts, BackoffStrategy.exponential)` counts the first run. After a failed attempt the next wait is `min(6 hours, 1 second * 2^^(attempt - 1))`. `attempt` is 1-based, so the first failure waits 1 second, the next 2, then 4, up to 6 hours. The delay has no jitter, so a test can step the clock. The last attempt is discarded.
-
-`throw new JobDiscard("...")` discards the row immediately. `@Retry` does not apply.
-
-An `Error` (an `AssertError`, for example) is released back to `retryable` without spending the attempt, and then it propagates. The runner does not catch it. The fiber is retired.
-
-## `@Offload`
+## Offload and uniqueness
 
 ```d
 // check
 @safe:
 
 import vela.jobs;
+
+import core.time : minutes;
 
 @Job("images")
 @Offload
@@ -118,30 +129,6 @@ struct Resize
     {
     }
 }
-
-void main()
-{
-    auto store = new TestJobStore;
-    Resize image;
-    image.id = 4;
-    enqueue(store, image);
-    store.drainJobs!Resize();
-}
-```
-
-`@Offload` runs `perform` on the offload pool ([concurrency.md](concurrency.md#offload-the-thread-pool)). Waiting I/O stays on the fiber: `sleep`, `awaitFd`, a `vela-pg` query, `httpClient()`. CPU-heavy work and a blocking C library go through `@Offload` or `offload`. Outside a fiber the pool runs the work inline, which is what `drainJobs` does in a unit test.
-
-If shutdown cancels the fiber while it is inside `offload`, the pool thread may still finish that work. `RequestCancelled` has already released the row, and the result is discarded.
-
-## One payload per window
-
-```d
-// check
-@safe:
-
-import vela.jobs;
-
-import core.time : minutes;
 
 @Job("mail")
 @UniqueJob(15.minutes)
@@ -157,19 +144,31 @@ struct Welcome
 void main()
 {
     auto store = new TestJobStore;
+    Resize image;
+    image.id = 4;
+    enqueue(store, image);
     Welcome job;
     job.to = "a@b.c";
     auto first = enqueue(store, job);
     auto again = enqueue(store, job);
     assert(first.inserted);
     assert(!again.inserted && again.id == first.id);
-    store.assertEnqueued!Welcome("a@b.c");
+    store.drainJobs!(Resize, Welcome)();
 }
 ```
 
-`@UniqueJob(period)` allows one live row of the same payload per window. The key is an FNV-1a of the canonical JSON. The slot is the start of the window that contains now. A second insert in that window returns the existing row. A discarded row does not hold the window. `period` must be positive.
+`@Offload` runs `perform` on the offload pool ([concurrency.md](concurrency.md#offload-the-thread-pool)). Waiting I/O
+(`sleep`, `awaitFd`, a Postgres query, `httpClient()`) stays on the fiber. CPU-heavy work and blocking C go through
+`@Offload` or `offload`. Outside a fiber the pool runs inline, which is what `drainJobs` does in a unit test.
 
-## Cron
+If shutdown cancels the fiber while it is inside `offload`, the pool thread may still finish that work.
+`RequestCancelled` has already released the row; the result is discarded.
+
+`@UniqueJob(period)` allows one live row of the same payload per window. The key is an FNV-1a of the canonical JSON; the
+slot is the start of the window that contains now. A second insert in that window returns the existing id.
+`period` must be positive. A discarded row does not hold the window.
+
+## Cron and every
 
 ```d
 // check
@@ -210,23 +209,32 @@ void main()
 }
 ```
 
-`@Cron` takes five fields: minute, hour, day-of-month, month, day-of-week. A bad expression is a one-line compile error. `@Every(duration)` fires on a multiple of `period` (`period` must be positive). A struct may carry both; each kind is its own slot.
+`@Cron` is five fields: minute, hour, day-of-month, month, day-of-week (0 and 7 are Sunday). A bad expression is a
+one-line compile error. `@Every(duration)` fires on a multiple of `period` (`period` must be positive). A struct may carry
+both; each kind is its own slot.
 
-In memory, the supervisor enqueues a due slot once per process. It remembers the slot it already wrote. `TestJobStore` does not tick: the block above enqueues by hand, and `drainJobs` is what runs the row.
+In memory, the supervisor enqueues a due slot once per process. `TestJobStore` does not tick: the example above enqueues
+by hand, and `drainJobs` runs the row.
 
-On Postgres the supervisor calls `claimCron` before that enqueue. `PgJobStore` inserts `(job_name, scheduled_slot)` into `vela_cron_executions` with `INSERT ... ON CONFLICT DO NOTHING` and returns false when another process already took the slot. The loser does not enqueue. `slotStdTime` is `SysTime.stdTime` from `cronSlot` (`@Cron`) or `slotStart` (`@Every`).
+On Postgres the supervisor calls `claimCron` first. Only the process that inserts `(job_name, scheduled_slot)` into
+`vela_cron_executions` enqueues the job. See [Postgres](#postgres-vela-pg-jobs) below.
 
-## One thread, or several
+## Stores and workers
 
-`InMemoryJobStore` is one thread. Its methods do not wait, so the fibers of that thread can share it. `runJobs` defaults `singleThread` to true and forces `workers = 1`.
+`InMemoryJobStore` is one thread. Its methods do not wait, so the fibers of that thread can share it. `runJobs` defaults
+`singleThread` to true and forces `workers = 1`.
 
-Several cores, or several processes, need `PgJobStore` (below): one store per worker thread. Only worker 0 of each process consumes and runs cron. A queue limit is how many jobs that thread runs at once. One fiber does the claiming. It is not multiplied by the number of cores.
+Several cores, or several processes, need `PgJobStore`: one store per worker thread. Only worker 0 of each process
+consumes and runs cron. A queue's concurrency is how many jobs that thread runs at once; one fiber claims for the queue.
+The limit is not multiplied by the number of cores.
 
-With `InMemoryJobStore` and `--role=all`, the application sets `ServerConfig.workers = 1` itself. `serve` does not look at the store.
+With `InMemoryJobStore` and `--role=all`, set `ServerConfig.workers = 1` yourself. `serve` does not look at the store.
 
 ## Process roles
 
-`parseStartup(args)` reads `--role=api|worker|all` (default `api`) and `--queues=name:concurrency,...` (default `default:5`). `args[0]` is the program name. Anything else throws, and the message starts with `vela.jobs:`. An application with its own flags strips them first.
+`parseStartup(args)` reads `--role=api|worker|all` (default `api`) and `--queues=name:concurrency,...` (default
+`default:5`). `args[0]` is the program name. Anything else throws with a message starting `vela.jobs:`. Strip your own
+flags first if you have them.
 
 ```d
 // check
@@ -298,21 +306,31 @@ void main(string[] args)
 }
 ```
 
-- **`--role=api`.** `runApi`, then the application's own `serve`. Handlers enqueue on the store the application holds. Nothing consumes.
-- **`--role=worker`.** `runJobs!(Jobs)(store, startup, cfg)`. No user routes. `healthPort` 0 binds nothing (`accept = false`). Any other port serves cleartext `GET /health` and nothing else: the body is `ok`, and TLS is cleared. `shutdownGraceMs` becomes 30 seconds only when it is still the `ServerConfig` default of 10 seconds. A value the application already set is kept. One fiber per queue claims, up to the queue's concurrency jobs run at once. An empty claim on `PgJobStore` waits for `NOTIFY` or 5 seconds. An in-memory store waits `defaultIdleBackoff` (200 ms). A failed claim is logged (`vela.jobs:`) and the fiber waits again.
-- **`--role=all`.** `applyJobGrace(cfg)`, then `serve(build, cfg, supervisorHook!(Jobs)(store, startup))`. HTTP stays the application's. The hook runs on worker 0 only: the store's listen fiber and reaper when the store is a `JobRuntime` (`PgJobStore`), the claim fiber for each queue, the cron fiber, then `WorkerHooks.extra`. With `InMemoryJobStore` the application sets `workers = 1`. Queue limits are the jobs in flight on worker 0, not per core. `applyJobGrace` is the same 30 second rule as `runJobs`.
+| Role | What runs |
+|------|-----------|
+| `--role=api` | `runApi`, then your `serve`. Handlers enqueue; nothing consumes. |
+| `--role=worker` | `runJobs!(Jobs)(store, startup, cfg)`. No user routes. `healthPort` 0 binds nothing; any other port is cleartext `GET /health` only. One claim fiber per queue; up to the queue's concurrency jobs run at once. |
+| `--role=all` | `applyJobGrace(cfg)`, then `serve(..., supervisorHook!(Jobs)(...))`. HTTP is yours. Worker 0 runs claim, cron, and (for Postgres) listen and the reaper. |
 
-`WorkerHooks.extra` runs at the end of worker 0's init, after those fibers have been `spawn`ed and before the loop polls. It is not yet inside a fiber. `spawn` from `extra` is queued and starts when the loop begins. Do not call `sleep` or `awaitFd` directly inside `extra`: that would block the thread. `PgJobStore` already starts `listen` and the reaper from the supervisor; `extra` is for anything else.
+On an empty queue, `PgJobStore` waits for `NOTIFY` or 5 seconds. An in-memory store waits `defaultIdleBackoff` (200 ms). A
+failed claim, listen, reap or cron tick is one `vela.jobs:` line on stderr; the fiber waits and tries again.
 
-Pass `singleThread: false` to `runJobs` only for a store that is safe across threads. `cfg.workers` is then left as given (0 means one thread per core). Consumption still runs only on worker 0.
+`WorkerHooks.extra` runs at the end of worker 0's init, after those fibers have been `spawn`ed and before the loop polls.
+`spawn` from `extra` is queued; do not call `sleep` or `awaitFd` inside `extra` itself. `PgJobStore` already starts
+`listen` and the reaper; use `extra` for anything else.
+
+Pass `singleThread: false` to `runJobs` only for a store that is safe across threads. `cfg.workers` is then left as given
+(0 means one thread per core). Consumption still runs only on worker 0.
 
 ## Shutdown
 
-SIGINT or SIGTERM makes the consumers stop calling `claimBatch`. A row already claimed and not yet passed to `perform` is `release`d: `retryable` again, and the attempt just added is given back. `RequestCancelled` inside `perform` (the grace period cancelled the fiber) releases the same way. An `Exception` is still a failed attempt; an `Error` is still a release.
+SIGINT or SIGTERM stops new claims. A row claimed and not yet in `perform` is `release`d (`retryable`, attempt given
+back). `RequestCancelled` inside `perform` (the grace period cancelled the fiber) does the same. An `Exception` is still
+a failed attempt; an `Error` is a release.
 
-The grace is 30 seconds when `shutdownGraceMs` was left at 10 seconds, for both `--role=worker` (`runJobs`) and `--role=all` (`applyJobGrace` before `serve`). A running job can finish or be released. `--role=api` keeps the value on the `ServerConfig` the application passes to `serve`. A value that was already changed, including 0, is kept.
-
-`@Offload` is the case from above: a pool thread can finish work whose row was already released.
+When `shutdownGraceMs` is still the 10 second default, `--role=worker` (`runJobs`) and `--role=all` (`applyJobGrace`
+before `serve`) raise it to 30 seconds so a running job can finish or be released. A value you already set, including 0,
+is kept. `--role=api` leaves the API's grace alone.
 
 ## Postgres (`vela-pg-jobs`)
 
@@ -322,7 +340,9 @@ dependency "vela-pg" path="../dapi/drivers/pg"
 dependency "vela-pg-jobs" path="../dapi/drivers/pgjobs"
 ```
 
-The module is `vela.jobs.pg`. `PgJobStore` is the `JobStore`. One store per worker thread: it uses that thread's `pgPool`, and a store must not be handed to another thread. Worker 0 is the thread that called `serve` or `runJobs`. A thread-local function gives every worker its own store, and the store created on the main thread is worker 0's:
+`PgJobStore` (`import vela.jobs.pg;`) is the durable `JobStore`. One store per worker thread: it uses that thread's
+`pgPool`, and must not be handed to another thread. Worker 0 is the thread that called `serve` or `runJobs`. A
+thread-local helper gives every worker its own store; the one created on the main thread is worker 0's:
 
 ```d
 import vela.jobs.pg;
@@ -336,7 +356,11 @@ PgJobStore jobs()
 }
 ```
 
-`ensureSchema` creates `vela_jobs` and `vela_cron_executions` if they are missing. Call it on a connection that is not already inside a transaction, before a caller opens one. `enqueue(JobSpec)`, `claimBatch`, `listen`, `reap` and `claimCronSlot` do that on first use. `enqueue(PgConn, JobSpec)` does not.
+### Schema and transactional enqueue
+
+`ensureSchema` creates `vela_jobs` and `vela_cron_executions` if they are missing. Call it on a connection that is not
+already inside a transaction, before a caller opens one. `enqueue(JobSpec)`, `claimBatch`, `listen`, `reap` and
+`claimCronSlot` do that on first use. `enqueue(PgConn, JobSpec)` does not.
 
 ```d
 import vela.db;
@@ -347,13 +371,17 @@ scope (exit) c.shutdown();
 jobs().ensureSchema(c);
 
 pgPool("host=db.example.com dbname=app user=app").transaction((PgConn tx) {
-    enqueueJob(tx, jobs(), SendMail("a@b.c", 7));   // string to; long userId
+    enqueueJob(tx, jobs(), SendMail("a@b.c", 7));
 });
 ```
 
-`enqueue(PgConn, JobSpec)` inserts the row and calls `pg_notify('vela_jobs_notify', '')` inside the caller's transaction. It does not `BEGIN` or `COMMIT`. `COMMIT` publishes both; `ROLLBACK` drops both. `enqueueJob(tx, store, job)` is that insert with the typed payload (`jobSpec`). `store.enqueue(spec)` borrows a pooled connection and commits.
+`enqueue(PgConn, JobSpec)` inserts the row and runs `pg_notify('vela_jobs_notify', '')` inside the caller's transaction.
+It does not `BEGIN` or `COMMIT`. `COMMIT` publishes both; `ROLLBACK` drops both. `enqueueJob(tx, store, job)` is that
+insert with the typed payload. `store.enqueue(spec)` borrows a pooled connection and commits.
 
-A claim is one statement, and the transaction commits before `perform`. In outline (the real statement also restricts the queue; `""` means every queue):
+### Claim, listen and the lease
+
+A claim is one statement; the transaction commits **before** `perform`, so the row lock is not held across the work:
 
 ```sql
 update vela_jobs set state = 'running', attempt = attempt + 1, attempted_at = now()
@@ -366,13 +394,18 @@ where id in (
 )
 ```
 
-The row lock is not held while `perform` runs.
+The supervisor starts `listen` and the reaper on worker 0 (`JobRuntime.startServices`). `listen` uses a connection that
+is not from the pool, runs `LISTEN vela_jobs_notify`, and waits on libpq's socket. A notification wakes the claim fiber;
+so does a 5 second fallback (a scheduled job does not notify). Do not claim from the listen callback: leave that to the
+claim fiber.
 
-`listen` uses a connection that is not from the pool. The supervisor starts it, and the reaper, on worker 0 (`JobRuntime.startServices`). `listen` runs `LISTEN vela_jobs_notify` and waits on libpq's socket. A notification wakes the claim fiber; so does the 5 second fallback, because a scheduled job does not notify. An empty queue therefore does not call `claimBatch` on every concurrency slot. `listen` returns when that fiber is cancelled or the worker is stopping, and closes the connection on the way out. The callback must not claim a row and leave it `running`: the claim fiber is what calls `claimBatch`.
+`reap` returns `running` rows whose `attempted_at` is older than the lease (default 15 minutes, `store.lease`) to
+`retryable` without changing `attempt`. A job that runs longer than the lease can be claimed again and run twice.
 
-`reap` returns `running` rows whose `attempted_at` is older than the lease (default 15 minutes, `store.lease`) to `retryable`. It does not change `attempt`. The supervisor sleeps `store.lease` between calls. A job that runs longer than the lease can be claimed again and run twice. A failure in `listen`, `reap`, `claimBatch` or the cron tick is one `vela.jobs:` line on stderr; the fiber waits and tries again.
+### Cron across processes
 
-A cron slot the supervisor is about to enqueue goes through `claimCronSlot` first. Only the insert that wins enqueues the job. The same function is what you call if you enqueue a cron slot yourself, outside the supervisor:
+The supervisor calls `claimCronSlot` before it enqueues a due `@Cron` / `@Every` slot. Only the insert that wins
+enqueues. The same function is available if you enqueue a slot yourself:
 
 ```d
 import core.time : minutes;
@@ -389,3 +422,5 @@ SysTime every = slotStart(Clock.currTime(), 15.minutes);
 if (jobs().claimCronSlot(jobName!Sweep, every.stdTime))
     enqueue(jobs(), Sweep());
 ```
+
+`slotStdTime` is `SysTime.stdTime` from `cronSlot` (`@Cron`) or `slotStart` (`@Every`), not Unix microseconds.

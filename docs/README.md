@@ -18,7 +18,7 @@ things up.
 | [Static files and OpenAPI](static-files-and-openapi.md) | `serveStatic`, `/openapi.json` and Swagger UI, documenting statuses |
 | [Concurrency](concurrency.md) | Workers, fibers, state between workers, waiting without blocking, `offload`, cancellation |
 | [Database](database.md) | The PostgreSQL driver (`vela-pg`) |
-| [Jobs and cron](jobs-and-cron.md) | Queues, retries, cron, process roles, the Postgres job store |
+| [Jobs and cron](jobs-and-cron.md) | Background jobs (`vela:jobs`), retries, uniqueness, cron, process roles, Postgres queue |
 | [HTTP client](http-client.md) | Calling other APIs from a handler |
 | [Testing](testing.md) | `TestClient`: requests and responses in memory |
 | [Memory safety](safety.md) | `@safe` handlers, strict mode, what you may keep from a request |

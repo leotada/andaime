@@ -696,7 +696,210 @@ unittest // fragmented input: one byte at a time gives the same result
     assert(st.req.path == "/f" && st.req.body == cast(ubyte[]) "12345");
 }
 
+// ---- RFC 8441: WebSockets over HTTP/2 (extended CONNECT)
+
+ubyte[] wsConnect(string path = "/ws", string protocol = "websocket")
+    => block([":method", "CONNECT"], [":protocol", protocol], [":scheme", "https"], [":path", path],
+        [":authority", "t"], ["sec-websocket-version", "13"]);
+
+/// Opens a tunnel on stream 1 and answers it 200, as the engine does when the WebSocket handler accepts.
+H2Stream openTunnel(Peer p)
+{
+    p.send(frame(1, flagEndHeaders, 1, wsConnect()));
+    auto st = p.ready();
+    st.task = new Object; // the engine runs the handler
+    ResponseHead head = ResponseHead(200, null, null, -1);
+    p.s.beginResponse(st, head, false);
+    auto f = p.frames();
+    assert(f.length == 1 && f[0].type == FrameType.headers && f[0].flags == flagEndHeaders, f.to!string);
+    assert(p.headers(f[0].payload) == ":status=200;", p.headers(f[0].payload));
+    return st;
+}
+
+unittest // SETTINGS_ENABLE_CONNECT_PROTOCOL is announced, unless disabled
+{
+    bool announced(H2Config cfg)
+    {
+        auto s = new H2Session(cfg);
+        s.receive(cast(ubyte[]) clientPreface.dup);
+        auto o = cast(const(ubyte)[]) s.pendingOutput;
+        immutable len = (o[0] << 16) | (o[1] << 8) | o[2];
+        for (size_t i = 9; i < 9 + len; i += 6)
+            if (o[i] == 0 && o[i + 1] == 8)
+                return o[i + 5] == 1;
+        return false;
+    }
+
+    H2Config cfg;
+    assert(announced(cfg));
+    cfg.enableConnectProtocol = false;
+    assert(!announced(cfg));
+}
+
+unittest // an extended CONNECT runs at once, as a GET with connectProtocol, and carries bytes both ways
+{
+    auto p = new Peer;
+    p.send(frame(1, flagEndHeaders, 1, wsConnect("/chat?room=a")));
+    auto st = p.ready(); // no END_STREAM needed
+    assert(st.tunnel && st.req.method == Method.GET && st.req.connectProtocol == "websocket");
+    assert(st.req.path == "/chat" && st.req.query == "room=a" && st.req.header("sec-websocket-version") == "13");
+    assert(st.req.header("host") == "t");
+    st.task = new Object;
+    p.send(frame(0, 0, 1, cast(ubyte[]) "early")); // bytes before the answer are kept
+    ResponseHead head = ResponseHead(200, null, [HeaderField("Sec-WebSocket-Protocol", "chat")], -1);
+    p.s.beginResponse(st, head, false);
+    assert(p.headers(only(p.frames(), FrameType.headers).payload) == ":status=200;sec-websocket-protocol=chat;");
+
+    H2Stream in_;
+    assert(p.s.popInput(in_) && in_ is st && !p.s.popInput(in_));
+    assert(cast(string) p.s.tunnelInput(st) == "early");
+    p.s.tunnelConsume(st, 2);
+    p.send(frame(0, 0, 1, cast(ubyte[]) "+more"));
+    assert(cast(string) p.s.tunnelInput(st) == "rly+more");
+    p.s.tunnelConsume(st, 8);
+    assert(p.s.tunnelInput(st).length == 0 && !p.s.tunnelEnded(st));
+
+    p.s.sendData(st, "pong");
+    auto f = p.frames();
+    assert(f.length == 1 && f[0].type == FrameType.data && f[0].flags == 0 && f[0].payload == "pong", f.to!string);
+
+    // the client ends its side: the engine learns it, then ends ours, and the stream is gone
+    p.send(frame(0, flagEndStream, 1, null));
+    assert(p.s.popInput(in_) && in_ is st && p.s.tunnelEnded(st));
+    p.s.endResponse(st);
+    f = p.frames();
+    assert(f.length == 1 && f[0].type == FrameType.data && f[0].flags == flagEndStream && f[0].payload.length == 0);
+    assert(p.s.busy == 0 && !p.s.fatal);
+}
+
+unittest // a tunnel is not a body: no maxBodyBytes, the stream window only reopens as the engine consumes
+{
+    H2Config cfg;
+    cfg.limits.maxBodyBytes = 10;
+    cfg.initialWindowSize = 65_535;
+    auto p = new Peer(cfg);
+    auto st = openTunnel(p);
+    auto chunk = new ubyte[16_384];
+    foreach (i; 0 .. 3)
+        p.send(frame(0, 0, 1, chunk));
+    assert(p.s.tunnelInput(st).length == 3 * 16_384 && !p.s.fatal);
+    auto f = p.frames();
+    foreach (x; f)
+        assert(x.type != FrameType.windowUpdate || x.sid == 0, "the stream window must wait for the engine: " ~ f.to!string);
+    p.s.tunnelConsume(st, 3 * 16_384);
+    f = p.frames();
+    auto wu = only(f, FrameType.windowUpdate);
+    assert(wu.sid == 1 && wu.u32 == 3 * 16_384, f.to!string);
+    // past the window: a stream error, the connection stays up
+    foreach (i; 0 .. 4)
+        p.send(frame(0, 0, 1, chunk));
+    expectRst(p, 1, H2Error.flowControl, "beyond the stream window");
+    H2Stream r;
+    assert(p.s.popReset(r) && r is st && p.s.tunnelEnded(st));
+}
+
+unittest // our side ends first: half-closed, late frames dropped, closed by the peer's END_STREAM or reset after 1 s
+{
+    auto p = new Peer;
+    auto st = openTunnel(p);
+    p.s.sendData(st, "bye");
+    p.s.endResponse(st); // the engine gives the stream back
+    auto f = p.frames();
+    assert(f.length == 2 && f[0].payload == "bye" && f[1].flags == flagEndStream && f[1].payload.length == 0, f.to!string);
+    assert(p.s.busy == 1, "waits for the peer's side");
+    p.send(frame(0, 0, 1, cast(ubyte[]) "late close frame"));
+    p.send(frame(0, flagEndStream, 1, null));
+    f = p.frames();
+    foreach (x; f)
+        assert(x.type != FrameType.rstStream, f.to!string);
+    assert(p.s.busy == 0 && !p.s.fatal);
+
+    // a peer that never ends its side is reset with NO_ERROR
+    p.send(frame(1, flagEndHeaders, 3, wsConnect()));
+    auto st2 = p.ready();
+    st2.task = new Object;
+    ResponseHead head = ResponseHead(200, null, null, -1);
+    p.s.beginResponse(st2, head, false);
+    p.s.endResponse(st2);
+    p.frames();
+    p.s.tick(1000); // (below the 10 s SETTINGS timeout: the test peer never acknowledges)
+    assert(p.s.busy == 1);
+    p.s.tick(1500);
+    assert(p.s.busy == 1);
+    p.s.tick(2001);
+    expectRst(p, 3, H2Error.noError, "lingering tunnel");
+    assert(p.s.busy == 0);
+}
+
+unittest // a refused tunnel (403) is answered and reset like any early answer
+{
+    auto p = new Peer;
+    p.send(frame(1, flagEndHeaders, 1, wsConnect()));
+    auto st = p.ready();
+    respondH1(p.s, st, "HTTP/1.1 403 Forbidden\r\nContent-Length: 2\r\n\r\nno");
+    auto f = p.frames();
+    assert(p.headers(only(f, FrameType.headers).payload)[0 .. 11] == ":status=403");
+    assert(only(f, FrameType.rstStream).u32 == H2Error.noError);
+    assert(p.s.busy == 0);
+}
+
+unittest // the peer resets a running tunnel: the engine gets it back through popReset
+{
+    auto p = new Peer;
+    auto st = openTunnel(p);
+    p.send(frame(3, 0, 1, u32(H2Error.cancel)));
+    H2Stream r;
+    assert(p.s.popReset(r) && r is st && p.s.tunnelEnded(st));
+    p.s.endResponse(st);
+    assert(p.frames().length == 0 && p.s.busy == 0);
+}
+
+unittest // malformed extended CONNECTs
+{
+    auto p = new Peer;
+    p.send(frame(1, flagEndHeaders, 1, block([":method", "CONNECT"], [":protocol", "websocket"], [":scheme", "https"],
+        [":authority", "t"])));
+    expectRst(p, 1, H2Error.protocol, "no :path");
+    p.send(frame(1, flagEndHeaders, 3, block([":method", "CONNECT"], [":protocol", "websocket"], [":path", "/"],
+        [":authority", "t"])));
+    expectRst(p, 3, H2Error.protocol, "no :scheme");
+    p.send(frame(1, flagEndHeaders, 5, block([":method", "CONNECT"], [":protocol", "websocket"], [":scheme", "https"],
+        [":path", "/"])));
+    expectRst(p, 5, H2Error.protocol, "no :authority");
+    p.send(frame(1, flagEndHeaders | flagEndStream, 7, block([":method", "GET"], [":protocol", "websocket"],
+        [":scheme", "https"], [":path", "/"], [":authority", "t"])));
+    expectRst(p, 7, H2Error.protocol, ":protocol on a GET");
+    p.send(frame(1, flagEndHeaders, 9, wsConnect("/", "webtransport")));
+    assert(p.headers(only(p.frames(), FrameType.headers).payload)[0 .. 11] == ":status=501");
+    // a plain CONNECT is still 501
+    p.send(frame(1, flagEndHeaders, 11, block([":method", "CONNECT"], [":authority", "t:443"])));
+    assert(p.headers(only(p.frames(), FrameType.headers).payload)[0 .. 11] == ":status=501");
+
+    H2Config off;
+    off.enableConnectProtocol = false;
+    auto q = new Peer(off);
+    q.send(frame(1, flagEndHeaders, 1, wsConnect()));
+    expectRst(q, 1, H2Error.protocol, ":protocol without the setting");
+    q.send(frame(4, 0, 0, setting(8, 2)));
+    expectGoAway(q, H2Error.protocol, "ENABLE_CONNECT_PROTOCOL = 2");
+}
+
+unittest // a tunnel and ordinary requests share the connection
+{
+    auto p = new Peer;
+    auto st = openTunnel(p);
+    p.send(frame(1, flagEndHeaders | flagEndStream, 3, get("/plain")));
+    auto g = p.ready();
+    assert(g.id == 3 && !g.tunnel && g.req.connectProtocol is null);
+    p.respond(g, "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+    p.send(frame(0, 0, 1, cast(ubyte[]) "x"));
+    p.s.sendData(st, "y");
+    auto f = p.frames();
+    assert(f.length == 3, f.to!string);
+    assert(cast(string) p.s.tunnelInput(st) == "x");
+}
+
 void main()
 {
-    writeln("ok  HTTP/2 session (frames, streams, flow control, errors, limits, upgrade)");
+    writeln("ok  HTTP/2 session (frames, streams, flow control, errors, limits, upgrade, RFC 8441 tunnels)");
 }

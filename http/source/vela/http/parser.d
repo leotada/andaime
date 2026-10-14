@@ -56,6 +56,7 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
     const(char)[] head = buf[0 .. end + 2]; // includes the CRLF of the last line
     size_t p = 0;
     req.protocol = Protocol.http1; // `req` may be reused from an HTTP/2 stream
+    req.connectProtocol = null;
 
     // ---- request line: METHOD SP target SP HTTP/1.x CRLF
     size_t s = p;

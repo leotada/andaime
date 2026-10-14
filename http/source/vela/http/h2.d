@@ -75,7 +75,11 @@ private enum : ushort
     settingInitialWindowSize = 0x4,
     settingMaxFrameSize = 0x5,
     settingMaxHeaderListSize = 0x6,
+    settingEnableConnectProtocol = 0x8, // RFC 8441
 }
+
+/// How long a tunnel whose side we ended waits for the peer's END_STREAM before it is reset (`H2Session.tick`).
+private enum long tunnelLingerMs = 1000;
 
 private enum long maxWindow = int.max; // 2^31 - 1
 private enum uint defaultWindow = 65_535;
@@ -97,7 +101,10 @@ struct H2Config
     size_t outputHighWater = 64 << 10; /// DATA stops being queued while this much output is pending
     /// A client that has not acknowledged our SETTINGS by then gets GOAWAY(SETTINGS_TIMEOUT) (§6.5.3).
     uint settingsTimeoutMs = 10_000;
-    Limits limits;                    /// maxHeadBytes = decoded header list; maxTargetBytes = :path; maxBodyBytes
+    /// Announces SETTINGS_ENABLE_CONNECT_PROTOCOL and accepts extended CONNECT with `:protocol websocket` (RFC 8441):
+    /// WebSockets as streams of the connection. Such a stream is a tunnel, see `tunnelInput`.
+    bool enableConnectProtocol = true;
+    Limits limits;                   /// maxHeadBytes = decoded header list; maxTargetBytes = :path; maxBodyBytes
 }
 
 enum StreamState : ubyte { idle, open, halfClosedRemote, halfClosedLocal, closed }
@@ -120,6 +127,9 @@ final class H2Stream
     long openedMs;
     /// Peer sent RST_STREAM (or the connection failed) while the engine held the stream.
     bool resetByPeer;
+    /// An extended CONNECT (RFC 8441): the request is handed out when its HEADERS arrive, and once the response is 2xx
+    /// the stream carries bytes both ways (`tunnelInput`/`tunnelConsume` in, `sendData` out) until either side ends it.
+    bool tunnel;
 
 private:
     ByteBuffer fieldBytes;           // decoded names and values, back to back
@@ -140,6 +150,12 @@ private:
     uint[4] pseudo;                  // [off, len] of :method and :path in fieldBytes
     uint[2] authority;
     uint[2] scheme;
+    uint[2] protocol;                // :protocol (extended CONNECT)
+    bool sawProtocol;
+    bool tunnelUp;                   // a tunnel answered 2xx: ending our side half-closes it instead of resetting it
+    bool inputQueued;                // in the session's `inputQ`
+    size_t inPos;                    // tunnel: bytes of `body` the engine already consumed
+    long lingerSinceMs;              // tunnel half-closed by us: first `tick` that saw it (0 = not yet)
 
     this(uint maxHeaders) nothrow
     {
@@ -173,6 +189,10 @@ private:
         pseudo[] = 0;
         authority[] = 0;
         scheme[] = 0;
+        protocol[] = 0;
+        tunnel = sawProtocol = tunnelUp = inputQueued = false;
+        inPos = 0;
+        lingerSinceMs = 0;
     }
 
     /// Element-wise on purpose: assigning an array literal may allocate it on the GC first.
@@ -211,6 +231,7 @@ final class H2Session
     private Vec streams;              // open, half-closed or still sending
     private Vec spare;
     private Vec readyQ, resetQ, sending;
+    private Vec inputQ;               // tunnels with new input or the peer's END_STREAM (`popInput`)
     private size_t readyPos, resetPos;
     private size_t zombies;           // streams reset by the peer that the engine still holds
 
@@ -266,6 +287,7 @@ final class H2Session
         readyQ.clear();
         resetQ.clear();
         sending.clear();
+        inputQ.clear();
         readyPos = resetPos = zombies = 0;
         hpack.reset();
         outbox.clear();
@@ -313,7 +335,7 @@ final class H2Session
             return;
         started = true;
         settingsSentMs = nowMs;
-        ubyte[18] p;
+        ubyte[24] p;
         size_t n = 0;
         void setting(ushort id, uint v) nothrow @nogc @safe
         {
@@ -326,6 +348,8 @@ final class H2Session
         if (cfg.initialWindowSize != defaultWindow)
             setting(settingInitialWindowSize, cfg.initialWindowSize);
         setting(settingMaxHeaderListSize, cast(uint) cfg.limits.maxHeadBytes);
+        if (cfg.enableConnectProtocol)
+            setting(settingEnableConnectProtocol, 1);
         frameHeader(n, FrameType.settings, 0, 0);
         outbox.put(cast(const(char)[]) p[0 .. n]);
         if (cfg.connectionWindowSize > defaultWindow)
@@ -442,7 +466,7 @@ final class H2Session
             auto c = readyQ[readyPos];
             readyQ[readyPos++] = null;
             c.queued = false;
-            if (c.state == StreamState.halfClosedRemote && !c.responding)
+            if ((c.state == StreamState.halfClosedRemote || (c.tunnel && c.state == StreamState.open)) && !c.responding)
             {
                 s = c;
                 if (readyPos == readyQ.length)
@@ -505,6 +529,7 @@ final class H2Session
         s.response.clear();
         s.sendPos = s.sendEnd = 0;
         s.bodyDone = endStream;
+        s.tunnelUp = s.tunnel && !endStream && head.status >= 200 && head.status < 300;
         sendHead(s, head, endStream);
         pump();
     }
@@ -542,6 +567,60 @@ final class H2Session
             endSent(s);
         }
         pump();
+    }
+
+    // ---- a tunnel (extended CONNECT, RFC 8441: a WebSocket). The engine answers it with `beginResponse` (2xx, no
+    // END_STREAM), writes with `sendData`, reads with `tunnelInput`/`tunnelConsume`, and ends its side with `endResponse`.
+    // The stream window is credited only as the engine consumes, so a peer can never queue more than one window.
+
+    /// Next tunnel with new input, or whose peer ended or reset it, since the last call. A stream may come back more
+    /// than once; one that ended meanwhile is never handed out.
+    bool popInput(out H2Stream s) nothrow @nogc
+    {
+        while (inputQ.length)
+        {
+            auto c = inputQ.pop();
+            c.inputQueued = false;
+            if (c.task !is null)
+            {
+                s = c;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Bytes the peer sent on the tunnel that the engine has not consumed yet. Valid until the next `receive` or
+    /// `tunnelConsume`.
+    const(ubyte)[] tunnelInput(const H2Stream s) const nothrow @nogc
+    {
+        return cast(const(ubyte)[]) s.body.data[s.inPos .. $];
+    }
+
+    /// The engine consumed `n` bytes of `tunnelInput`; the peer may send that much more (WINDOW_UPDATE).
+    void tunnelConsume(H2Stream s, size_t n) nothrow
+    {
+        assert(s.inPos + n <= s.body.length, "vela: consumed more than the tunnel received");
+        s.inPos += n;
+        if (s.inPos == s.body.length)
+        {
+            s.body.clear();
+            s.body.shrinkTo(16 << 10); // an idle tunnel does not keep a big block
+            s.inPos = 0;
+        }
+        else if (s.inPos >= s.body.length / 2)
+        {
+            s.body.dropFront(s.inPos); // what is left is at most half: the copy is amortized
+            s.inPos = 0;
+        }
+        if (s.state == StreamState.open)
+            creditStream(s, n);
+    }
+
+    /// The peer will send nothing more on the tunnel (END_STREAM, RST_STREAM, or the connection failed).
+    bool tunnelEnded(const H2Stream s) const nothrow @nogc
+    {
+        return s.state != StreamState.open || s.resetByPeer;
     }
 
     /// Engine is done with a stream it got from `popReady`/`popReset` without responding.
@@ -605,10 +684,23 @@ final class H2Session
     /// Number of streams the engine still holds or that still have bytes to send.
     size_t busy() const nothrow @nogc => streams.length + zombies;
 
-    /// Called periodically (every few hundred ms): forgets old flood points.
+    /// Called periodically (every few hundred ms): forgets old flood points, resets tunnels whose peer never ended.
     void tick(long now) nothrow
     {
         flood /= 2;
+        for (size_t i = streams.length; i-- > 0;)
+        {
+            auto s = streams[i];
+            if (s.state != StreamState.halfClosedLocal || s.task !is null)
+                continue;
+            if (s.lingerSinceMs == 0)
+                s.lingerSinceMs = now | 1;
+            else if (now - s.lingerSinceMs >= tunnelLingerMs)
+            {
+                resetStream(s, H2Error.noError); // removes it from `streams`: indices below are unaffected
+                pump();
+            }
+        }
         if (started && !settingsAcked && !fatal && cfg.settingsTimeoutMs && now - settingsSentMs > cfg.settingsTimeoutMs)
             connectionError(H2Error.settingsTimeout);
     }
@@ -681,6 +773,8 @@ final class H2Session
                 return; // we reset it; frames in flight are expected
             return sendRst(sid, H2Error.streamClosed);
         }
+        if (s.tunnel)
+            return tunnelData(s, flags, flowLen, data);
         if (s.state != StreamState.open)
             return resetStream(s, H2Error.streamClosed);
         if (flowLen > s.recvWindow)
@@ -699,6 +793,50 @@ final class H2Session
             return endOfRequest(s);
         s.recvConsumed += cast(uint) flowLen;
         if (s.recvConsumed >= cfg.initialWindowSize / 2)
+        {
+            windowUpdate(s.id, s.recvConsumed);
+            s.recvWindow += s.recvConsumed;
+            s.recvConsumed = 0;
+        }
+    }
+
+    /// DATA on a tunnel: kept for the engine (no body limit: the stream window bounds it), or dropped once our side ended.
+    private void tunnelData(H2Stream s, ubyte flags, size_t flowLen, scope const(ubyte)[] data) nothrow
+    {
+        if (s.state != StreamState.open && s.state != StreamState.halfClosedLocal)
+            return resetStream(s, H2Error.streamClosed);
+        if (flowLen > s.recvWindow)
+            return resetStream(s, H2Error.flowControl);
+        s.recvWindow -= flowLen;
+        if (s.state == StreamState.halfClosedLocal)
+        {
+            // we ended our side (the WebSocket is closing): what still arrives is dropped
+            if (flags & flagEndStream)
+                return closeStream(s, 1);
+            return creditStream(s, flowLen);
+        }
+        s.body.put(cast(const(char)[]) data);
+        if (flowLen > data.length)
+            creditStream(s, flowLen - data.length); // padding never reaches the engine
+        if (flags & flagEndStream)
+            s.state = StreamState.halfClosedRemote;
+        if (data.length || (flags & flagEndStream))
+            queueInput(s);
+    }
+
+    private void queueInput(H2Stream s) nothrow
+    {
+        if (!s.inputQueued)
+        {
+            s.inputQueued = true;
+            inputQ.push(s);
+        }
+    }
+
+    /// `n` bytes of the stream's receive window were used up and may be given back to the peer.
+    private void creditStream(H2Stream s, size_t n) nothrow
+    {
+        s.recvConsumed += cast(uint) n;        if (s.recvConsumed >= cfg.initialWindowSize / 2)
         {
             windowUpdate(s.id, s.recvConsumed);
             s.recvWindow += s.recvConsumed;
@@ -815,6 +953,7 @@ final class H2Session
         switch (id)
         {
             case settingEnablePush:
+            case settingEnableConnectProtocol: // a client's value means nothing to a server, but it must be 0 or 1
                 if (v > 1)
                     return H2Error.protocol;
                 break;
@@ -946,6 +1085,8 @@ final class H2Session
             return resetStream(s, H2Error.protocol);
         if (s.earlyStatus)
             return answerEarly(s, s.earlyStatus);
+        if (s.tunnel)
+            return finishRequest(s); // runs now: its "body" is the tunnel, which lasts as long as the WebSocket
         if (s.contentLength > 0 && s.contentLength > cfg.limits.maxBodyBytes)
             return answerEarly(s, 413);
         if (endStream)
@@ -1049,6 +1190,13 @@ final class H2Session
                 s.authority[0] = off;
                 s.authority[1] = len;
             }
+            else if (n == ":protocol" && !s.sawProtocol && cfg.enableConnectProtocol)
+            {
+                // only after we announced SETTINGS_ENABLE_CONNECT_PROTOCOL (RFC 8441 §3); otherwise an unknown field
+                s.sawProtocol = true;
+                s.protocol[0] = off;
+                s.protocol[1] = len;
+            }
             else
                 s.malformed = true; // unknown, duplicated or a response pseudo-field
             return;
@@ -1103,12 +1251,21 @@ final class H2Session
         if (!s.sawMethod)
             return false; // checked first: the offsets below are only meaningful once it was seen
         auto method = s.fieldBytes.data[s.pseudo[0] .. s.pseudo[0] + s.pseudo[1]];
-        if (method == "CONNECT")
+        if (method == "CONNECT" && !s.sawProtocol)
         {
             if (s.sawPath || s.sawScheme || !s.sawAuthority)
                 return false;
             s.earlyStatus = 501;
             return true;
+        }
+        if (s.sawProtocol)
+        {
+            // extended CONNECT (RFC 8441 §4): :scheme, :path and :authority are all required
+            if (method != "CONNECT" || !s.sawAuthority)
+                return false;
+            s.tunnel = true;
+            if (s.fieldBytes.data[s.protocol[0] .. s.protocol[0] + s.protocol[1]] != "websocket")
+                s.earlyStatus = 501; // a protocol vela does not speak (webtransport, connect-udp...)
         }
         if (!s.sawScheme || !s.sawPath || s.pseudo[3] == 0)
             return false;
@@ -1119,7 +1276,7 @@ final class H2Session
             s.earlyStatus = 414;
         else if (path[0] != '/' && !(method == "OPTIONS" && path == "*"))
             s.earlyStatus = 400;
-        else if (parseMethod(method) == Method.unknown)
+        else if (!s.tunnel && parseMethod(method) == Method.unknown)
             s.earlyStatus = 501;
         else
             foreach (char c; path)
@@ -1148,6 +1305,16 @@ final class H2Session
     /// END_STREAM on a stream that was open.
     private void endOfRequest(H2Stream s) nothrow
     {
+        if (s.tunnel)
+        {
+            // the request was handed out with its HEADERS: this is the peer ending the tunnel
+            if (s.state == StreamState.halfClosedLocal)
+                return closeStream(s, 1);
+            s.state = StreamState.halfClosedRemote;
+            if (s.responding && s.endSent)
+                return closeStream(s, 1);
+            return queueInput(s);
+        }
         if (s.contentLength >= 0 && s.received != s.contentLength)
             return resetStream(s, H2Error.protocol);
         if (s.state == StreamState.open)
@@ -1186,7 +1353,13 @@ final class H2Session
             s.store[n++] = HeaderField("host", bytes[s.authority[0] .. s.authority[0] + s.authority[1]]);
         Request r;
         r.protocol = Protocol.http2;
-        r.method = parseMethod(bytes[s.pseudo[0] .. s.pseudo[0] + s.pseudo[1]]);
+        if (s.tunnel)
+        {
+            r.method = Method.GET; // routes to the `ws!` route of the path, like an HTTP/1.1 upgrade
+            r.connectProtocol = bytes[s.protocol[0] .. s.protocol[0] + s.protocol[1]];
+        }
+        else
+            r.method = parseMethod(bytes[s.pseudo[0] .. s.pseudo[0] + s.pseudo[1]]);
         r.target = bytes[s.pseudo[2] .. s.pseudo[2] + s.pseudo[3]];
         splitTarget(r.target, r.path, r.query);
         r.headers = s.store[0 .. n];
@@ -1340,6 +1513,8 @@ final class H2Session
                     {
                         s.response.clear(); // a streamed body: do not keep what was already sent
                         s.sendPos = s.sendEnd = 0;
+                        if (s.tunnel)
+                            s.response.shrinkTo(cfg.outputHighWater * 2); // a big message does not stay pinned to it
                     }
                     i++;
                 }
@@ -1355,6 +1530,13 @@ final class H2Session
         s.endSent = true;
         if (s.state == StreamState.halfClosedRemote)
             return closeStream(s, 1);
+        if (s.state == StreamState.open && s.tunnelUp)
+        {
+            // our side of a tunnel ended (the WebSocket closed): the peer's last frames and END_STREAM may still be on
+            // their way, so wait for them (`tick` resets the stream if they never come)
+            s.state = StreamState.halfClosedLocal;
+            return;
+        }
         if (s.state == StreamState.open)
         {
             // answered before the client finished sending (413, 431...): stop the upload (§8.1)
@@ -1416,6 +1598,8 @@ final class H2Session
     {
         if (s.state == StreamState.idle && s.id == 0)
             return; // already back in the pool
+        if (s.inputQueued)
+            inputQ.remove(s);
         s.reset();
         if (spare.length < 8)
             spare.push(s);

@@ -153,6 +153,17 @@ struct ByteBuffer
         put(tmp[0 .. n]);
     }
 
+    /// Removes the first `n` bytes, moving the rest to the front. Slices taken from `data` before see moved bytes.
+    void dropFront(size_t n) pure nothrow @nogc @trusted
+    {
+        import core.stdc.string : memmove;
+
+        assert(n <= len, "vela: dropFront beyond the data");
+        if (n < len)
+            memmove(ptr, ptr + n, len - n); // @trusted: both ranges are inside the block (n + (len - n) <= cap)
+        len -= n;
+    }
+
     /// Drops the block if the buffer grew beyond `maxKeep` (e.g. after a large response), so memory does not stay
     /// pinned to the peak. The collector reclaims it once no slice refers to it.
     void shrinkTo(size_t maxKeep) nothrow @nogc @safe
@@ -176,4 +187,9 @@ unittest
     assert(b.data == "x=-1234 -9223372036854775808 0.5", b.data);
     b.clear();
     assert(b.length == 0 && b.capacity >= 32);
+    b.put("abcdef");
+    b.dropFront(2);
+    assert(b.data == "cdef");
+    b.dropFront(4);
+    assert(b.length == 0);
 }

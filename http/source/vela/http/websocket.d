@@ -257,10 +257,27 @@ enum WsHandshake : ubyte
     badKey,     /// `Sec-WebSocket-Key` missing, repeated or malformed: answer 400
 }
 
-/// Checks an opening handshake (RFC 6455 §4.2.1) and returns its key.
+/// Checks an opening handshake and returns its key: RFC 6455 §4.2.1 on HTTP/1.1, RFC 8441 §5 on HTTP/2 (an extended
+/// CONNECT, which has no key: `key` stays null).
 WsHandshake checkUpgradeRequest(ref const Request r, out const(char)[] key) pure nothrow @nogc
 {
-    if (r.method != Method.GET || r.protocol != Protocol.http1 || !r.http11)
+    if (r.method != Method.GET)
+        return WsHandshake.notUpgrade;
+    if (r.protocol == Protocol.http2)
+    {
+        if (r.connectProtocol != "websocket")
+            return WsHandshake.notUpgrade;
+        size_t n;
+        const(char)[] v;
+        foreach (ref h; r.headers)
+            if (equalsIgnoreCase(h.name, "sec-websocket-version"))
+            {
+                n++;
+                v = trim(h.value);
+            }
+        return n == 1 && v == "13" ? WsHandshake.ok : WsHandshake.badVersion;
+    }
+    if (r.protocol != Protocol.http1 || !r.http11)
         return WsHandshake.notUpgrade;
     bool upgrade, connection;
     size_t versions, keys;
@@ -1126,6 +1143,18 @@ unittest // handshake
     assert(checkUpgradeRequest(r, key) == WsHandshake.notUpgrade);
     r.method = Method.GET;
     r.protocol = Protocol.http2;
+    assert(checkUpgradeRequest(r, key) == WsHandshake.notUpgrade, "a plain HTTP/2 GET");
+
+    // RFC 8441: an extended CONNECT (presented as a GET) needs only the version
+    HeaderField[2] h2 = [HeaderField("sec-websocket-version", "13"), HeaderField("origin", "https://x")];
+    r.headers = h2[];
+    r.connectProtocol = "websocket";
+    assert(checkUpgradeRequest(r, key) == WsHandshake.ok && key is null);
+    h2[0].value = "8";
+    assert(checkUpgradeRequest(r, key) == WsHandshake.badVersion);
+    h2[0].name = "x-other";
+    assert(checkUpgradeRequest(r, key) == WsHandshake.badVersion);
+    r.connectProtocol = "webtransport";
     assert(checkUpgradeRequest(r, key) == WsHandshake.notUpgrade);
 }
 

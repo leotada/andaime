@@ -118,6 +118,9 @@ struct Request
     bool keepAlive = true;
     /// HTTP/1.1 (or HTTP/2). False for an HTTP/1.0 client, which cannot be sent a chunked body.
     bool http11 = true;
+    /// HTTP/2 only: the `:protocol` of an extended CONNECT (RFC 8441), i.e. "websocket"; null otherwise. Such a request
+    /// is presented as a GET (`method`) so that it reaches the `ws!` route of its path.
+    const(char)[] connectProtocol;
     /// The TCP peer. Set by the engine for both HTTP/1 and HTTP/2 (the address does not come from the bytes, so neither the
     /// parser nor the HTTP/2 session sets it). Behind a proxy use `ctx.clientIp()` for the real client.
     IpAddress peer;

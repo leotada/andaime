@@ -40,10 +40,12 @@ interface ResponseSink
     /// Ends the body. With a known `contentLength`, exactly that many bytes must have been written.
     void end();
 
-    /// Answers `101 Switching Protocols` with `Connection: Upgrade`, `Upgrade: <protocol>` and `head.headers`, and hands the
-    /// connection over: from then on its bytes go through the returned `UpgradedConn` (a WebSocket), never back to HTTP.
-    /// Instead of `start`; nothing may be written to the sink afterwards. Returns null when this transport cannot do it
-    /// (HTTP/2, an in-memory sink): nothing was sent then, and an ordinary response can still be given.
+    /// Hands the connection over to another protocol: from then on its bytes go through the returned `UpgradedConn` (a
+    /// WebSocket), never back to HTTP. On HTTP/1.1 it answers `101 Switching Protocols` with `Connection: Upgrade`,
+    /// `Upgrade: <protocol>` and `head.headers`; on HTTP/2 the request was an extended CONNECT (RFC 8441), `head` is its
+    /// 2xx answer and the `UpgradedConn` is the stream. Instead of `start`; nothing may be written to the sink
+    /// afterwards. Returns null when this transport cannot do it (an in-memory sink, the devserver): nothing was sent
+    /// then, and an ordinary response can still be given.
     UpgradedConn upgrade(ref const ResponseHead head, scope const(char)[] protocol);
 }
 

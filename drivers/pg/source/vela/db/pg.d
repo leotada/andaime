@@ -392,6 +392,32 @@ final class PgConn
 
     bool usable() const nothrow => c !is null && !broken && pq.PQstatus(c) == CONNECTION_OK;
 
+    /// libpq's socket, or -1. The descriptor stays owned by the connection: wait on it, do not close it.
+    int socket() const nothrow => c is null ? -1 : pq.PQsocket(c);
+
+    /// Pulls bytes already queued on the socket into libpq. False when the connection has failed.
+    /// Does not block: the socket is non-blocking, and libpq stops at EAGAIN.
+    bool consumeInput() nothrow => c !is null && pq.PQconsumeInput(c) != 0;
+
+    /// Copies the next notification already sitting in libpq, then frees libpq's node.
+    /// False when nothing is buffered. Call `consumeInput` first so a payload that just
+    /// arrived on the socket is visible. The strings are copies; the node does not outlive this call.
+    bool popNotify(out string channel, out string payload)
+    {
+        channel = null;
+        payload = null;
+        if (c is null)
+            return false;
+        auto n = pq.PQnotifies(c);
+        if (n is null)
+            return false;
+        scope (exit)
+            pq.PQfreeNotify(n); // the C strings inside the node die with it; copy them first
+        channel = cstr(n.relname).idup;
+        payload = cstr(n.extra).idup;
+        return true;
+    }
+
     /// Opens a connection without blocking the worker.
     static PgConn connect(string conninfo, Duration connectTimeout, Duration queryTimeout, bool cacheStatements = false)
     {

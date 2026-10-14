@@ -1,0 +1,7 @@
+name "jobs"
+description "Background jobs: the compile-time contract (UDAs, JSON payload, perform). No I/O."
+targetType "library"
+dependency "vela:web" version="*"
+dependency "vela:engine" version="*"
+
+toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

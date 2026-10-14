@@ -88,6 +88,27 @@ s_web() {
     return $rc
 }
 
+
+# -Ijobs/source stays on these commands only. The global I= must not grow it: the compile budget
+# type-checks examples/hello with the current -I list.
+s_jobs() {
+    local rc=0 t ji="-Ijobs/source"
+    for t in tests/jobs/*.d; do
+        if ! $DC -unittest -main $I $ji -i -run "$t" > /dev/null 2>&1; then
+            echo "FAILED: $t"
+            $DC -unittest -main $I $ji -i -run "$t" 2>&1 | tail -40
+            rc=1
+        fi
+    done
+    if ! $DC -unittest -main $I $ji -i -run jobs/source/vela/jobs/package.d > /dev/null 2>&1; then
+        echo "FAILED: jobs/source/vela/jobs/package.d"
+        $DC -unittest -main $I $ji -i -run jobs/source/vela/jobs/package.d 2>&1 | tail -40
+        rc=1
+    fi
+    echo "ok  $(ls tests/jobs/*.d | wc -l) files in tests/jobs"
+    return $rc
+}
+
 s_docs() {
     tools/doc_examples.sh
 }
@@ -127,6 +148,9 @@ s_net() {
     $DC $I -i -run tests/net/epoll_net.d
     $DC $I -i -run tests/net/workers_net.d
     $DC $I -i -run tests/net/stream_net.d
+    $DC $I -i -run tests/net/spawn_net.d
+    # jobs_worker_net.d imports vela.jobs; -Ijobs/source stays on this command only
+    $DC $I -Ijobs/source -i -run tests/net/jobs_worker_net.d
 }
 
 s_h2_net() {
@@ -176,6 +200,8 @@ s_browser() {
 
 s_postgres() {
     tools/with_postgres.sh "$(build_test tests/db/pg_net.d)"
+    # pg_jobs.d imports vela.jobs and vela.jobs.pg. Those -I flags stay on this compile only.
+    tools/with_postgres.sh "$(I="$I -Ijobs/source -Idrivers/pgjobs/source" build_test tests/db/pg_jobs.d)"
 }
 
 s_client() {
@@ -323,7 +349,7 @@ s_compile_fail() {
 }
 
 # DUB packaging: sub-package dependencies and layering (vela:web must not import vela:engine, so building it alone
-# proves the direction), the vela-pg path dependency and both examples.
+# proves the direction), the vela-pg and vela-pg-jobs path dependencies and both examples.
 s_dub() {
     if ! command -v dub > /dev/null; then echo "skip: dub not installed" >&2; return 77; fi
     local rc=0
@@ -332,12 +358,14 @@ s_dub() {
     dub build $dubc -q :http || rc=1
     dub build $dubc -q :web || rc=1
     dub build $dubc -q :engine || rc=1
+    dub build $dubc -q :jobs || rc=1
     (cd drivers/pg && dub build $dubc -q) || rc=1
+    dub build $dubc -q --root=drivers/pgjobs || rc=1
     (cd examples/hello && dub build $dubc -q) || rc=1
     (cd examples/api && dub build $dubc -q) || rc=1
-    # the core must never import a driver
-    if grep -rn "import vela\.db" http web engine source --include=*.d; then
-        echo "FAILED: the core imports a driver (vela.db)"; rc=1
+    # the core must never import a driver; jobs depends on web and engine, not on vela-pg
+    if grep -rn "import vela\.db" http web engine source jobs --include=*.d; then
+        echo "FAILED: the core or vela:jobs imports a driver (vela.db)"; rc=1
     fi
     return $rc
 }
@@ -375,6 +403,7 @@ s_budget() {
 
 section "module unittests" s_unittests
 section "web-layer features (groups, locals, onError, CORS, static files, OpenAPI, middlewares)" s_web
+section "background jobs (memory store, retry, unique window)" s_jobs
 section "documentation examples compile (blocks marked // check)" s_docs
 section "OpenAPI document validity (openapi-spec-validator)" s_openapi
 section "HTTP parser: attack corpus and mutation fuzz" s_parser
@@ -382,7 +411,7 @@ section "HTTP/2: session (frames, streams, flow control, errors, limits) and mut
 section "WebSocket: message layer mutation fuzz (frames, fragments, control frames, close codes, limits)" s_ws_session
 section "example tests (TestClient, no network)" s_example_tests
 section "hot path without GC allocation (HTTP/1.1, HTTP/2, WebSocket messages)" s_hot_path
-section "network tests (EpollLoop + fibers: cancellation, ceiling, deadlines, pools)" s_net
+section "network tests (EpollLoop + fibers: cancellation, ceiling, deadlines, pools, background fibers)" s_net
 section "HTTP/2 network tests (h2c, multiplexing, cancellation, deadlines, flow control, upgrade, stop)" s_h2_net
 section "WebSocket network tests (takeover, broadcast, backpressure, pings, close handshake, graceful stop, client, over HTTP/2)" s_ws_net
 section "HTTPS (ALPN, HTTP/1.1 and HTTP/2 over TLS, handshake limits, cancellation, certificate reload, wss)" s_tls_net
@@ -392,7 +421,7 @@ section "streamed responses against curl (SSE and a 20 MiB stream, HTTP/1.1 and 
 section "WebSockets against python websockets (server and client, with and without permessage-deflate; RFC 8441 over h2c and TLS)" s_ws_interop
 section "behind a reverse proxy over h2c (Caddy: requests, upload, concurrency, SSE, 20 MiB stream)" s_proxy_interop
 section "real browser (Chromium via Playwright: HTTPS, h2, redirect port, HTTP/1.1 fallback)" s_browser
-section "PostgreSQL (async libpq)" s_postgres
+section "PostgreSQL (async libpq, job queue)" s_postgres
 section "HTTP/HTTPS client and thread pool" s_client
 section "real API example end to end (Postgres + external API + auth + CORS + static files + OpenAPI)" s_api_e2e
 section "memory: 1,000 in-flight requests over HTTP/1.1 and HTTP/2, 1,000 open WebSockets on each (peak RSS < 30 MB)" s_memory

@@ -16,6 +16,12 @@ import vela.engine.loop : RequestCallback, ServerConfig;
 
 void runDevServer(ref const ServerConfig cfg, RequestCallback onRequest)
 {
+    if (!cfg.accept)
+    {
+        // No epoll loop here, so there is nothing to poll and no background fiber to park in `sleep`.
+        // `spawn` already ran any delegate inline (jobs need the epoll engine). Do not block in accept().
+        return;
+    }
     if (cfg.tls.enabled)
     {
         fprintf(stderr, "vela: TLS needs the epoll engine (Linux); the development server only speaks cleartext HTTP/1.1\n");

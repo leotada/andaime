@@ -1,0 +1,9 @@
+name "vela-pg-jobs"
+description "Postgres job queue for vela: SKIP LOCKED claims, LISTEN/NOTIFY, a lease reaper and one cron slot across processes. A separate package: the core does not depend on it."
+targetType "library"
+sourcePaths "source"
+importPaths "source"
+dependency "vela:jobs" path="../../"
+dependency "vela-pg" path="../pg"
+
+toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

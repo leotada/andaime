@@ -214,13 +214,13 @@ void main()
 
 In memory, the supervisor enqueues a due slot once per process. It remembers the slot it already wrote. `TestJobStore` does not tick: the block above enqueues by hand, and `drainJobs` is what runs the row.
 
-On Postgres, `claimCronSlot(jobName, slotStdTime)` inserts `(job_name, scheduled_slot)` into `vela_cron_executions`. The primary key is that pair, and the insert is `INSERT ... ON CONFLICT DO NOTHING`. It returns true only for the insert that won. Enqueue only then. `slotStdTime` is `SysTime.stdTime` from `cronSlot` (`@Cron`) or `slotStart` (`@Every`). The in-memory supervisor does not write that table. Two processes that both run it will each enqueue; the insert above is the gate across processes. See the Postgres section.
+On Postgres the supervisor calls `claimCron` before that enqueue. `PgJobStore` inserts `(job_name, scheduled_slot)` into `vela_cron_executions` with `INSERT ... ON CONFLICT DO NOTHING` and returns false when another process already took the slot. The loser does not enqueue. `slotStdTime` is `SysTime.stdTime` from `cronSlot` (`@Cron`) or `slotStart` (`@Every`).
 
 ## One thread, or several
 
 `InMemoryJobStore` is one thread. Its methods do not wait, so the fibers of that thread can share it. `runJobs` defaults `singleThread` to true and forces `workers = 1`.
 
-Several cores, or several processes, need `PgJobStore` (below): one store per worker thread. Only worker 0 of each process consumes and runs cron. A queue limit is the number of fibers on that thread. It is not multiplied by the number of cores.
+Several cores, or several processes, need `PgJobStore` (below): one store per worker thread. Only worker 0 of each process consumes and runs cron. A queue limit is how many jobs that thread runs at once. One fiber does the claiming. It is not multiplied by the number of cores.
 
 With `InMemoryJobStore` and `--role=all`, the application sets `ServerConfig.workers = 1` itself. `serve` does not look at the store.
 
@@ -292,16 +292,17 @@ void main(string[] args)
     }
     else if (startup.role == ProcessRole.all)
     {
+        applyJobGrace(cfg);   // 10 s default becomes 30 s; a value you already set is kept
         serve(&buildApp, cfg, supervisorHook!(Ping, Daily, Sweep)(store, startup));
     }
 }
 ```
 
 - **`--role=api`.** `runApi`, then the application's own `serve`. Handlers enqueue on the store the application holds. Nothing consumes.
-- **`--role=worker`.** `runJobs!(Jobs)(store, startup, cfg)`. No user routes. `healthPort` 0 binds nothing (`accept = false`). Any other port serves cleartext `GET /health` and nothing else: the body is `ok`, and TLS is cleared. `shutdownGraceMs` becomes 30 seconds only when it is still the `ServerConfig` default of 10 seconds. A value the application already set is kept.
-- **`--role=all`.** `serve(build, cfg, supervisorHook!(Jobs)(store, startup))`. HTTP stays the application's. The hook runs on worker 0 only: the consumers, the cron fiber, then `WorkerHooks.extra`. With `InMemoryJobStore` the application sets `workers = 1`. Queue limits are the fibers on worker 0, not per core. This role does not change `shutdownGraceMs`; the `ServerConfig` passed to `serve` is the one that applies (the default stays 10 seconds).
+- **`--role=worker`.** `runJobs!(Jobs)(store, startup, cfg)`. No user routes. `healthPort` 0 binds nothing (`accept = false`). Any other port serves cleartext `GET /health` and nothing else: the body is `ok`, and TLS is cleared. `shutdownGraceMs` becomes 30 seconds only when it is still the `ServerConfig` default of 10 seconds. A value the application already set is kept. One fiber per queue claims, up to the queue's concurrency jobs run at once. An empty claim on `PgJobStore` waits for `NOTIFY` or 5 seconds. An in-memory store waits `defaultIdleBackoff` (200 ms). A failed claim is logged (`vela.jobs:`) and the fiber waits again.
+- **`--role=all`.** `applyJobGrace(cfg)`, then `serve(build, cfg, supervisorHook!(Jobs)(store, startup))`. HTTP stays the application's. The hook runs on worker 0 only: the store's listen fiber and reaper when the store is a `JobRuntime` (`PgJobStore`), the claim fiber for each queue, the cron fiber, then `WorkerHooks.extra`. With `InMemoryJobStore` the application sets `workers = 1`. Queue limits are the jobs in flight on worker 0, not per core. `applyJobGrace` is the same 30 second rule as `runJobs`.
 
-`WorkerHooks.extra` runs at the end of worker 0's init, after those fibers have been `spawn`ed and before the loop polls. It is not yet inside a fiber. `spawn` from `extra` is queued and starts when the loop begins. Do not call `sleep` or `awaitFd` directly inside `extra`: that would block the thread. The Postgres section is where `extra` starts `listen` and the reaper.
+`WorkerHooks.extra` runs at the end of worker 0's init, after those fibers have been `spawn`ed and before the loop polls. It is not yet inside a fiber. `spawn` from `extra` is queued and starts when the loop begins. Do not call `sleep` or `awaitFd` directly inside `extra`: that would block the thread. `PgJobStore` already starts `listen` and the reaper from the supervisor; `extra` is for anything else.
 
 Pass `singleThread: false` to `runJobs` only for a store that is safe across threads. `cfg.workers` is then left as given (0 means one thread per core). Consumption still runs only on worker 0.
 
@@ -309,7 +310,7 @@ Pass `singleThread: false` to `runJobs` only for a store that is safe across thr
 
 SIGINT or SIGTERM makes the consumers stop calling `claimBatch`. A row already claimed and not yet passed to `perform` is `release`d: `retryable` again, and the attempt just added is given back. `RequestCancelled` inside `perform` (the grace period cancelled the fiber) releases the same way. An `Exception` is still a failed attempt; an `Error` is still a release.
 
-The `--role=worker` grace is 30 seconds when `shutdownGraceMs` was left at 10 seconds, so a running job can finish or be released. `--role=api` and `--role=all` keep the value on the `ServerConfig` the application passes to `serve`.
+The grace is 30 seconds when `shutdownGraceMs` was left at 10 seconds, for both `--role=worker` (`runJobs`) and `--role=all` (`applyJobGrace` before `serve`). A running job can finish or be released. `--role=api` keeps the value on the `ServerConfig` the application passes to `serve`. A value that was already changed, including 0, is kept.
 
 `@Offload` is the case from above: a pool thread can finish work whose row was already released.
 
@@ -367,34 +368,11 @@ where id in (
 
 The row lock is not held while `perform` runs.
 
-`listen` uses a connection that is not from the pool. It `LISTEN`s on `vela_jobs_notify` and waits on libpq's socket. The callback runs when a notification arrives and every 5 seconds, because a scheduled job does not notify. `listen` returns when that fiber is cancelled or the worker is stopping, and closes the connection on the way out. The queue fibers already call `claimBatch` on their idle sleep, so the callback does not have to claim. A callback that claims and does not run the row leaves it `running` until `reap`.
+`listen` uses a connection that is not from the pool. The supervisor starts it, and the reaper, on worker 0 (`JobRuntime.startServices`). `listen` runs `LISTEN vela_jobs_notify` and waits on libpq's socket. A notification wakes the claim fiber; so does the 5 second fallback, because a scheduled job does not notify. An empty queue therefore does not call `claimBatch` on every concurrency slot. `listen` returns when that fiber is cancelled or the worker is stopping, and closes the connection on the way out. The callback must not claim a row and leave it `running`: the claim fiber is what calls `claimBatch`.
 
-`reap` returns `running` rows whose `attempted_at` is older than the lease (default 15 minutes, `store.lease`) to `retryable`. It does not change `attempt`. Call it on a timer. A job that runs longer than the lease can be claimed again and run twice.
+`reap` returns `running` rows whose `attempted_at` is older than the lease (default 15 minutes, `store.lease`) to `retryable`. It does not change `attempt`. The supervisor sleeps `store.lease` between calls. A job that runs longer than the lease can be claimed again and run twice. A failure in `listen`, `reap`, `claimBatch` or the cron tick is one `vela.jobs:` line on stderr; the fiber waits and tries again.
 
-On worker 0, `hooks.extra` spawns both. The `sleep` and the wait inside `listen` run on those fibers. `extra` itself must not call `sleep` or `awaitFd`:
-
-```d
-import vela;
-import vela.jobs;
-
-WorkerHooks hooks;
-hooks.extra = () {
-    auto store = jobs();
-    spawn(() { store.listen(() {}); });
-    spawn(() {
-        while (!stopping())
-        {
-            sleep(store.lease);
-            if (!stopping())
-                store.reap();
-        }
-    });
-};
-```
-
-Pass `hooks` to `runJobs` or `supervisorHook`. For `runJobs` with several cores, pass `singleThread: false` so `cfg.workers` is kept. Only worker 0 runs the consumers, cron, `listen` and `reap`.
-
-A cron tick that should fire once across processes asks `claimCronSlot` before it enqueues. `cronSlot` and `slotStart` produce the `SysTime`; the argument is `stdTime`:
+A cron slot the supervisor is about to enqueue goes through `claimCronSlot` first. Only the insert that wins enqueues the job. The same function is what you call if you enqueue a cron slot yourself, outside the supervisor:
 
 ```d
 import core.time : minutes;

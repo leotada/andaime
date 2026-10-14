@@ -127,14 +127,16 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 - A Postgres claim is `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)` and that transaction commits before `perform`.
   Do not hold the row lock across the work.
 - Cron dedupe across processes is `INSERT ... ON CONFLICT` on `(job_name, scheduled_slot)` in `vela_cron_executions`
-  (`claimCronSlot`). Only the insert that wins enqueues.
+  (`claimCron` / `claimCronSlot`). The supervisor enqueues only when that insert wins. `PgJobStore.startServices`
+  starts `LISTEN` and the reaper on worker 0; an empty claim waits for a notification or 5 seconds.
 - Shutdown stops calling `claimBatch`. `release` returns an in-flight row to `retryable` without spending the attempt: a claimed
-  row not yet run, `RequestCancelled` inside `perform`, and an `Error`.
+  row not yet run, `RequestCancelled` inside `perform`, and an `Error`. `--role=worker` and `--role=all` (`applyJobGrace`)
+  raise `shutdownGraceMs` from the 10 second default to 30 seconds. A value the application already set is kept.
 - The cron parser (`cronError`, `parseCron`) is `@safe pure nothrow @nogc`. Keep it that way.
 - `InMemoryJobStore` is one thread. `runJobs` forces `workers = 1` by default. Several cores or processes use `PgJobStore`, one
-  store per worker thread, and only worker 0 consumes. Queue concurrency is that worker's fiber count, not per core.
-  `WorkerHooks.extra` runs on worker 0 before the loop polls: `spawn` from there, and do not call `sleep` or `awaitFd` in `extra`
-  itself.
+  store per worker thread, and only worker 0 consumes. Queue concurrency is how many jobs that worker runs at once, not per core.
+  One fiber per queue claims. `WorkerHooks.extra` runs on worker 0 before the loop polls: `spawn` from there, and do not call
+  `sleep` or `awaitFd` in `extra` itself. A store failure is logged (`vela.jobs:`) and the fiber continues.
 
 ## The response contract (read before touching `engine/`, `server.d` or `web/.../stream.d`)
 

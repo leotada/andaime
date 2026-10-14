@@ -6,6 +6,7 @@ module vela.web.context;
 import vela.http.types;
 import vela.http.buffer;
 import vela.http.response : ResponseSink;
+import vela.http.websocket : WsDeflateFactory;
 import vela.http.ip : IpAddress, Cidr, parseIp;
 import vela.web.dto : FieldErrors;
 
@@ -273,6 +274,8 @@ final class Context
     bool committed;
     /// The handler failed after the commit: the response can only be cut off (see `ResponseAborted`).
     bool aborted;
+    /// Creates a connection's permessage-deflate state (zlib, set by the server); null: WebSockets are not compressed.
+    WsDeflateFactory newDeflate;
     package char[64] allowBuf; // value of the 405 Allow header
     private char[512] scratchBuf;
     private size_t scratchUsed;

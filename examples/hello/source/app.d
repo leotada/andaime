@@ -102,6 +102,17 @@ string file(string path, Optional!(Header!"X-Trace-Id") trace)
     return "file: " ~ path ~ (trace.has ? " trace=" ~ trace.get.value : "");
 }
 
+// ---------------------------------------------------------------- WebSocket
+
+/// `python3 -m websockets ws://localhost:8080/echo`, then type: each line comes back.
+WebSocket echo()
+{
+    return WebSocket((scope WsConn ws) {
+        foreach (msg; ws)
+            ws.send(msg.text);
+    });
+}
+
 // ---------------------------------------------------------------- controller with state
 
 final class StatsController
@@ -144,6 +155,7 @@ App buildApp()
     app.put!("/users/{id}", updateUser);
     app.del!("/users/{id}", deleteUser);
     app.get!("/files/{*path}", file);
+    app.ws!("/echo", echo);
     app.mount(stats);
 
     // local lambda that captures a dependency: becomes an ordinary closure
@@ -219,4 +231,7 @@ unittest
 
     r = c.get("/stats");
     assert(r.status == 200 && r.body == `{"requests":15,"users":1}`, r.body);
+
+    auto w = c.websocket("/echo", WsScript().text("hi").text("again").close());
+    assert(w.status == 101 && w.texts == ["hi", "again"] && w.closeCode == 1000);
 }

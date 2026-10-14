@@ -227,7 +227,7 @@ private Addr[] resolveBlocking(string host, ushort port) nothrow
 
 // ============================================================ connection
 
-private final class Conn
+package final class Conn // package: the WebSocket client (vela.engine.wsclient) opens its connection here
 {
     int fd = -1;
     SSL* ssl;
@@ -407,7 +407,7 @@ final class HttpClient
 
     // ------------------------------------------------------------ connect
 
-    private Conn openConn(ref const ParsedUrl u, MonoTime requestDeadline)
+    package Conn openConn(ref const ParsedUrl u, MonoTime requestDeadline)
     {
         immutable cd = MonoTime.currTime + cfg.connectTimeout;
         immutable deadline = cd < requestDeadline ? cd : requestDeadline;
@@ -870,7 +870,7 @@ final class HttpClient
 
 // ============================================================ helpers
 
-private size_t findHeadEnd(const(char)[] b) pure nothrow @safe @nogc
+package size_t findHeadEnd(const(char)[] b) pure nothrow @safe @nogc
 {
     if (b.length < 4)
         return size_t.max;
@@ -880,7 +880,7 @@ private size_t findHeadEnd(const(char)[] b) pure nothrow @safe @nogc
     return size_t.max;
 }
 
-private void parseHead(const(char)[] head, ref ClientResponse r) @safe
+package void parseHead(const(char)[] head, ref ClientResponse r) @safe
 {
     // "HTTP/1.1 200 OK"
     if (head.length < 12 || head[0 .. 5] != "HTTP/")

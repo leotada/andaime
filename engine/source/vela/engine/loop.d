@@ -121,6 +121,8 @@ struct LoopStats
     size_t redirects;        /// requests answered on `tls.redirectPort` (308 or ACME challenge)
     size_t handlerErrors;    /// throwables that escaped a handler (answered 500)
     size_t fibersPoisoned;   /// fibers thrown away because an `Error` escaped (never reused)
+    size_t webSockets;       /// connections taken over after a 101 (WebSockets) open now; each holds a fiber
+    size_t webSocketsTotal;  /// WebSocket connections accepted since the start
 }
 
 /// I/O backend. Planned implementations:

@@ -28,6 +28,7 @@ import vela.web.json;
 import vela.web.cookies : cookie;
 import vela.web.models : Query, Form, isQueryModel, isFormModel, bindModel, bindFormBody, modelError;
 import vela.web.stream : Stream, EventStream, isStreamReturn, runStream;
+import vela.web.websocket : WebSocket, runWebSocket;
 
 // =====================================================================
 // Route pattern (CTFE)
@@ -120,10 +121,11 @@ version (VelaStrictSafe)
 else
     private enum strictSafe = false;
 
-template handlerError(Method method, string path, alias fn, string file, size_t line)
+/// `websocket`: the route was registered with `ws!` (a GET that must return `WebSocket`).
+template handlerError(Method method, string path, alias fn, string file, size_t line, bool websocket = false)
 {
     enum string head = file ~ "(" ~ ctNum(line) ~ "): vela: handler '"
-        ~ __traits(identifier, fn) ~ "' in " ~ methodName(method) ~ " " ~ path ~ ": ";
+        ~ __traits(identifier, fn) ~ "' in " ~ (websocket ? "WS" : methodName(method)) ~ " " ~ path ~ ": ";
 
     static if (__traits(isTemplate, fn) || !is(typeof(fn)))
         enum handlerError = head ~ "the handler has no concrete type. If it is a lambda, "
@@ -207,6 +209,17 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
 
             static if (is(typeof(fn) R == return))
             {
+                static if (websocket)
+                {
+                    static if (!is(R == WebSocket))
+                        return head ~ "a WebSocket route must return WebSocket, but it returns '" ~ R.stringof
+                            ~ "': return WebSocket((scope WsConn ws) { ... })";
+                    else static if (successStatus!fn != 0)
+                        return head ~ "@status does not apply to a WebSocket route (it answers 101); remove it";
+                }
+                else static if (is(R == WebSocket) || is(R == WithStatus!WebSocket))
+                    return head ~ "returns WebSocket; register it with app.ws!(\"" ~ path ~ "\", "
+                        ~ __traits(identifier, fn) ~ ")";
                 static if (!isSupportedReturn!R)
                     return head ~ "the return type '" ~ R.stringof ~ "' is not supported. Return void, "
                         ~ "string, a struct/array (JSON), WithStatus!T, Response, Stream or EventStream";
@@ -510,6 +523,8 @@ void writeResult(R)(Context ctx, ref R r)
     }
     else static if (isStreamReturn!R)
         runStream(ctx, r);
+    else static if (is(R == WebSocket))
+        runWebSocket(ctx, r);
     else static if (is(R : const(char)[]))
     {
         ctx.response.contentType = "text/plain; charset=utf-8";

@@ -39,6 +39,46 @@ interface ResponseSink
 
     /// Ends the body. With a known `contentLength`, exactly that many bytes must have been written.
     void end();
+
+    /// Answers `101 Switching Protocols` with `Connection: Upgrade`, `Upgrade: <protocol>` and `head.headers`, and hands the
+    /// connection over: from then on its bytes go through the returned `UpgradedConn` (a WebSocket), never back to HTTP.
+    /// Instead of `start`; nothing may be written to the sink afterwards. Returns null when this transport cannot do it
+    /// (HTTP/2, an in-memory sink): nothing was sent then, and an ordinary response can still be given.
+    UpgradedConn upgrade(ref const ResponseHead head, scope const(char)[] protocol);
+}
+
+/// What `UpgradedConn.fill` found.
+enum FillResult : ubyte
+{
+    data,     /// more bytes are in `buffered()`
+    eof,      /// the peer closed its side (or the connection failed); nothing more will arrive
+    timeout,  /// the time limit passed first
+    stopping, /// the server began a graceful stop; reported once, later calls wait again
+}
+
+/// A connection taken over after `101 Switching Protocols`. The engine implements it on the socket, the HTTP client on
+/// its own connection, `TestClient` in memory. Reads belong to the fiber that owns the connection (the one that upgraded
+/// it); `write` may be called from any fiber of the same worker.
+interface UpgradedConn
+{
+@safe:
+    /// Bytes received and not consumed yet. Valid until the next `fill` or `consume`.
+    const(ubyte)[] buffered();
+
+    /// Waits until more bytes are appended to `buffered()`, the peer closes, `timeoutMs` passes (-1: no limit) or the
+    /// server starts stopping. Throws `RequestCancelled` when the request is cancelled.
+    FillResult fill(int timeoutMs);
+
+    /// Drops the first `n` bytes of `buffered()`.
+    void consume(size_t n);
+
+    /// Sends `data`. The whole slice is copied before the call can suspend the fiber (backpressure), so the writes of two
+    /// fibers never interleave. Throws `RequestCancelled` in the owner's fiber and `WsClosed` (vela.http.websocket) in any
+    /// other fiber when the connection is gone.
+    void write(scope const(ubyte)[] data);
+
+    /// Ends the connection once what was written has been sent. Idempotent; reads then report `eof`, writes throw.
+    void close();
 }
 
 /// Thrown by the glue to tell the engine that a response which already started cannot be completed (the handler failed
@@ -86,6 +126,11 @@ final class BufferedSink : ResponseSink
     {
         ended = true;
     }
+
+    override UpgradedConn upgrade(ref const ResponseHead h, scope const(char)[] protocol)
+    {
+        return null; // nothing to take over
+    }
 }
 
 /// Headers that belong to one HTTP/1.1 connection and are never forwarded or written by the application
@@ -117,8 +162,8 @@ void writeResponseHead(ref ByteBuffer o, ref const ResponseHead head, bool keepA
         o.put(head.contentType);
         o.put("\r\n");
     }
-    // 204 and 304 carry no body or Content-Length (RFC 9110 §8.6)
-    if (head.status != 204 && head.status != 304)
+    // 1xx, 204 and 304 carry no body or Content-Length (RFC 9110 §8.6)
+    if (!statusHasNoBody(head.status))
     {
         if (chunked)
             o.put("Transfer-Encoding: chunked\r\n");
@@ -163,6 +208,11 @@ unittest
     auto none = ResponseHead(204, null, null, 0);
     writeResponseHead(b, none, true, false);
     assert(b.data == "HTTP/1.1 204 No Content\r\n\r\n", b.data);
+
+    b.clear();
+    auto switching = ResponseHead(101, null, null, 0);
+    writeResponseHead(b, switching, true, false);
+    assert(b.data == "HTTP/1.1 101 Switching Protocols\r\n\r\n", b.data);
 
     assert(isHopByHop("Transfer-Encoding") && isHopByHop("TE") && !isHopByHop("X-Id"));
     assert(statusHasNoBody(204) && statusHasNoBody(304) && statusHasNoBody(100) && !statusHasNoBody(200));

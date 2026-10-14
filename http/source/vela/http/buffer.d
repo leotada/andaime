@@ -95,6 +95,13 @@ struct ByteBuffer
         len += n;
     }
 
+    /// Drops the last `n` bytes.
+    void trimEnd(size_t n) nothrow @nogc @safe
+    {
+        assert(n <= len, "vela: trimEnd beyond the data");
+        len -= n;
+    }
+
     void put(char c) nothrow @nogc @trusted
     {
         reserve(1);

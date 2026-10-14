@@ -13,6 +13,8 @@ public import vela.web.cors;
 public import vela.web.openapi : OpenApiInfo, summary;
 public import vela.web.middleware;
 public import vela.web.stream : Stream, StreamWriter, EventStream, EventWriter, produces, sendResponse;
+public import vela.web.websocket : WebSocket;
+public import vela.http.websocket : WsConn, WsMessage, WsKind, WsCloseCode, WsClosed;
 public import vela.web.router : RouteError;
 public import vela.web.models : Query, Form, UploadedFile;
 public import vela.web.cookies : cookie, setCookie, deleteCookie, CookieOptions, SameSite;

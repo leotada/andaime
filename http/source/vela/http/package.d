@@ -15,3 +15,4 @@ public import vela.http.writer;
 public import vela.http.date;
 public import vela.http.hpack : HpackDecoder, HpackError;
 public import vela.http.h2;
+public import vela.http.websocket;

@@ -5,6 +5,8 @@ module vela.web.testing;
 
 import vela.http.types;
 import vela.http.response;
+import vela.http.buffer : ByteBuffer;
+import vela.http.websocket;
 import vela.http.ip : IpAddress, parseIp;
 import vela.web.context;
 import vela.web.application;
@@ -48,6 +50,76 @@ struct TestResponse
 
 HeaderField hdr(string name, string value) => HeaderField(name, value);
 
+/// What a test client sends on a WebSocket, in order: `WsScript().text("hi").ping().close()`. Frames are masked, as a
+/// real client's are. Once the script is used up the connection reports end of input (the server sees 1006 unless the
+/// script ended with `close`).
+struct WsScript
+{
+    ubyte[] bytes;
+
+    ref WsScript text(string s, bool fin = true) return => frame(WsOpcode.text, cast(const(ubyte)[]) s, fin);
+    ref WsScript binary(const(ubyte)[] b, bool fin = true) return => frame(WsOpcode.binary, b, fin);
+    /// The next fragment of a message started with `text(..., false)` or `binary(..., false)`.
+    ref WsScript continuation(string s, bool fin = true) return => frame(WsOpcode.continuation, cast(const(ubyte)[]) s, fin);
+    ref WsScript ping(string payload = null) return => frame(WsOpcode.ping, cast(const(ubyte)[]) payload, true);
+
+    ref WsScript close(ushort code = WsCloseCode.normal, string reason = null) return
+    {
+        ubyte[] p = [cast(ubyte)(code >> 8), cast(ubyte)(code & 0xFF)];
+        return frame(WsOpcode.close, p ~ cast(const(ubyte)[]) reason, true);
+    }
+
+    /// Bytes exactly as given (an unmasked or malformed frame, to test the server's checks).
+    ref WsScript raw(const(ubyte)[] b) return
+    {
+        bytes ~= b;
+        return this;
+    }
+
+    ref WsScript frame(ubyte opcode, const(ubyte)[] payload, bool fin) return
+    {
+        static immutable ubyte[4] key = [0x12, 0x34, 0x56, 0x78];
+        ByteBuffer b;
+        encodeFrame(b, opcode, fin, false, payload, key[]);
+        bytes ~= cast(const(ubyte)[]) b.data;
+        return this;
+    }
+}
+
+/// A message the server sent on a WebSocket, as the test client received it.
+struct TestWsMessage
+{
+    WsKind kind;
+    string data;
+
+    bool isText() const => kind == WsKind.text;
+    bool isBinary() const => kind == WsKind.binary;
+}
+
+/// The outcome of `TestClient.websocket`.
+struct TestWsResponse
+{
+    /// The HTTP answer: 101 and its headers when the server upgraded, the refusal (403, 426...) otherwise.
+    TestResponse response;
+    /// The server's text and binary messages, in order.
+    TestWsMessage[] messages;
+    /// The payloads of the server's pongs.
+    string[] pongs;
+    /// The code of the server's close frame (0: it sent none), and its reason.
+    ushort closeCode;
+    string closeReason;
+
+    int status() const => response.status;
+    /// The texts of `messages`, for short assertions: `assert(r.texts == ["hi"])`.
+    string[] texts() const
+    {
+        string[] t;
+        foreach (m; messages)
+            t ~= m.data;
+        return t;
+    }
+}
+
 struct TestClient
 {
     private App app;
@@ -85,6 +157,27 @@ struct TestClient
     TestResponse request(Method m, string target, string body = null, HeaderField[] headers...)
         => send(m, target, body, headers);
 
+    /// Opens a WebSocket on `target` (the upgrade headers are added for you), plays `script` to the server, and returns
+    /// what came back. The handler runs to completion inside the call.
+    TestWsResponse websocket(string target, WsScript script, HeaderField[] headers...)
+    {
+        HeaderField[] all = [hdr("Upgrade", "websocket"), hdr("Connection", "Upgrade"),
+            hdr("Sec-WebSocket-Version", "13"), hdr("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")];
+        sink.upgradeInput = script.bytes;
+        sink.upgradeOutput.clear();
+        TestWsResponse r;
+        r.response = send(Method.GET, target, null, all ~ headers);
+        decodeServerFrames(cast(const(ubyte)[]) sink.upgradeOutput.data, r);
+        return r;
+    }
+
+    /// A WebSocket that sends nothing (its input ends at once). An overload, not a default argument: DMD 2.109 crashes on
+    /// a default before a variadic parameter.
+    TestWsResponse websocket(string target, HeaderField[] headers...) => websocket(target, WsScript.init, headers);
+
+    /// The permessage-deflate factory a WebSocket route with `compression` uses (the server sets zlib's); null: none.
+    WsDeflateFactory deflate;
+
     TestResponse send(Method m, string target, string body, HeaderField[] headers)
     {
         sink.reset(m);
@@ -96,6 +189,7 @@ struct TestClient
         req.body = cast(const(ubyte)[]) body;
         req.peer = peer;
         ctx.reset(req, sink);
+        ctx.newDeflate = deflate;
         app.handle(ctx);
         try
             sendResponse(ctx); // the same finishing step as the server's: Date, no body for HEAD/204/304
@@ -162,5 +256,90 @@ private final class RecordingSink : ResponseSink
 
     override void end()
     {
+    }
+
+    // ---- WebSocket: what the client sends, and what the server wrote after the 101
+    const(ubyte)[] upgradeInput;
+    ByteBuffer upgradeOutput;
+
+    override UpgradedConn upgrade(ref const ResponseHead head, scope const(char)[] protocol)
+    {
+        start(head);
+        auto c = new ScriptedConn(upgradeInput, &upgradeOutput);
+        upgradeInput = null;
+        return c;
+    }
+}
+
+/// An upgraded connection in memory: the whole script is buffered at once, then the input ends.
+private final class ScriptedConn : UpgradedConn
+{
+    private const(ubyte)[] input;
+    private ByteBuffer* output;
+    private bool closed;
+
+    this(const(ubyte)[] input, ByteBuffer* output)
+    {
+        this.input = input;
+        this.output = output;
+        output.clear();
+    }
+
+    override const(ubyte)[] buffered() => closed ? null : input;
+
+    override FillResult fill(int timeoutMs) => FillResult.eof;
+
+    override void consume(size_t n)
+    {
+        input = input[n .. $];
+    }
+
+    override void write(scope const(ubyte)[] data)
+    {
+        if (closed)
+            throw new WsClosed;
+        output.put(cast(const(char)[]) data);
+    }
+
+    override void close()
+    {
+        closed = true;
+    }
+}
+
+/// Splits what the server wrote into messages, pongs and its close frame.
+private void decodeServerFrames(const(ubyte)[] b, ref TestWsResponse r)
+{
+    string partial;
+    WsKind partialKind;
+    while (b.length)
+    {
+        FrameHeader h;
+        if (parseFrameHeader(b, h) != FrameParse.ok || h.masked || b.length < h.headerLength + h.length)
+            throw new Exception("TestClient: the server wrote a malformed WebSocket frame");
+        auto payload = cast(string) b[h.headerLength .. h.headerLength + cast(size_t) h.length].idup;
+        b = b[h.headerLength + cast(size_t) h.length .. $];
+        switch (h.opcode)
+        {
+            case WsOpcode.text:
+            case WsOpcode.binary:
+                partialKind = h.opcode == WsOpcode.text ? WsKind.text : WsKind.binary;
+                partial = payload;
+                break;
+            case WsOpcode.continuation:
+                partial ~= payload;
+                break;
+            case WsOpcode.pong:
+                r.pongs ~= payload;
+                continue;
+            case WsOpcode.close:
+                r.closeCode = payload.length >= 2 ? cast(ushort)((payload[0] << 8) | payload[1]) : WsCloseCode.noStatus;
+                r.closeReason = payload.length > 2 ? payload[2 .. $] : null;
+                continue;
+            default: // ping
+                continue;
+        }
+        if (h.fin)
+            r.messages ~= TestWsMessage(partialKind, partial);
     }
 }

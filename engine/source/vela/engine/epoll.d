@@ -81,7 +81,8 @@ private final class ListenItem : Item
     this(bool r) nothrow @safe { super(Kind.listener); redirect = r; }
 }
 
-private enum Phase : ubyte { reading, running, writing, closed, h2, handshake }
+/// `upgraded`: taken over after a 101 (a WebSocket); its bytes go through `Conn.port`, never back to HTTP.
+private enum Phase : ubyte { reading, running, writing, closed, h2, handshake, upgraded }
 
 private struct Stack(T)
 {
@@ -136,6 +137,18 @@ private final class Conn : Item
     // TLS
     SSL* ssl;              /// null on a cleartext connection
     bool tlsFatal;         /// the TLS session broke: close without close_notify
+    // Taken over after a 101 (Phase.upgraded, see `sinkUpgrade`)
+    WsPort port;           /// what the handler reads and writes through; null otherwise
+    Buffer wsIn;           /// received and not consumed yet, from `wsInOff`
+    size_t wsInOff;
+    ByteBuffer wsOut;      /// written and not sent yet, from `wsOutOff`; any fiber of the worker may append
+    size_t wsOutOff;
+    Worker readWaiter;     /// the owner, while it waits for input
+    Worker[] wsWriters;    /// fibers waiting for `wsOut` to drain
+    bool wsEof;            /// the peer finished sending (a read returned 0)
+    bool wsBroken;         /// the connection failed: reads report the end, writes throw
+    bool wsClosing;        /// the owner is done: send what is left, then close
+    bool wsStopSeen;       /// `fill` already reported the graceful stop
 
     this() nothrow @safe { super(Kind.conn); }
 
@@ -167,6 +180,7 @@ private final class Worker : Fiber, ResponseSink
     WaitItem item;
 
     bool done, cancelled, timedOut, failed, closeAfter, retiring;
+    bool upgraded;         /// the handler took the connection over (`upgrade`): it never goes back to HTTP
 
     // The response being written (see the sink methods): what the handler has done so far.
     ResponseHead h2head;   /// HTTP/2: the head, sent when the response is committed (its slices live in the App's Context)
@@ -199,10 +213,14 @@ private final class Worker : Fiber, ResponseSink
     override void write(scope const(char)[] data) @trusted { loop.sinkWrite(this, data); }
     override void flush() @trusted { loop.sinkFlush(this); }
     override void end() @trusted { loop.sinkEnd(this); }
+    override UpgradedConn upgrade(ref const ResponseHead head, scope const(char)[] protocol) @trusted
+    {
+        return loop.sinkUpgrade(this, head, protocol);
+    }
 
     void resetResponseState() nothrow @nogc
     {
-        cancelled = timedOut = failed = closeAfter = false;
+        cancelled = timedOut = failed = closeAfter = upgraded = false;
         started = ended = chunked = noBody = committed = h2done = flushedAny = waitingWrite = false;
         remaining = -1;
         h2head = ResponseHead.init;
@@ -234,6 +252,30 @@ private final class Worker : Fiber, ResponseSink
             Fiber.yield();
         }
     }
+}
+
+/// A connection taken over after `101 Switching Protocols` (a WebSocket): what `ResponseSink.upgrade` returns. One object
+/// per upgrade, so a `WsConn` that outlives its connection finds `conn` null here, never a later connection that reuses
+/// the same pooled `Conn`.
+private final class WsPort : UpgradedConn
+{
+    EpollLoop loop;
+    Conn conn;    /// null once the connection ended
+    Worker owner; /// the fiber that upgraded it: the only one that reads
+
+    this(EpollLoop l, Conn c, Worker w) nothrow @safe
+    {
+        loop = l;
+        conn = c;
+        owner = w;
+    }
+
+    // small @trusted bodies: the work is in the loop (syscalls and fiber switches on this worker's own state)
+    override const(ubyte)[] buffered() @trusted { return loop.wsBuffered(this); }
+    override FillResult fill(int timeoutMs) @trusted { return loop.wsFill(this, timeoutMs); }
+    override void consume(size_t n) @trusted { loop.wsConsume(this, n); }
+    override void write(scope const(ubyte)[] data) @trusted { loop.wsWrite(this, data); }
+    override void close() @trusted { loop.wsClose(this); }
 }
 
 // ======================================================================= the loop
@@ -321,7 +363,7 @@ final class EpollLoop : EventLoop, Scheduler
     {
         return LoopStats(inFlight, peakInFlight, workersCreated, workersRetired, idle.n,
             connCount, rejected, cancelledN, timedOutN, stalls, maxStallMs, h2Conns, h2Streams,
-            tlsHandshakes, tlsFailures, tlsServer.reloads, redirectsN, handlerErrors, fibersPoisoned);
+            tlsHandshakes, tlsFailures, tlsServer.reloads, redirectsN, handlerErrors, fibersPoisoned, wsOpen, wsTotal);
     }
 
     /// How many times the loop returned memory to the OS after a burst.
@@ -381,11 +423,13 @@ final class EpollLoop : EventLoop, Scheduler
             foreach (i; 0 .. (n < 0 ? 0 : n))
                 onEvent(cast(Item) evs[i].data.ptr, evs[i].events);
             drainResumeQ();
+            drainWsWakes();
             flushPendingQ();
             flushDead();
 
             fireTimers();
             drainResumeQ();
+            drainWsWakes();
             flushPendingQ();
             flushDead();
 
@@ -393,6 +437,7 @@ final class EpollLoop : EventLoop, Scheduler
             {
                 sweep();
                 drainResumeQ();
+                drainWsWakes();
                 flushPendingQ();
                 flushDead();
                 trimIfQuiet();
@@ -615,6 +660,8 @@ final class EpollLoop : EventLoop, Scheduler
             return onH2Event(c, events);
         if (c.phase == Phase.handshake)
             return continueHandshake(c, events);
+        if (c.phase == Phase.upgraded)
+            return onUpgradedEvent(c, events);
         if (events & EPOLLERR)
         {
             if (c.phase == Phase.running)
@@ -641,6 +688,7 @@ final class EpollLoop : EventLoop, Scheduler
                 case Phase.closed:
                 case Phase.h2:
                 case Phase.handshake:
+                case Phase.upgraded:
                     break;
             }
             return;
@@ -1328,6 +1376,8 @@ final class EpollLoop : EventLoop, Scheduler
     {
         if (w.stream !is null)
             return finishH2(w);
+        if (w.upgraded)
+            return finishUpgraded(w);
         Conn c = w.conn;
         if (w.cancelled)
         {
@@ -1518,6 +1568,467 @@ final class EpollLoop : EventLoop, Scheduler
             pool.release(c.buf); // idle: do not hold the buffer
         c.phase = Phase.reading;
         c.deadlineMs = nowMs + cfg.idleTimeoutMs;
+    }
+
+    // ------------------------------------------------------------------ taken-over connections (WebSocket)
+    //
+    // `ResponseSink.upgrade` answers 101 and hands the connection to the handler through a `WsPort`. The loop never parses
+    // HTTP on it again: input is read into `wsIn` when the owner asks for it (`wsFill`), output from any fiber of the
+    // worker is appended to `wsOut` and sent as the socket allows (`wsFlush`). When the owner returns, what is left is
+    // sent and the connection is closed (`finishUpgraded`). Fibers are only resumed from the loop: a wake-up decided
+    // inside a fiber is deferred to the end of the event batch (`wsDefer`).
+
+    private size_t wsOpen, wsTotal;
+    private Worker[] wsWakes;  /// fibers to resume at the end of the batch, with the wait they were in
+    private uint[] wsWakeGens;
+    private size_t wsWakeN;
+
+    private UpgradedConn sinkUpgrade(Worker w, ref const ResponseHead head, scope const(char)[] protocol)
+    {
+        if (w.cancelled)
+            throw cancelledEx;
+        if (w.started)
+            throw new Exception("vela: ResponseSink.upgrade after the response started");
+        if (w.stream !is null)
+            return null; // HTTP/2 has no Upgrade (RFC 8441's extended CONNECT is not supported)
+        Conn c = w.conn;
+        w.started = w.ended = w.upgraded = true;
+        c.wsOut.clear();
+        c.wsOutOff = 0;
+        if (c.hasPending)
+        {
+            // the answers to earlier pipelined requests go first
+            c.wsOut.put(c.pending.data[c.pendingOff .. $]);
+            clearPending(c);
+        }
+        c.wsOut.put("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: ");
+        c.wsOut.put(protocol);
+        c.wsOut.put("\r\n");
+        foreach (ref h; head.headers)
+        {
+            c.wsOut.put(h.name);
+            c.wsOut.put(": ");
+            c.wsOut.put(h.value);
+            c.wsOut.put("\r\n");
+        }
+        c.wsOut.put("\r\n");
+        // Bytes the client sent right behind the request already belong to the new protocol. The request itself stays in
+        // `c.buf` until the connection closes: the handler's Request, and what it captured from it, points there.
+        immutable early = c.buf.len - c.total;
+        if (early)
+        {
+            c.wsIn = pool.acquire(early > 4096 ? early : 4096);
+            c.wsIn.mem[0 .. early] = c.buf.mem[c.total .. c.buf.len];
+            c.wsIn.len = early;
+            c.buf.len = c.total;
+        }
+        c.wsInOff = 0;
+        c.wsEof = c.wsBroken = c.wsClosing = c.wsStopSeen = false;
+        c.readWaiter = null;
+        c.phase = Phase.upgraded;
+        c.deadlineMs = 0; // no request deadline any more: the protocol keeps its own (WsConn's pings)
+        c.blockedSinceMs = 0;
+        c.port = new WsPort(this, c, w);
+        wsOpen++;
+        wsTotal++;
+        wsFlush(c);
+        return c.port;
+    }
+
+    private const(ubyte)[] wsBuffered(WsPort p)
+    {
+        Conn c = p.conn;
+        if (c is null || c.wsIn.isNull)
+            return null;
+        return c.wsIn.mem[c.wsInOff .. c.wsIn.len];
+    }
+
+    private void wsConsume(WsPort p, size_t n)
+    {
+        Conn c = p.conn;
+        if (c is null || c.wsIn.isNull)
+            return;
+        assert(c.wsInOff + n <= c.wsIn.len, "vela: consumed more than was received");
+        c.wsInOff += n;
+        if (c.wsInOff == c.wsIn.len)
+        {
+            pool.release(c.wsIn); // an idle connection holds no input buffer
+            c.wsInOff = 0;
+        }
+    }
+
+    /// The owner waits for input (see `UpgradedConn.fill`).
+    private FillResult wsFill(WsPort p, int timeoutMs)
+    {
+        auto w = p.owner;
+        if (cast(Worker) Fiber.getThis() !is w)
+            throw new Exception("vela: only the fiber that upgraded a connection can read from it");
+        if (w.cancelled)
+            throw cancelledEx;
+        Conn c = p.conn;
+        if (c is null || c.wsBroken || c.wsClosing)
+            return FillResult.eof;
+        auto r = wsRead(c);
+        if (r != FillResult.timeout)
+            return r;
+        if (stopping && !c.wsStopSeen)
+        {
+            c.wsStopSeen = true;
+            return FillResult.stopping;
+        }
+        if (timeoutMs == 0)
+            return FillResult.timeout;
+        c.readWaiter = w;
+        beginWait(w, timeoutMs);
+        Fiber.yield();
+        if (c.readWaiter is w)
+            c.readWaiter = null;
+        if (w.cancelled)
+            throw cancelledEx;
+        if (p.conn !is c || c.wsBroken || c.wsClosing)
+            return FillResult.eof;
+        r = wsRead(c);
+        if (r != FillResult.timeout)
+            return r;
+        if (stopping && !c.wsStopSeen)
+        {
+            c.wsStopSeen = true;
+            return FillResult.stopping;
+        }
+        return FillResult.timeout; // the timer, or a wake-up with nothing to read: the caller looks at its clock
+    }
+
+    /// Reads what the socket has into `wsIn`: `data`, `eof`, or `timeout` meaning "nothing now".
+    private FillResult wsRead(Conn c)
+    {
+        if (c.wsEof)
+            return FillResult.eof;
+        if (c.wsIn.isNull)
+            c.wsIn = pool.acquire(4096);
+        else if (c.wsInOff)
+        {
+            c.wsIn.compact(c.wsInOff);
+            c.wsInOff = 0;
+        }
+        bool any;
+        for (;;)
+        {
+            if (c.wsIn.free_.length == 0)
+            {
+                if (any)
+                    break; // the rest waits in the socket: the next fill reads it (it always reads before waiting)
+                pool.grow(c.wsIn, c.wsIn.mem.length * 2); // a frame header or a control frame across the end
+            }
+            immutable n = ioRead(c, c.wsIn.free_.ptr, c.wsIn.free_.length);
+            if (n > 0)
+            {
+                c.wsIn.len += n;
+                any = true;
+                if (c.ssl is null && c.wsIn.free_.length)
+                    break; // short read: the kernel is drained (TLS reads one record at a time)
+                continue;
+            }
+            if (n == 0)
+            {
+                c.wsEof = true;
+                break;
+            }
+            if (errno == EINTR)
+                continue;
+            if (errno != EAGAIN)
+                wsBreak(c);
+            break;
+        }
+        if (any)
+            return FillResult.data;
+        if (c.wsIn.len == 0)
+            pool.release(c.wsIn);
+        return c.wsEof || c.wsBroken ? FillResult.eof : FillResult.timeout;
+    }
+
+    /// Any fiber of the worker sends on the connection (see `UpgradedConn.write`).
+    private void wsWrite(WsPort p, scope const(ubyte)[] data)
+    {
+        auto self = cast(Worker) Fiber.getThis();
+        if (self is null)
+            throw new Exception("vela: a WebSocket can only be written to from a request fiber");
+        if (self.cancelled)
+            throw cancelledEx;
+        Conn c = p.conn;
+        if (c is null || c.wsBroken || c.wsClosing)
+            wsGone(p, self);
+        c.wsOut.put(cast(const(char)[]) data); // whole, before any wait: frames of two fibers never interleave
+        if (!wsFlush(c))
+            wsGone(p, self);
+        while (c.wsOut.length - c.wsOutOff > cfg.streamHighWaterBytes)
+        {
+            wsAddWriter(c, self);
+            beginWait(self, cfg.writeTimeoutMs);
+            Fiber.yield();
+            wsRemoveWriter(c, self);
+            if (self.cancelled)
+                throw cancelledEx;
+            if (p.conn !is c || c.wsBroken)
+                wsGone(p, self);
+            if (self.wakeEvents == 0)
+            {
+                wsBreak(c); // the peer has not read anything for writeTimeoutMs
+                wsGone(p, self);
+            }
+        }
+    }
+
+    /// The connection behind `p` is gone: its owner unwinds like any request whose client left, other fibers get `WsClosed`.
+    private void wsGone(WsPort p, Worker self)
+    {
+        if (self is p.owner)
+        {
+            self.cancelled = true;
+            throw cancelledEx;
+        }
+        throw new WsClosed;
+    }
+
+    /// The owner is done with the connection; it closes once what was written is out (see `finishUpgraded`).
+    private void wsClose(WsPort p)
+    {
+        if (p.conn !is null)
+            p.conn.wsClosing = true;
+    }
+
+    /// Sends `wsOut` without blocking; false when the connection broke.
+    private bool wsFlush(Conn c)
+    {
+        if (c.wsBroken || c.fd < 0)
+            return false;
+        while (c.wsOutOff < c.wsOut.length)
+        {
+            immutable n = ioSend(c, c.wsOut.data.ptr + c.wsOutOff, c.wsOut.length - c.wsOutOff);
+            if (n > 0)
+            {
+                c.wsOutOff += n;
+                continue;
+            }
+            if (n < 0 && errno == EINTR)
+                continue;
+            if (n < 0 && errno == EAGAIN)
+            {
+                if (c.blockedSinceMs == 0)
+                    c.blockedSinceMs = nowMs | 1;
+                if (c.wsWriters.length && c.wsOut.length - c.wsOutOff <= cfg.streamHighWaterBytes / 2)
+                    wsWakeWriters(c);
+                return true;
+            }
+            wsBreak(c);
+            return false;
+        }
+        c.wsOut.clear();
+        c.wsOutOff = 0;
+        c.wsOut.shrinkTo(cfg.streamHighWaterBytes * 2); // a big message does not stay pinned to the connection
+        c.blockedSinceMs = 0;
+        if (c.wsWriters.length)
+            wsWakeWriters(c);
+        return true;
+    }
+
+    private void wsAddWriter(Conn c, Worker w)
+    {
+        c.wsWriters ~= w;
+    }
+
+    private void wsRemoveWriter(Conn c, Worker w)
+    {
+        foreach (i, x; c.wsWriters)
+            if (x is w)
+            {
+                c.wsWriters[i] = c.wsWriters[$ - 1];
+                c.wsWriters[$ - 1] = null;
+                c.wsWriters = c.wsWriters[0 .. $ - 1];
+                c.wsWriters.assumeSafeAppend();
+                return;
+            }
+    }
+
+    private bool isWsWriter(Conn c, Worker w)
+    {
+        foreach (x; c.wsWriters)
+            if (x is w)
+                return true;
+        return false;
+    }
+
+    private void wsWakeWriters(Conn c)
+    {
+        foreach (x; c.wsWriters)
+            wsDefer(x);
+    }
+
+    /// Resumes `w` at the end of the event batch, if it is still in the wait it is in now.
+    private void wsDefer(Worker w)
+    {
+        if (w is null || !w.waiting)
+            return;
+        if (wsWakeN == wsWakes.length)
+        {
+            wsWakes.length = wsWakes.length ? wsWakes.length * 2 : 16;
+            wsWakeGens.length = wsWakes.length;
+        }
+        wsWakes[wsWakeN] = w;
+        wsWakeGens[wsWakeN] = w.waitGen;
+        wsWakeN++;
+    }
+
+    private void drainWsWakes()
+    {
+        for (size_t i = 0; i < wsWakeN; i++) // the list may grow while it is drained
+        {
+            auto w = wsWakes[i];
+            wsWakes[i] = null;
+            if (!w.waiting || w.waitGen != wsWakeGens[i])
+                continue;
+            w.wakeEvents = EPOLLOUT;
+            wake(w);
+            Conn c = w.conn;
+            resume(w);
+            if (c !is null && c.fd >= 0 && c.phase == Phase.reading)
+                drive(c);
+        }
+        wsWakeN = 0;
+    }
+
+    /// The connection failed (an error, a reset, a reader that stopped reading): reads end, writes throw. Its owner
+    /// learns it at its next wait; if it is waiting on something else (sleep, a database) it is cancelled.
+    private void wsBreak(Conn c)
+    {
+        if (c.wsBroken)
+            return;
+        c.wsBroken = true;
+        c.wsOut.clear();
+        c.wsOutOff = 0;
+        wsDefer(c.readWaiter);
+        wsWakeWriters(c);
+        auto owner = c.worker;
+        if (owner is null)
+        {
+            if (c.fd >= 0)
+                closeConn(c); // closing already: nothing is waiting for it
+            return;
+        }
+        if (owner.waiting && c.readWaiter !is owner && !isWsWriter(c, owner))
+        {
+            owner.cancelled = true; // its wait throws RequestCancelled when it resumes
+            wsDefer(owner);
+        }
+    }
+
+    private void onUpgradedEvent(Conn c, uint events)
+    {
+        if (c.lingering)
+            return drainLingering(c, events);
+        if (events & EPOLLERR)
+            return wsBreak(c);
+        // over TLS a write can wait on a read and a read on a write
+        immutable outReady = (events & (EPOLLOUT | EPOLLHUP)) || (c.ssl !is null && (events & EPOLLIN));
+        if (outReady && c.wsOutOff < c.wsOut.length)
+        {
+            wsFlush(c);
+            if (c.fd < 0)
+                return;
+        }
+        if (c.worker is null)
+        {
+            // the owner is done: close once the last bytes are out
+            if (c.wsOutOff == c.wsOut.length)
+                lingerClose(c);
+            return;
+        }
+        immutable inReady = (events & (EPOLLIN | EPOLLHUP | EPOLLRDHUP)) || (c.ssl !is null && (events & EPOLLOUT));
+        if (inReady && c.readWaiter !is null)
+        {
+            auto w = c.readWaiter;
+            c.readWaiter = null;
+            w.wakeEvents = events;
+            wake(w);
+            resume(w);
+            return;
+        }
+        if (events & EPOLLHUP)
+        {
+            // the peer is gone and the owner is not reading (it sleeps, or waits on a database): unwind it like a request
+            // whose client left
+            auto owner = c.worker;
+            if (owner.waiting && !isWsWriter(c, owner))
+                cancelWorker(owner, false);
+        }
+    }
+
+    /// The owner of a taken-over connection returned: send what is left, then close.
+    private void finishUpgraded(Worker w)
+    {
+        Conn c = w.conn;
+        if (c.port !is null)
+        {
+            c.port.conn = null; // a WsConn kept by another fiber now finds the connection closed
+            c.port = null;
+            wsOpen--;
+        }
+        c.readWaiter = null;
+        wsWakeWriters(c); // they find `p.conn` null and get WsClosed
+        if (!c.wsIn.isNull)
+            pool.release(c.wsIn);
+        c.wsInOff = 0;
+        immutable cancelled = w.cancelled;
+        if (cancelled)
+        {
+            if (w.timedOut)
+                timedOutN++;
+            else
+                cancelledN++;
+        }
+        c.worker = null;
+        releaseWorker(w);
+        if (cancelled || c.wsBroken || c.fd < 0)
+            return closeConn(c);
+        c.wsClosing = true;
+        wsFlush(c);
+        if (c.fd < 0)
+            return;
+        if (c.wsOutOff < c.wsOut.length)
+        {
+            c.deadlineMs = nowMs + cfg.writeTimeoutMs; // the rest goes out on EPOLLOUT; sweep gives up after that
+            return;
+        }
+        lingerClose(c);
+    }
+
+    /// Deadlines of a taken-over connection (called from `sweep`).
+    private void sweepUpgraded(Conn c)
+    {
+        if (c.deadlineMs && nowMs >= c.deadlineMs)
+            return closeConn(c); // lingering, or the last bytes did not go out
+        if (c.blockedSinceMs && nowMs - c.blockedSinceMs > cfg.writeTimeoutMs)
+            wsBreak(c); // the peer stopped reading
+    }
+
+    /// Forgets the taken-over state of a connection that closes.
+    private void resetUpgraded(Conn c)
+    {
+        if (c.port !is null)
+        {
+            c.port.conn = null;
+            c.port = null;
+            wsOpen--;
+        }
+        if (!c.wsIn.isNull)
+            pool.release(c.wsIn);
+        c.wsInOff = 0;
+        c.wsOut.clear();
+        c.wsOutOff = 0;
+        c.wsOut.shrinkTo(cfg.streamHighWaterBytes * 2);
+        c.readWaiter = null;
+        wsWakeWriters(c);
+        c.wsWriters = null;
+        c.wsEof = c.wsBroken = c.wsClosing = c.wsStopSeen = false;
     }
 
     // ------------------------------------------------------------------ cancellation
@@ -2329,7 +2840,8 @@ final class EpollLoop : EventLoop, Scheduler
             flushFailureSummary();
         foreach (c; conns)
         {
-            if (c is null || c.fd < 0 || c.deadlineMs == 0 || c.deadlineMs > nowMs || c.phase == Phase.h2)
+            if (c is null || c.fd < 0 || c.deadlineMs == 0 || c.deadlineMs > nowMs || c.phase == Phase.h2
+                || c.phase == Phase.upgraded)
                 continue;
             if (c.phase == Phase.handshake)
             {
@@ -2355,12 +2867,16 @@ final class EpollLoop : EventLoop, Scheduler
                 case Phase.closed:
                 case Phase.h2:
                 case Phase.handshake:
+                case Phase.upgraded:
                     break;
             }
         }
         foreach (c; conns)
             if (c !is null && c.fd >= 0 && c.phase == Phase.h2)
                 sweepH2(c);
+        foreach (c; conns)
+            if (c !is null && c.fd >= 0 && c.phase == Phase.upgraded)
+                sweepUpgraded(c);
         if (cfg.tls.enabled)
             if (auto msg = tlsServer.maybeReload(cfg.tls, nowMs))
                 fprintf(stderr, "%.*s\n", cast(int) msg.length, msg.ptr);
@@ -2421,6 +2937,8 @@ final class EpollLoop : EventLoop, Scheduler
         c.closeWhenSent = false;
         if (!c.buf.isNull)
             pool.release(c.buf);
+        if (c.phase == Phase.upgraded)
+            resetUpgraded(c);
         if (c.h2 !is null)
         {
             if (c.h2.fatal && c.h2.lastError != H2Error.noError)
@@ -2505,6 +3023,11 @@ final class EpollLoop : EventLoop, Scheduler
         stopDeadlineMs = nowMs + cfg.shutdownGraceMs;
         closeListener(mainListener);
         closeListener(redirectListener);
+        // taken-over connections waiting for input learn about the stop now (a WebSocket closes with 1001)
+        foreach (c; conns)
+            if (c !is null && c.fd >= 0 && c.phase == Phase.upgraded)
+                wsDefer(c.readWaiter);
+        drainWsWakes();
     }
 
     private void closeIdleConns()
@@ -2530,6 +3053,9 @@ final class EpollLoop : EventLoop, Scheduler
         foreach (c; conns)
             if (c !is null && c.fd >= 0 && c.phase == Phase.running)
                 cancelRequest(c, false);
+        foreach (c; conns)
+            if (c !is null && c.fd >= 0 && c.phase == Phase.upgraded && c.worker !is null)
+                cancelWorker(c.worker, false);
         foreach (c; conns)
             if (c !is null && c.fd >= 0)
                 closeConn(c);

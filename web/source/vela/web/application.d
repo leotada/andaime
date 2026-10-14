@@ -19,6 +19,7 @@ struct Route
 {
     Method method;
     string path;
+    bool websocket; /// `@Ws`: a GET that upgrades to a WebSocket
 }
 
 Route Get(string path) => Route(Method.GET, path);
@@ -26,6 +27,8 @@ Route Post(string path) => Route(Method.POST, path);
 Route Put(string path) => Route(Method.PUT, path);
 Route Patch(string path) => Route(Method.PATCH, path);
 Route Delete(string path) => Route(Method.DELETE, path);
+/// A WebSocket route on a controller method returning `WebSocket` (see `ws!`).
+Route Ws(string path) => Route(Method.GET, path, true);
 
 alias HandlerFn = void delegate(Context);
 
@@ -297,9 +300,11 @@ final class App
                     {
                         static if (is(typeof(attr) == Route))
                         {{
-                            enum err = handlerError!(attr.method, attr.path, ov, file, line);
+                            enum err = handlerError!(attr.method, attr.path, ov, file, line, attr.websocket);
                             static if (err.length)
                                 static assert(0, err);
+                            else static if (attr.websocket) // not in OpenAPI, which cannot describe WebSockets
+                                register(attr.method, attr.path, delegate(Context c) { dispatch!(attr.method, attr.path, ov)(c, controller); });
                             else
                                 register(attr.method, attr.path, delegate(Context c) { dispatch!(attr.method, attr.path, ov)(c, controller); },
                                     delegate string(ref Components cs, string pat) @safe { return describeOperation!(attr.method, attr.path, ov)(cs, pat); });
@@ -576,4 +581,13 @@ void del(string path, alias fn, string file = __FILE__, size_t line = __LINE__, 
     static if (err.length) static assert(0, err);
     else app.register(Method.DELETE, path, delegate(Context c) { dispatch!(Method.DELETE, path, fn)(c); },
         delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.DELETE, path, fn)(cs, pat); });
+}
+
+/// A WebSocket route: a GET whose handler returns `WebSocket` (see vela.web.websocket). Not in the OpenAPI document,
+/// which cannot describe WebSockets.
+void ws(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R)(R app) if (isRouteTarget!R)
+{
+    enum err = handlerError!(Method.GET, path, fn, file, line, true);
+    static if (err.length) static assert(0, err);
+    else app.register(Method.GET, path, delegate(Context c) { dispatch!(Method.GET, path, fn)(c); });
 }

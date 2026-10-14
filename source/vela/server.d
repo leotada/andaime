@@ -13,7 +13,10 @@ import core.stdc.stdlib : exit;
 import core.sync.mutex : Mutex;
 import vela.engine.devserver : runDevServer;
 version (linux)
+{
     import vela.engine.epoll : runEpollServer;
+    import vela.engine.zlib : zlibDeflate;
+}
 
 /// Starts the server. Each worker (one per core by default) calls `build` once, on its own thread, and serves the App it
 /// returns, so everything `build` creates -- the App, controllers, module-level state, `pgPool`, `httpClient` -- belongs to
@@ -145,6 +148,8 @@ HandlerFactory handlerFactory(App app)
 {
     return () {
         auto ctx = new Context;
+        version (linux)
+            ctx.newDeflate = (int bits, bool noContext) => zlibDeflate(bits, noContext); // WebSocket compression
         RequestCallback cb = (ref Request req, ResponseSink sink) {
             ctx.reset(req, sink);
             scope (exit)

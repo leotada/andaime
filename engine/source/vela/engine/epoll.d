@@ -132,6 +132,7 @@ private final class Conn : Item
     bool h2Paused;         /// stopped reading: too much output queued for a peer that does not read
     uint writersWaiting;   /// HTTP/2: handlers suspended because their stream's output is above the high-water mark
     bool waking;           /// inside wakeH2Writers (not reentrant)
+    H2Tunnel[] tunnels;    /// HTTP/2: the WebSockets open on this connection (RFC 8441), one per stream
     bool lingering;        /// FIN sent, discarding what the peer still sends until it closes (see lingerClose)
     long blockedSinceMs;   /// output waiting for EPOLLOUT since then (0 = not blocked)
     // TLS
@@ -181,6 +182,7 @@ private final class Worker : Fiber, ResponseSink
 
     bool done, cancelled, timedOut, failed, closeAfter, retiring;
     bool upgraded;         /// the handler took the connection over (`upgrade`): it never goes back to HTTP
+    H2Tunnel tunnel;       /// HTTP/2: the handler took its stream over (an extended CONNECT, RFC 8441)
 
     // The response being written (see the sink methods): what the handler has done so far.
     ResponseHead h2head;   /// HTTP/2: the head, sent when the response is committed (its slices live in the App's Context)
@@ -221,6 +223,7 @@ private final class Worker : Fiber, ResponseSink
     void resetResponseState() nothrow @nogc
     {
         cancelled = timedOut = failed = closeAfter = upgraded = false;
+        tunnel = null;
         started = ended = chunked = noBody = committed = h2done = flushedAny = waitingWrite = false;
         remaining = -1;
         h2head = ResponseHead.init;
@@ -276,6 +279,38 @@ private final class WsPort : UpgradedConn
     override void consume(size_t n) @trusted { loop.wsConsume(this, n); }
     override void write(scope const(ubyte)[] data) @trusted { loop.wsWrite(this, data); }
     override void close() @trusted { loop.wsClose(this); }
+}
+
+/// An HTTP/2 stream taken over after a 2xx to an extended CONNECT (RFC 8441, a WebSocket): what `ResponseSink.upgrade`
+/// returns on HTTP/2. The bytes travel in the stream's DATA frames; the session does the flow control. One object per
+/// stream, never pooled: a `WsConn` kept after its stream ended finds `conn` null here, never a later stream.
+private final class H2Tunnel : UpgradedConn
+{
+    EpollLoop loop;
+    Conn conn;        /// null once the stream ended for the engine
+    H2Stream stream;
+    Worker owner;     /// the fiber that upgraded it: the only one that reads
+    Worker[] writers; /// fibers waiting for the stream's output to drain
+    size_t reported;  /// length of the session's input when `fill` last returned (minus what was consumed since)
+    bool reading;     /// the owner waits in `fill`
+    bool broken;      /// reset, or a reader that stopped reading: reads report the end, writes throw
+    bool closing;     /// the owner called `close`: END_STREAM goes out when it returns
+    bool stopSeen;    /// `fill` already reported the graceful stop
+
+    this(EpollLoop l, Conn c, H2Stream s, Worker w) nothrow @safe
+    {
+        loop = l;
+        conn = c;
+        stream = s;
+        owner = w;
+    }
+
+    // small @trusted bodies: the work is in the loop (fiber switches on this worker's own state)
+    override const(ubyte)[] buffered() @trusted { return loop.tunnelBuffered(this); }
+    override FillResult fill(int timeoutMs) @trusted { return loop.tunnelFill(this, timeoutMs); }
+    override void consume(size_t n) @trusted { loop.tunnelConsume(this, n); }
+    override void write(scope const(ubyte)[] data) @trusted { loop.tunnelWrite(this, data); }
+    override void close() @safe { closing = true; }
 }
 
 // ======================================================================= the loop
@@ -978,6 +1013,7 @@ final class EpollLoop : EventLoop, Scheduler
     {
         w.conn = null;
         w.stream = null;
+        w.tunnel = null;
         // Its body/header slices would keep the (possibly huge) buffer alive in an idle worker: an interior pointer keeps a
         // whole GC block reachable.
         w.req = Request.init;
@@ -1262,6 +1298,8 @@ final class EpollLoop : EventLoop, Scheduler
     /// Resumes the handlers that were waiting for their stream to drain, once it has. Called after the output moved.
     private void wakeH2Writers(Conn c)
     {
+        if (c.tunnels.length)
+            wakeTunnelWriters(c);
         if (c.writersWaiting == 0 || c.waking)
             return;
         c.waking = true;
@@ -1590,7 +1628,7 @@ final class EpollLoop : EventLoop, Scheduler
         if (w.started)
             throw new Exception("vela: ResponseSink.upgrade after the response started");
         if (w.stream !is null)
-            return null; // HTTP/2 has no Upgrade (RFC 8441's extended CONNECT is not supported)
+            return upgradeStream(w, head);
         Conn c = w.conn;
         w.started = w.ended = w.upgraded = true;
         c.wsOut.clear();
@@ -2031,6 +2069,229 @@ final class EpollLoop : EventLoop, Scheduler
         c.wsEof = c.wsBroken = c.wsClosing = c.wsStopSeen = false;
     }
 
+    // ------------------------------------------------------------------ WebSockets over HTTP/2 (RFC 8441)
+    //
+    // The request was an extended CONNECT; the session handed it out when its HEADERS arrived (`H2Stream.tunnel`). The
+    // 2xx goes out with `beginResponse`, then the stream carries the WebSocket's bytes: in through the session's
+    // `tunnelInput`/`tunnelConsume` (the stream window reopens only as the owner consumes), out through `sendData`. Reads
+    // belong to the owner; any fiber of the worker may write. Wake-ups go through `wsDefer`, as for `WsPort`.
+
+    /// `sink.upgrade` on an HTTP/2 stream: answers the extended CONNECT with `head` (2xx) and hands the stream over.
+    private UpgradedConn upgradeStream(Worker w, ref const ResponseHead head)
+    {
+        Conn c = w.conn;
+        auto st = w.stream;
+        if (!st.tunnel || c.fd < 0 || c.h2 is null || head.status < 200 || head.status > 299)
+            return null; // not an extended CONNECT: HTTP/2 has no other way to switch protocols
+        w.started = w.ended = w.upgraded = w.committed = w.flushedAny = true;
+        c.h2.beginResponse(st, head, false);
+        st.deadlineMs = 0; // no request deadline any more: the protocol keeps its own (WsConn's pings)
+        auto t = new H2Tunnel(this, c, st, w);
+        w.tunnel = t;
+        c.tunnels ~= t;
+        wsOpen++;
+        wsTotal++;
+        flushH2(c);
+        return t;
+    }
+
+    /// The stream is gone for the engine's purposes (or never usable): nothing more can be read or written.
+    private bool tunnelGone(H2Tunnel t)
+    {
+        return t.conn is null || t.conn.fd < 0 || t.conn.h2 is null || t.broken || t.closing;
+    }
+
+    private const(ubyte)[] tunnelBuffered(H2Tunnel t)
+    {
+        if (t.conn is null || t.conn.fd < 0 || t.conn.h2 is null)
+            return null;
+        return t.conn.h2.tunnelInput(t.stream);
+    }
+
+    private void tunnelConsume(H2Tunnel t, size_t n)
+    {
+        if (t.conn is null || t.conn.fd < 0 || t.conn.h2 is null)
+            return;
+        t.conn.h2.tunnelConsume(t.stream, n); // may queue a WINDOW_UPDATE: sent before the owner waits (tunnelFill)
+        t.reported = t.reported > n ? t.reported - n : 0;
+    }
+
+    /// The owner waits for input (see `UpgradedConn.fill`).
+    private FillResult tunnelFill(H2Tunnel t, int timeoutMs)
+    {
+        auto w = t.owner;
+        if (cast(Worker) Fiber.getThis() !is w)
+            throw new Exception("vela: only the fiber that upgraded a connection can read from it");
+        for (bool waited = false;; waited = true)
+        {
+            if (w.cancelled)
+                throw cancelledEx;
+            if (tunnelGone(t))
+                return FillResult.eof;
+            Conn c = t.conn;
+            immutable have = c.h2.tunnelInput(t.stream).length;
+            if (have > t.reported)
+            {
+                t.reported = have;
+                return FillResult.data;
+            }
+            if (c.h2.tunnelEnded(t.stream))
+                return FillResult.eof;
+            if (stopping && !t.stopSeen)
+            {
+                t.stopSeen = true;
+                return FillResult.stopping;
+            }
+            if (waited || timeoutMs == 0)
+                return FillResult.timeout; // the timer, or a wake-up with nothing to read: the caller looks at its clock
+            flushH2(c); // WINDOW_UPDATEs from consume, before the peer is expected to send more
+            if (w.cancelled || tunnelGone(t))
+                continue;
+            t.reading = true;
+            beginWait(w, timeoutMs);
+            Fiber.yield();
+            t.reading = false;
+        }
+    }
+
+    /// Any fiber of the worker sends on the stream (see `UpgradedConn.write`).
+    private void tunnelWrite(H2Tunnel t, scope const(ubyte)[] data)
+    {
+        auto self = cast(Worker) Fiber.getThis();
+        if (self is null)
+            throw new Exception("vela: a WebSocket can only be written to from a request fiber");
+        if (self.cancelled)
+            throw cancelledEx;
+        if (tunnelGone(t) || t.stream.resetByPeer)
+            tunnelLost(t, self);
+        Conn c = t.conn;
+        c.h2.sendData(t.stream, cast(const(char)[]) data); // whole, before any wait: frames of two fibers never interleave
+        flushH2(c);
+        for (;;)
+        {
+            if (self.cancelled)
+                throw cancelledEx;
+            if (tunnelGone(t) || t.stream.resetByPeer)
+                tunnelLost(t, self);
+            if (c.h2.pendingBytes(t.stream) <= cfg.streamHighWaterBytes)
+                return;
+            t.writers ~= self;
+            beginWait(self, cfg.writeTimeoutMs);
+            Fiber.yield();
+            foreach (i, x; t.writers)
+                if (x is self)
+                {
+                    t.writers[i] = t.writers[$ - 1];
+                    t.writers[$ - 1] = null;
+                    t.writers = t.writers[0 .. $ - 1];
+                    t.writers.assumeSafeAppend();
+                    break;
+                }
+            if (self.wakeEvents == 0 && !self.cancelled && !tunnelGone(t))
+            {
+                tunnelBreak(t); // the peer has not opened the stream's window for writeTimeoutMs
+                tunnelLost(t, self);
+            }
+        }
+    }
+
+    /// The stream behind `t` is gone: its owner unwinds like any request whose client left, other fibers get `WsClosed`.
+    private void tunnelLost(H2Tunnel t, Worker self)
+    {
+        if (self is t.owner)
+        {
+            self.cancelled = true;
+            throw cancelledEx;
+        }
+        throw new WsClosed;
+    }
+
+    /// The stream failed (reset by the peer, a reader that stopped reading): reads end (the WebSocket sees 1006), writes
+    /// throw. An owner waiting on something else (sleep, a database) is cancelled.
+    private void tunnelBreak(H2Tunnel t)
+    {
+        if (t.broken)
+            return;
+        t.broken = true;
+        foreach (x; t.writers)
+            wsDefer(x);
+        auto owner = t.owner;
+        if (t.reading)
+            return wsDefer(owner);
+        if (owner.waiting && !owner.done)
+        {
+            foreach (x; t.writers)
+                if (x is owner)
+                    return; // woken above: its write throws
+            owner.cancelled = true; // its wait throws RequestCancelled when it resumes
+            wsDefer(owner);
+        }
+    }
+
+    /// Wakes the fibers waiting to write on the connection's tunnels once their stream drained below half the mark.
+    private void wakeTunnelWriters(Conn c)
+    {
+        foreach (t; c.tunnels)
+            if (t.writers.length && c.h2.pendingBytes(t.stream) <= cfg.streamHighWaterBytes / 2)
+                foreach (x; t.writers)
+                    wsDefer(x);
+    }
+
+    /// The engine is done with the tunnel: a `WsConn` kept by another fiber now finds it closed.
+    private void detachTunnel(Conn c, H2Tunnel t)
+    {
+        if (t.conn is null)
+            return;
+        foreach (i, x; c.tunnels)
+            if (x is t)
+            {
+                c.tunnels[i] = c.tunnels[$ - 1];
+                c.tunnels[$ - 1] = null;
+                c.tunnels = c.tunnels[0 .. $ - 1];
+                c.tunnels.assumeSafeAppend();
+                break;
+            }
+        t.conn = null;
+        t.stream = null;
+        foreach (x; t.writers)
+            wsDefer(x); // they find `t.conn` null and get WsClosed
+        wsOpen--;
+    }
+
+    /// The owner of a tunnel returned: END_STREAM after what is queued (an orderly close), or a reset if it failed.
+    private void finishTunnel(Worker w)
+    {
+        Conn c = w.conn;
+        auto st = w.stream;
+        auto t = w.tunnel;
+        w.stream = null;
+        w.tunnel = null;
+        immutable broken = t.broken;
+        detachTunnel(c, t);
+        if (w.cancelled)
+        {
+            if (w.timedOut)
+                timedOutN++;
+            else
+                cancelledN++;
+        }
+        if (c.fd < 0 || c.h2 is null)
+        {
+            st.task = null; // the connection is gone: closeH2 recycles the session
+            releaseWorker(w);
+            return;
+        }
+        auto s = c.h2;
+        if (st.resetByPeer)
+            s.detach(st);
+        else if (w.cancelled || broken)
+            s.cancelStream(st, H2Error.cancel);
+        else
+            s.endResponse(st); // the close frame is out (WsConn); END_STREAM follows the last DATA
+        releaseWorker(w);
+        flushH2(c);
+    }
+
     // ------------------------------------------------------------------ cancellation
 
     /// Client went away (`timeout = false`) or the deadline expired (`true`).
@@ -2266,6 +2527,7 @@ final class EpollLoop : EventLoop, Scheduler
         hc.maxHeaders = maxHeaders;
         hc.limits = cfg.limits;
         hc.settingsTimeoutMs = cfg.headerTimeoutMs; // a client this slow to acknowledge is gone
+        hc.enableConnectProtocol = cfg.http2WebSockets;
         return new H2Session(hc);
     }
 
@@ -2404,10 +2666,17 @@ final class EpollLoop : EventLoop, Scheduler
         while (s.popReset(st))
         {
             auto w = cast(Worker) st.task;
-            if (w !is null && !w.done)
+            if (w !is null && !w.done && w.tunnel !is null)
+                tunnelBreak(w.tunnel); // a WebSocket's reader sees the end (1006); finishH2 gives the stream back
+            else if (w !is null && !w.done)
                 cancelWorker(w, false); // its fiber unwinds; finishH2 gives the stream back
             else
                 s.detach(st);
+        }
+        while (s.popInput(st))
+        {
+            auto w = cast(Worker) st.task;            if (w !is null && w.tunnel !is null && w.tunnel.reading)
+                wsDefer(w); // new bytes (or the end) for a WebSocket's reader
         }
         while (c.fd >= 0 && s.popReady(st))
             startStream(c, st);
@@ -2438,6 +2707,8 @@ final class EpollLoop : EventLoop, Scheduler
     /// A stream's handler returned (or was cancelled).
     private void finishH2(Worker w)
     {
+        if (w.tunnel !is null)
+            return finishTunnel(w);
         Conn c = w.conn;
         auto st = w.stream;
         w.stream = null;
@@ -2512,8 +2783,7 @@ final class EpollLoop : EventLoop, Scheduler
             auto data = s.pendingOutput;
             if (data.length == 0)
                 break;
-            immutable n = ioSend(c, data.ptr, data.length);
-            if (n > 0)
+            immutable n = ioSend(c, data.ptr, data.length);            if (n > 0)
             {
                 c.blockedSinceMs = 0;
                 s.sent(n); // may queue more DATA
@@ -2656,6 +2926,9 @@ final class EpollLoop : EventLoop, Scheduler
     private void closeH2(Conn c)
     {
         auto s = c.h2;
+        // WebSockets first: a WsConn another fiber holds must find its stream closed (their owners are cancelled below)
+        while (c.tunnels.length)
+            detachTunnel(c, c.tunnels[$ - 1]);
         size_t n = 0;
         foreach (st; s.activeStreams)
             if (st.task !is null)
@@ -3025,8 +3298,16 @@ final class EpollLoop : EventLoop, Scheduler
         closeListener(redirectListener);
         // taken-over connections waiting for input learn about the stop now (a WebSocket closes with 1001)
         foreach (c; conns)
-            if (c !is null && c.fd >= 0 && c.phase == Phase.upgraded)
+        {
+            if (c is null || c.fd < 0)
+                continue;
+            if (c.phase == Phase.upgraded)
                 wsDefer(c.readWaiter);
+            else if (c.phase == Phase.h2)
+                foreach (t; c.tunnels)
+                    if (t.reading)
+                        wsDefer(t.owner);
+        }
         drainWsWakes();
     }
 

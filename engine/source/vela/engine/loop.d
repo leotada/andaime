@@ -91,6 +91,9 @@ struct ServerConfig
     uint http2MaxStreams = 100;      /// SETTINGS_MAX_CONCURRENT_STREAMS per connection (maxInFlight still applies per worker)
     uint http2StreamWindowBytes = 256 << 10;   /// per-stream receive window: request body a client may send per round trip
     uint http2ConnectionWindowBytes = 1 << 20; /// connection receive window: request body in flight across all streams
+    /// WebSockets over HTTP/2 (RFC 8441): announces SETTINGS_ENABLE_CONNECT_PROTOCOL, so browsers open a WebSocket as a
+    /// stream of the page's HTTP/2 connection. False: they open their own HTTP/1.1 connection for it, as before.
+    bool http2WebSockets = true;
     /// HTTPS (see `TlsConfig`). The handshake must finish within `headerTimeoutMs`.
     TlsConfig tls;
     /// Logs failed TLS handshakes and HTTP/2 connection errors to stderr with the client's address,

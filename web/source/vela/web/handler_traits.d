@@ -257,6 +257,11 @@ void dispatch(Method method, string path, alias fn, Self...)(Context ctx, Self s
 {
     static if (is(typeof(fn) P == __parameters))
     {
+        // An HTTP/2 extended CONNECT (RFC 8441) is presented as a GET; only a WebSocket route may answer it, or the
+        // client would take this handler's 200 for an open tunnel.
+        static if (!(is(typeof(fn) R0 == return) && is(R0 == WebSocket)))
+            if (ctx.request.connectProtocol.length)
+                throw new HttpError(400, "this route does not accept WebSocket connections");
         enum info = parseRoute(path);
         P args;
 

@@ -185,3 +185,30 @@ unittest // WebSocket routes are not in the OpenAPI document
     auto doc = c.get("/openapi.json").body;
     assert(doc.canFind(`"/plain"`) && !doc.canFind(`"/echo"`) && !doc.canFind(`"/live"`), doc);
 }
+
+unittest // HTTP/2 (RFC 8441): the extended CONNECT is answered with 200, no accept key; the rest is the same
+{
+    auto c = TestClient(buildApp());
+    c.http2 = true;
+    auto r = c.websocket("/echo", WsScript().text("hello").ping("p").close(1000));
+    assert(r.status == 200 && r.response.header("Sec-WebSocket-Accept") is null);
+    assert(r.texts == ["hello"] && r.pongs == ["p"] && r.closeCode == 1000);
+
+    auto room_ = c.websocket("/rooms/h2", WsScript().text("hi").close(4001), hdr("Authorization", "Bearer ok"));
+    assert(room_.status == 200 && room_.response.header("Sec-WebSocket-Protocol") == "chat.v1");
+    assert(room_.texts == ["welcome to h2", "got hi"] && room_.closeCode == 4001);
+    assert(c.websocket("/rooms/h2", WsScript().close(), hdr("Authorization", "Bearer no")).status == 403);
+    assert(c.websocket("/live", WsScript().close()).texts == ["from a controller"]);
+
+    log = null;
+    assert(c.websocket("/fails", WsScript().close()).closeCode == 1011);
+    assert(log == ["/fails 200"], log[0]);
+
+    // a plain HTTP/2 GET on a WebSocket route, and a wrong version
+    assert(c.get("/echo").status == 426);
+    // an extended CONNECT on a route that is not a WebSocket: refused before the handler runs
+    auto p = c.websocket("/plain", WsScript().close());
+    assert(p.status == 400 && p.messages.length == 0, p.response.body);
+    assert(c.websocket("/nowhere").status == 404);
+    assert(c.get("/plain").body == "plain");
+}

@@ -400,7 +400,8 @@ final class App
                     fail(ctx, e);
                 break;
             case MatchStatus.notFound:
-                if (redirectTrailingSlash && tryTrailingSlash(ctx))
+                // (not for an HTTP/2 WebSocket: a client does not follow a redirect of its extended CONNECT)
+                if (redirectTrailingSlash && ctx.request.connectProtocol.length == 0 && tryTrailingSlash(ctx))
                     break;
                 if (notFoundHandler !is null)
                 {

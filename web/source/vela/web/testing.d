@@ -99,7 +99,8 @@ struct TestWsMessage
 /// The outcome of `TestClient.websocket`.
 struct TestWsResponse
 {
-    /// The HTTP answer: 101 and its headers when the server upgraded, the refusal (403, 426...) otherwise.
+    /// The HTTP answer: 101 (200 over HTTP/2) and its headers when the server upgraded, the refusal (403, 426...)
+    /// otherwise.
     TestResponse response;
     /// The server's text and binary messages, in order.
     TestWsMessage[] messages;
@@ -159,13 +160,19 @@ struct TestClient
 
     /// Opens a WebSocket on `target` (the upgrade headers are added for you), plays `script` to the server, and returns
     /// what came back. The handler runs to completion inside the call.
+    /// With `http2` set, the extended CONNECT of RFC 8441 instead, answered with 200.
     TestWsResponse websocket(string target, WsScript script, HeaderField[] headers...)
     {
-        HeaderField[] all = [hdr("Upgrade", "websocket"), hdr("Connection", "Upgrade"),
-            hdr("Sec-WebSocket-Version", "13"), hdr("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")];
+        HeaderField[] all = http2 ? [hdr("sec-websocket-version", "13")]
+            : [hdr("Upgrade", "websocket"), hdr("Connection", "Upgrade"), hdr("Sec-WebSocket-Version", "13"),
+                hdr("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")];
         sink.upgradeInput = script.bytes;
         sink.upgradeOutput.clear();
         TestWsResponse r;
+        if (http2)
+            connectProtocol = "websocket";
+        scope (exit)
+            connectProtocol = null;
         r.response = send(Method.GET, target, null, all ~ headers);
         decodeServerFrames(cast(const(ubyte)[]) sink.upgradeOutput.data, r);
         return r;
@@ -178,6 +185,13 @@ struct TestClient
     /// The permessage-deflate factory a WebSocket route with `compression` uses (the server sets zlib's); null: none.
     WsDeflateFactory deflate;
 
+    /// Sends the requests as HTTP/2 ones (`Request.protocol`), and `websocket` opens its WebSocket as a browser does on
+    /// an HTTP/2 connection: an extended CONNECT (RFC 8441), answered with 200 instead of 101.
+    bool http2;
+
+    /// Set by `websocket` for the request it sends; see `Request.connectProtocol`.
+    private string connectProtocol;
+
     TestResponse send(Method m, string target, string body, HeaderField[] headers)
     {
         sink.reset(m);
@@ -188,6 +202,8 @@ struct TestClient
         req.headers = headers.dup;
         req.body = cast(const(ubyte)[]) body;
         req.peer = peer;
+        req.protocol = http2 ? Protocol.http2 : Protocol.http1;
+        req.connectProtocol = connectProtocol;
         ctx.reset(req, sink);
         ctx.newDeflate = deflate;
         app.handle(ctx);

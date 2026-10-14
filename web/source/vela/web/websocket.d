@@ -12,10 +12,11 @@
 ///     app.ws!("/chat/{room}", chat);
 ///
 /// Parameters are bound and middleware runs first, exactly as for any GET, so authentication, validation errors and
-/// refusals are plain HTTP responses. The `101 Switching Protocols` is committed when the handler returns the
-/// `WebSocket`, and the body then runs inside the middleware chain (middleware sees the whole session). When the body
-/// returns the connection is closed with 1000; when it throws, with 1011 (and the error is logged). Headers the handler
-/// set (`Sec-WebSocket-Protocol`, `Set-Cookie`) go out with the 101.
+/// refusals are plain HTTP responses. The `101 Switching Protocols` (HTTP/1.1) or the `200` to the extended CONNECT
+/// (HTTP/2, RFC 8441) is committed when the handler returns the `WebSocket`, and the body then runs inside the middleware
+/// chain (middleware sees the whole session). When the body returns the connection is closed with 1000; when it throws,
+/// with 1011 (and the error is logged). Headers the handler set (`Sec-WebSocket-Protocol`, `Set-Cookie`) go out with
+/// that answer.
 module vela.web.websocket;
 
 @safe:
@@ -79,16 +80,22 @@ void runWebSocket(Context ctx, ref WebSocket ws)
             ctx.response.setHeader("Sec-WebSocket-Extensions", v);
         }
     }
-    auto accept = ctx.scratch(28);
-    accept[] = acceptKey(key)[];
-    ctx.response.setHeader("Sec-WebSocket-Accept", accept);
-    ctx.response.status = 101;
+    // HTTP/1.1 answers 101 with the accept key; HTTP/2 (RFC 8441) answers the extended CONNECT with 200 and no key
+    immutable h2 = ctx.request.protocol == Protocol.http2;
+    if (!h2)
+    {
+        auto accept = ctx.scratch(28);
+        accept[] = acceptKey(key)[];
+        ctx.response.setHeader("Sec-WebSocket-Accept", accept);
+    }
+    immutable status = h2 ? 200 : 101;
+    ctx.response.status = status;
     ctx.response.contentType = null;
     ctx.response.body.clear();
     if (!checkResponse(ctx))
         throw new Exception("vela: the response has an invalid header (see the line above)");
 
-    const ResponseHead head = ResponseHead(101, null, ctx.response.headers, -1);
+    const ResponseHead head = ResponseHead(status, null, ctx.response.headers, -1);
     UpgradedConn io = ctx.sink.upgrade(head, "websocket");
     if (io is null)
     {

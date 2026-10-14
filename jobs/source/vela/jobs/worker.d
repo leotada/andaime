@@ -11,10 +11,10 @@
 /// (0 means one thread per core). Consumption, cron, and `WorkerHooks` still run only on worker 0,
 /// so `--queues` is not multiplied by the core count.
 ///
-/// `--role=all`: call `serve` / `tryServe` with `supervisorHook` as `onWorker0`. HTTP stays the
-/// application's. The hook spawns the supervisor on worker 0 only. With `InMemoryJobStore` the
-/// application must set `ServerConfig.workers = 1` itself: every request thread would otherwise
-/// enqueue on a store that is not safe across threads.
+/// `--role=all`: call `applyJobGrace` on the `ServerConfig`, then `serve` / `tryServe` with
+/// `supervisorHook` as `onWorker0`. HTTP stays the application's. The hook spawns the supervisor
+/// on worker 0 only. With `InMemoryJobStore` the application must set `ServerConfig.workers = 1`
+/// itself: every request thread would otherwise enqueue on a store that is not safe across threads.
 ///
 /// The development server runs `spawn` inline. Background jobs need the epoll loop.
 ///
@@ -31,7 +31,7 @@ import vela.engine.fiberio : sleep, spawn, stopping, workerIndex;
 import vela.engine.loop : HandlerFactory, RequestCallback, ServerConfig, TlsConfig, WorkerInit;
 import vela.http.response : ResponseSink;
 import vela.http.types : Method, Request;
-import vela.jobs.backend : JobState, JobStore, jobSpec, runClaimed;
+import vela.jobs.backend : JobRecord, JobRuntime, JobState, JobStore, jobSpec, logJobFailure, runClaimed;
 import vela.jobs.cli : ProcessRole, Startup, parseStartup, roleText;
 import vela.jobs.cron : CronClock, ScheduleKind, ScheduledFire, ScheduledJob, slotUnseen;
 import vela.jobs.job : JobContext, jobCronExpr, jobEveryPeriod, jobName;
@@ -42,17 +42,26 @@ import vela.web.stream : sendResponse;
 /// `ServerConfig.shutdownGraceMs` as defined on the struct. Compared by value.
 private enum uint serverDefaultGraceMs = 10_000;
 
-/// Grace used by `--role=worker` when the caller left the default. API role does not use this.
+/// Grace used when a process runs jobs and the caller left the default. API role does not use this.
 private enum uint workerGraceMs = 30_000;
 
-/// How long a consumer waits after an empty claim. Also the cron fiber's poll. Not a busy loop.
+/// How long an in-memory consumer waits after an empty claim. Also the cron fiber's poll.
+/// A `JobRuntime` store waits in `waitIdle` instead (notify, or its own fallback). Not a busy loop.
 enum Duration defaultIdleBackoff = 200.msecs;
 
-/// Optional work the Postgres package starts on worker 0 without this file changing again.
-/// `extra` runs during worker 0's init, after the consumer and cron fibers have been `spawn`ed
-/// and before the loop polls. `spawn` from here is queued and starts when the loop begins, so
-/// this is the place to start LISTEN and the reaper. Do not `sleep` or `awaitFd` in `extra`
-/// itself: this call is not yet inside a fiber, and those would block the thread. Null skips it.
+/// `--role=worker` and `--role=all`. When `shutdownGraceMs` is still the `ServerConfig` default
+/// (10 seconds), set it to 30 seconds so a running job can finish or be released. Any other value
+/// is kept, including 0. `--role=api` must not call this.
+void applyJobGrace(ref ServerConfig cfg) pure @safe
+{
+    if (cfg.shutdownGraceMs == serverDefaultGraceMs)
+        cfg.shutdownGraceMs = workerGraceMs;
+}
+
+/// Optional work on worker 0, after the store's own services and the queue fibers have been
+/// `spawn`ed and before the loop polls. A `JobRuntime` store already starts its listen fiber and
+/// its reaper. `spawn` from `extra` is queued and starts when the loop begins. Do not `sleep` or
+/// `awaitFd` in `extra` itself: this call is not yet inside a fiber. Null skips it.
 struct WorkerHooks
 {
     void delegate() @safe extra;
@@ -119,9 +128,10 @@ void runJobs(Jobs...)(JobStore store, Startup startup, ServerConfig cfg = Server
 }
 
 /// `--role=all`. Pass the result as `onWorker0` to `serve` / `tryServe`.
-/// The delegate spawns the supervisor on worker 0 and returns. It does not bind a port and does
-/// not change `shutdownGraceMs`: the application passes its own `ServerConfig` to `serve`.
-/// Queue concurrency is the number of fibers on worker 0, not per core. Cron runs only there.
+/// Call `applyJobGrace` on that `ServerConfig` first: this delegate cannot see it, and the
+/// default 10 seconds is too short for a job. The delegate spawns the supervisor on worker 0
+/// and returns. It does not bind a port. Queue concurrency is the number of jobs in flight on
+/// worker 0, not per core. Cron runs only there.
 void delegate() @safe supervisorHook(Jobs...)(JobStore store, Startup startup,
         WorkerHooks hooks = WorkerHooks.init, Duration idleBackoff = defaultIdleBackoff) @safe
 {
@@ -145,11 +155,8 @@ private void configureWorker(ref ServerConfig cfg, bool singleThread, ushort hea
         cfg.workers = 1;
     // The health port is cleartext. A cert left on `cfg` would make `runEpollServer` load TLS.
     cfg.tls = TlsConfig.init;
-    // Only `--role=worker`, and only the numeric default. An application that set any other
-    // `shutdownGraceMs` keeps it. API role does not call `configureWorker`. Role `all` does not
-    // either: that process passes `ServerConfig` to `serve` itself.
-    if (cfg.shutdownGraceMs == serverDefaultGraceMs)
-        cfg.shutdownGraceMs = workerGraceMs;
+    // `--role=worker` only. `--role=all` calls `applyJobGrace` itself, before `serve`.
+    applyJobGrace(cfg);
     if (healthPort == 0)
         cfg.accept = false;
     else
@@ -181,59 +188,102 @@ private void checkQueues(Startup startup) pure @safe
 // Supervisor
 // =====================================================================
 
-/// One fiber per concurrency slot of each queue, one cron fiber, then `hooks.extra`.
+/// One claim fiber per queue, then up to `limit` jobs in flight, then cron, then `hooks.extra`.
 /// Worker 0 only. Other threads return without claiming, so `--queues` is not multiplied by cores.
+/// A `JobRuntime` store starts its listen fiber and its reaper here, and wins or loses each cron slot.
 private void startSupervisor(Jobs...)(JobStore store, Startup startup, WorkerHooks hooks, Duration idleBackoff)
 {
     if (workerIndex != 0)
         return;
-    // `idle` is captured so the lambda is a delegate the fibers can store. It stays false.
-    bool idle = false;
-    bool delegate() @safe nothrow stop = () @safe nothrow => idle || stopping();
+    bool delegate() @safe nothrow stop = () @safe nothrow => stopping();
+    if (auto rt = cast(JobRuntime) store)
+        rt.startServices();
     foreach (q; startup.queues)
-    {
-        string queue = q.queue;
-        int left = q.concurrency;
-        while (left > 0)
-        {
-            left--;
-            launchConsumer!Jobs(store, queue, idleBackoff, stop);
-        }
-    }
+        launchQueue!Jobs(store, q.queue, q.concurrency, idleBackoff, stop);
     spawn(() { cronLoop!Jobs(store, idleBackoff, stop); });
     if (hooks.extra !is null)
         hooks.extra();
 }
 
-private void launchConsumer(Jobs...)(JobStore store, string queue, Duration backoff,
-        bool delegate() @safe nothrow stop)
+/// Jobs running for one queue. The claim fiber and the runners share it on this thread.
+private final class Lane
 {
-    spawn(() { consumeLoop!Jobs(store, queue, backoff, stop); });
+    int limit;
+    int running;
 }
 
-/// Claims until `stop` is true. An empty claim sleeps `backoff` (the loop does not spin).
-/// A row claimed after stop is released here and is not passed to `runClaimed`.
-/// `runClaimed` releases on `RequestCancelled` when a job was already in `perform`.
-private void consumeLoop(Jobs...)(JobStore store, string queue, Duration backoff,
+private void launchQueue(Jobs...)(JobStore store, string queue, int limit, Duration backoff,
+        bool delegate() @safe nothrow stop)
+{
+    auto lane = new Lane;
+    lane.limit = limit;
+    spawn(() { dispatchLoop!Jobs(store, queue, lane, backoff, stop); });
+}
+
+/// One fiber claims for the queue. An empty claim waits (`waitIdle` on a `JobRuntime` store,
+/// otherwise `backoff`) instead of querying again. While `lane.limit` jobs are in `perform`,
+/// it sleeps a short slice and does not claim.
+private void dispatchLoop(Jobs...)(JobStore store, string queue, Lane lane, Duration backoff,
         bool delegate() @safe nothrow stop)
 {
     while (!stop())
     {
-        bool ran = false;
+        if (lane.running >= lane.limit)
+        {
+            sleep(50.msecs);
+            continue;
+        }
+        JobRecord[] batch;
         try
-            ran = consumeOnce!Jobs(store, queue, stop);
-        catch (Exception)
-            ran = false;
+            batch = store.claimBatch(queue, lane.limit - lane.running);
+        catch (Exception e)
+        {
+            logJobFailure("claim", e);
+            idleWait(store, backoff);
+            continue;
+        }
         if (stop())
+        {
+            foreach (rec; batch)
+                releaseClaim(store, rec.id);
             return;
-        if (!ran)
-            sleep(backoff);
+        }
+        if (batch.length == 0)
+        {
+            idleWait(store, backoff);
+            continue;
+        }
+        foreach (rec; batch)
+        {
+            if (stop() || lane.running >= lane.limit)
+            {
+                releaseClaim(store, rec.id);
+                continue;
+            }
+            lane.running++;
+            JobRecord copy = rec;
+            spawn(() {
+                scope (exit)
+                    lane.running--;
+                try
+                    runClaimed!Jobs(store, copy);
+                catch (Exception e)
+                    logJobFailure("job", e);
+            });
+        }
     }
 }
 
+private void idleWait(JobStore store, Duration backoff)
+{
+    if (auto rt = cast(JobRuntime) store)
+        rt.waitIdle(backoff);
+    else
+        sleep(backoff);
+}
+
 /// One claim. Returns true when `runClaimed` ran.
-/// `stop` true before the claim claims nothing. `stop` true after the claim releases the row:
-/// a store whose `claimBatch` waits (Postgres) can be stopped between the two checks.
+/// `stop` true before the claim claims nothing. `stop` true after the claim releases the row.
 private bool consumeOnce(Jobs...)(JobStore store, string queue, bool delegate() @safe nothrow stop)
 {
     if (stop())
@@ -247,10 +297,9 @@ private bool consumeOnce(Jobs...)(JobStore store, string queue, bool delegate() 
             releaseClaim(store, rec.id);
         return false;
     }
-    // `@Offload` runs `perform` on the pool and `runClaimed` waits for it. This loop does not
-    // change `offload`. If shutdown cancels the fiber inside `offload`, the pool thread can
-    // still finish that work; `RequestCancelled` has already released the row and the result
-    // is discarded.
+    // `@Offload` runs `perform` on the pool and `runClaimed` waits for it. If shutdown cancels
+    // the fiber inside `offload`, the pool thread can still finish that work; `RequestCancelled`
+    // has already released the row and the result is discarded.
     runClaimed!Jobs(store, batch[0]);
     return true;
 }
@@ -275,9 +324,8 @@ private void cronLoop(Jobs...)(JobStore store, Duration backoff, bool delegate()
     {
         try
             enqueueDue!Jobs(store, Clock.currTime(), seen, jobs, buf);
-        catch (Exception)
-        {
-        }
+        catch (Exception e)
+            logJobFailure("cron", e);
         if (stop())
             return;
         sleep(backoff);
@@ -315,8 +363,8 @@ private ScheduledJob[] scheduledJobs(Jobs...)() @safe
 }
 
 /// Enqueues each due slot this process has not yet enqueued (`slotUnseen`).
-/// The insert is unconditional after that: a store that dedupes in SQL (the Postgres package)
-/// still receives the row. This function does not open a database connection.
+/// A `JobRuntime` store must also win `claimCron` for that slot: the loser does not enqueue,
+/// and the slot is remembered so the next tick does not insert it again.
 private size_t enqueueDue(Jobs...)(JobStore store, SysTime now, ref SeenFire[] seen, ScheduledJob[] jobs,
         ScheduledFire[] buf) @safe
 {
@@ -330,12 +378,42 @@ private size_t enqueueDue(Jobs...)(JobStore store, SysTime now, ref SeenFire[] s
     {
         if (seenAlready(seen, buf[i]))
             continue;
+        bool again;
+        if (!cronWon(store, buf[i], again))
+        {
+            if (!again)
+                rememberFire(seen, buf[i]);
+            continue;
+        }
         if (!enqueueScheduled!Jobs(store, buf[i]))
             continue;
         rememberFire(seen, buf[i]);
         wrote++;
     }
     return wrote;
+}
+
+/// Memory stores always win. A runtime store inserts the slot; false means another process has it
+/// (`again` is false, so the caller remembers the slot). `again` is true when the insert failed
+/// and the next tick should try once more.
+private bool cronWon(JobStore store, ScheduledFire fire, out bool again) @safe
+{
+    again = false;
+    auto rt = cast(JobRuntime) store;
+    if (rt is null)
+        return true;
+    try
+    {
+        if (rt.claimCron(fire.jobName, fire.slot.stdTime))
+            return true;
+    }
+    catch (Exception e)
+    {
+        logJobFailure("cron", e);
+        again = true;
+        return false;
+    }
+    return false;
 }
 
 private bool seenAlready(ref SeenFire[] seen, ScheduledFire fire) @safe
@@ -520,6 +598,27 @@ version (unittest)
         auto buf = new ScheduledFire[](jobs.length * 2);
         return enqueueDue!Jobs(store, now, seen, jobs, buf);
     }
+
+    /// Cron gate: `claimCron` false must not enqueue. True enqueues.
+    class GateStore : TestJobStore, JobRuntime
+    {
+        bool allow = true;
+        int claims;
+
+        bool claimCron(string, long)
+        {
+            claims++;
+            return allow;
+        }
+
+        void startServices()
+        {
+        }
+
+        void waitIdle(Duration)
+        {
+        }
+    }
 }
 
 unittest
@@ -561,6 +660,30 @@ unittest
     assert(normalizeBackoff(Duration.zero) == defaultIdleBackoff);
     assert(normalizeBackoff((-1).seconds) == defaultIdleBackoff);
     assert(normalizeBackoff(50.msecs) == 50.msecs);
+
+    ServerConfig sharedGrace;
+    applyJobGrace(sharedGrace);
+    assert(sharedGrace.shutdownGraceMs == workerGraceMs);
+    sharedGrace.shutdownGraceMs = 2_500;
+    applyJobGrace(sharedGrace);
+    assert(sharedGrace.shutdownGraceMs == 2_500);
+}
+
+unittest
+{
+    auto gate = new GateStore;
+    gate.allow = false;
+    SeenFire[] seen;
+    assert(dueNow!UnitBoth(gate, Clock.currTime(), seen) == 0);
+    assert(gate.jobs().length == 0);
+    assert(gate.claims >= 1);
+    immutable lost = gate.claims;
+
+    gate.allow = true;
+    seen = null;
+    assert(dueNow!UnitBoth(gate, Clock.currTime(), seen) >= 1);
+    assert(gate.jobs().length >= 1);
+    assert(gate.claims > lost);
 }
 
 unittest

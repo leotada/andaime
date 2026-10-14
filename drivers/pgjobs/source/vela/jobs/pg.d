@@ -13,28 +13,20 @@
 /// call `ensureSchema` before opening the caller's transaction. Two starters take `pg_advisory_lock` so the
 /// creates cannot race.
 ///
-/// Supervisor, on worker 0, inside `spawn` (this starts no threads):
-///
-/// ---
-/// spawn(() { store.listen(() { /* claimBatch; the 5 s fallback covers a job with no NOTIFY */ }); });
-/// spawn(() { while (!stopping()) { sleep(store.lease); if (!stopping()) store.reap(); } });
-/// ---
-///
-/// `listen` returns when that fiber is cancelled. `reap` is the caller's timer: `running` rows whose
-/// `attempted_at` is older than `lease` (default 15 minutes) go back to `retryable` without another attempt.
-/// Cron dedupe stays in the caller: `cronSlot` / `slotStart` produce a `stdTime`, `claimCronSlot` inserts it,
-/// and the caller enqueues only when that returns true.
+/// Supervisor, on worker 0: `startServices` spawns `listen` and the reaper. `waitIdle` returns when a
+/// notification arrives or after 5 seconds. `claimCron` inserts the cron slot; the supervisor enqueues
+/// only when that returns true. `hooks.extra` is not required for either.
 module vela.jobs.pg;
 
 @safe:
 
-import core.time : Duration, minutes, seconds;
+import core.time : Duration, MonoTime, minutes, msecs, seconds;
 
 import vela.db : Optional, PgConfig, PgConn, PgPool, PgResult, pgPool;
-import vela.engine.fiberio : awaitFd, IoEvent, RequestCancelled, stopping;
+import vela.engine.fiberio : awaitFd, IoEvent, RequestCancelled, sleep, spawn, stopping;
 import vela.http.buffer : ByteBuffer;
-import vela.jobs.backend : EnqueueResult, JobRecord, JobSpec, JobState, JobStore, JobStoreError, assignUnique,
-    jobSpec, unixNowUs;
+import vela.jobs.backend : EnqueueResult, JobRecord, JobRuntime, JobSpec, JobState, JobStore, JobStoreError,
+    assignUnique, jobSpec, logJobFailure, unixNowUs;
 import vela.web.json : writeJsonString;
 import vela.web.numtext : itoa;
 
@@ -55,12 +47,14 @@ private enum long unixEpochStdTime = 621_355_968_000_000_000L;
 // =====================================================================
 
 /// Queue in `vela_jobs`. Claims commit before the caller runs `perform`, so the row lock is not held across the work.
-final class PgJobStore : JobStore
+final class PgJobStore : JobStore, JobRuntime
 {
     private PgConfig cfg;
     private PgPool pool;
     private Duration leasePeriod;
     private bool schemaReady;
+    private bool servicesStarted;
+    private int wakeGen;
 
     /// `conninfo` is `host=... dbname=...`. `leasePeriod` is how long `running` may sit before `reap` (default 15 minutes).
     this(string conninfo, Duration leasePeriod = 15.minutes)
@@ -180,7 +174,7 @@ final class PgJobStore : JobStore
 
     /// Inserts `(jobName, slotStdTime)` into `vela_cron_executions`. False when that slot is already taken.
     /// `slotStdTime` is `SysTime.stdTime` from `cronSlot` (`@Cron`) or `slotStart` (`@Every`), not Unix microseconds.
-    /// Enqueue the job only when this returns true.
+    /// The supervisor calls this through `claimCron` and enqueues only when it returns true.
     bool claimCronSlot(string jobName, long slotStdTime)
     {
         if (jobName.length == 0)
@@ -191,6 +185,56 @@ final class PgJobStore : JobStore
         scope (exit)
             r.close();
         return r.rows > 0;
+    }
+
+    bool claimCron(string jobName, long slotStdTime)
+    {
+        return claimCronSlot(jobName, slotStdTime);
+    }
+
+    /// `LISTEN` and the reaper, each on its own fiber. A notification bumps `wakeGen`, which
+    /// `waitIdle` observes. Called once from the supervisor, during worker 0's init.
+    void startServices()
+    {
+        if (servicesStarted)
+            return;
+        servicesStarted = true;
+        spawn(() {
+            try
+                listen(() { wakeGen++; });
+            catch (Exception e)
+                logJobFailure("listen", e);
+        });
+        Duration period = leasePeriod;
+        spawn(() {
+            while (!stopping())
+            {
+                sleep(period);
+                if (stopping())
+                    return;
+                try
+                    reap();
+                catch (Exception e)
+                    logJobFailure("reap", e);
+            }
+        });
+    }
+
+    /// Returns when `listen` saw a notification, or when `maxWait` (at least 5 seconds) has passed.
+    /// The slice is 100 ms so a wake is noticed without another query.
+    void waitIdle(Duration maxWait)
+    {
+        if (maxWait < notifyFallback)
+            maxWait = notifyFallback;
+        immutable seen = wakeGen;
+        immutable end = MonoTime.currTime + maxWait;
+        while (!stopping() && wakeGen == seen)
+        {
+            Duration left = end - MonoTime.currTime;
+            if (left <= Duration.zero)
+                return;
+            sleep(left > 100.msecs ? 100.msecs : left);
+        }
     }
 
     /// Blocks on a connection that is not from the pool: `LISTEN`, then `awaitFd` on libpq's socket.

@@ -260,7 +260,14 @@ void testFraming()
     auto r3 = readUntil(fd, (string a) => a.endsWith("ok"));
     auto firstEnd = r3.indexOf("0\r\n\r\n");
     assert(firstEnd > 0 && r3.indexOf("HTTP/1.1 200 OK", firstEnd) > firstEnd, r3);
-    ok("chunked framing is byte-exact, keep-alive and pipelining work behind a stream");
+
+    // pipelined the other way round: the held-back response to /fast goes out before the stream's first event
+    tx(fd, "GET /fast HTTP/1.1\r\nHost: t\r\n\r\nGET /events HTTP/1.1\r\nHost: t\r\n\r\n");
+    auto r4 = readUntil(fd, (string a) => a.canFind("data: first"));
+    assert(r4.startsWith("HTTP/1.1 200 OK") && r4.indexOf("\r\n\r\nok") > 0
+        && r4.indexOf("text/event-stream") > r4.indexOf("\r\n\r\nok"), r4);
+    readUntil(fd, (string a) => a.endsWith("0\r\n\r\n")); // the rest of the stream, before the connection closes
+    ok("chunked framing is byte-exact, keep-alive and pipelining work behind a stream and before one");
 }
 
 void testHeadAndHttp10()

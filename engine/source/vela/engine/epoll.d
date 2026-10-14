@@ -114,8 +114,13 @@ private final class Conn : Item
     bool chunkDone;        /// the last chunk and the trailers were read
     ChunkedDecoder dec;
     size_t headLen, total; /// geometry of the current request (valid with haveHead)
+    uint headSerial;       /// counts the heads parsed on this connection (tells `parsedHead` whose head it holds)
     Worker worker;         /// while running/writing
     size_t sent;           /// bytes of worker.output already sent
+    ByteBuffer pending;    /// finished responses to pipelined requests, not sent yet (see `coalesce`); they go out first
+    size_t pendingOff;     /// bytes of `pending` already sent
+    bool pendingQueued;    /// in the loop's `pendingQ`
+    bool closeWhenSent;    /// an error response ended the connection: close once `pending` is out
     long deadlineMs;       /// loop's monotonic clock; 0 = no deadline
     bool fresh;            /// no request served yet (HTTP/2 prior knowledge only at the start)
     bool redirect;         /// accepted on the redirect port: answered by the engine, never the app
@@ -133,6 +138,8 @@ private final class Conn : Item
     bool tlsFatal;         /// the TLS session broke: close without close_notify
 
     this() nothrow @safe { super(Kind.conn); }
+
+    bool hasPending() const nothrow @nogc @safe => pendingOff < pending.length;
 }
 
 private final class WaitItem : Item
@@ -245,6 +252,11 @@ final class EpollLoop : EventLoop, Scheduler
     private char[160] tlsReason;
     private BufferPool pool;
     private HeaderField[maxHeaders] scratch;
+    // The head `parseHead` parsed last (its headers are in `scratch`) and whose it is; see `parsedHead`.
+    private Request head;
+    private Conn headOf;
+    private uint headSerial;
+    private const(ubyte)* headBase;
     private ByteBuffer errOut;
 
     private Conn[] conns; /// by fd
@@ -369,16 +381,19 @@ final class EpollLoop : EventLoop, Scheduler
             foreach (i; 0 .. (n < 0 ? 0 : n))
                 onEvent(cast(Item) evs[i].data.ptr, evs[i].events);
             drainResumeQ();
+            flushPendingQ();
             flushDead();
 
             fireTimers();
             drainResumeQ();
+            flushPendingQ();
             flushDead();
 
             if (nowMs >= nextSweepMs)
             {
                 sweep();
                 drainResumeQ();
+                flushPendingQ();
                 flushDead();
                 trimIfQuiet();
                 nextSweepMs = nowMs + sweepEveryMs;
@@ -530,6 +545,8 @@ final class EpollLoop : EventLoop, Scheduler
             c.chunked = c.chunkDone = false;
             c.headLen = c.total = c.sent = 0;
             c.worker = null;
+            clearPending(c);
+            c.closeWhenSent = false;
             c.fresh = true;
             c.h2 = null;
             c.h2Paused = false;
@@ -619,7 +636,7 @@ final class EpollLoop : EventLoop, Scheduler
                 case Phase.reading:
                     drive(c); // there may be a complete request before the FIN
                     if (c.fd >= 0 && c.phase == Phase.reading)
-                        closeConn(c);
+                        closeAfterSend(c);
                     break;
                 case Phase.closed:
                 case Phase.h2:
@@ -640,6 +657,8 @@ final class EpollLoop : EventLoop, Scheduler
                 drive(c);
             return;
         }
+        if ((events & EPOLLOUT) && c.phase == Phase.running && c.hasPending)
+            pushPending(c); // held-back responses that did not fit before the next request started
         if ((events & EPOLLOUT) && c.phase == Phase.writing)
         {
             trySend(c);
@@ -692,7 +711,8 @@ final class EpollLoop : EventLoop, Scheduler
                         answerRedirectPort(c);
                         break;
                     }
-                    if (cfg.http2 && !stopping && tryUpgrade(c))
+                    // (an upgrade behind held-back responses is served as HTTP/1.1: the 101 must not overtake them)
+                    if (cfg.http2 && !stopping && !c.hasPending && tryUpgrade(c))
                         return;
                     startRequest(c);
                     break; // back to the top: there may be another pipelined request
@@ -716,7 +736,16 @@ final class EpollLoop : EventLoop, Scheduler
         {
             if (c.buf.free_.length == 0)
             {
-                if (!pool.grow(c.buf, c.buf.mem.length + 1))
+                // Geometric growth: a chunked body (its size is not known up front) grew by one byte per read before,
+                // copying the whole body every time. Capped at what the limits allow for it.
+                size_t want = c.buf.mem.length * 2;
+                if (c.haveHead && c.chunked)
+                {
+                    immutable cap = c.headLen + cfg.limits.maxBodyBytes + cfg.limits.maxHeadBytes;
+                    if (want > cap)
+                        want = cap > c.buf.mem.length ? cap : c.buf.mem.length + 1;
+                }
+                if (!pool.grow(c.buf, want))
                 {
                     sendErrorAndClose(c, 431);
                     return false;
@@ -740,7 +769,7 @@ final class EpollLoop : EventLoop, Scheduler
             }
             if (r == 0)
             {
-                closeConn(c);
+                closeAfterSend(c); // the peer is done sending; the answers to what it sent before still go out
                 return false;
             }
             if (errno == EINTR)
@@ -762,8 +791,8 @@ final class EpollLoop : EventLoop, Scheduler
             return Step.needMore;
         if (!c.haveHead)
         {
-            Request tmp;
-            auto h = parseRequestHead(cast(const(char)[]) c.buf.data, tmp, scratch[], cfg.limits);
+            c.headSerial++;
+            immutable h = parseHead(c);
             if (h.status == ParseStatus.incomplete)
                 return Step.needMore;
             if (h.status == ParseStatus.error)
@@ -810,9 +839,7 @@ final class EpollLoop : EventLoop, Scheduler
         // The parser already refused (413/417) what is not worth receiving.
         if (!c.sent100 && (c.chunked ? !c.chunkDone : c.buf.len < c.total))
         {
-            Request tmp;
-            parseRequestHead(cast(const(char)[]) c.buf.data, tmp, scratch[], cfg.limits);
-            if (equalsIgnoreCase(tmp.header("expect"), "100-continue"))
+            if (equalsIgnoreCase(parsedHead(c).header("expect"), "100-continue"))
             {
                 c.sent100 = true;
                 sendRaw(c, "HTTP/1.1 100 Continue\r\n\r\n");
@@ -821,6 +848,30 @@ final class EpollLoop : EventLoop, Scheduler
         if (c.chunked)
             return c.chunkDone ? Step.ready : Step.needMore;
         return c.buf.len >= c.total ? Step.ready : Step.needMore;
+    }
+
+    /// Parses the head at the start of `c.buf` into `head` (headers in `scratch`) and remembers whose it is.
+    private HeadResult parseHead(Conn c)
+    {
+        head = Request.init;
+        headOf = null;
+        auto h = parseRequestHead(cast(const(char)[]) c.buf.data, head, scratch[], cfg.limits);
+        if (h.status == ParseStatus.complete)
+        {
+            headOf = c;
+            headSerial = c.headSerial;
+            headBase = c.buf.mem.ptr;
+        }
+        return h;
+    }
+
+    /// The parsed head of `c`'s current request (call only with `c.haveHead`). The head is parsed once per request:
+    /// this parses again only when another connection's head was parsed since, or a grow moved the buffer.
+    private ref Request parsedHead(Conn c) return
+    {
+        if (headOf !is c || headSerial != c.headSerial || headBase !is c.buf.mem.ptr)
+            parseHead(c);
+        return head;
     }
 
     // ------------------------------------------------------------------ request
@@ -834,14 +885,18 @@ final class EpollLoop : EventLoop, Scheduler
             errOut.clear();
             writeResponseHead(errOut, 503, null, 0, retry[], false);
             sendRaw(c, errOut.data);
-            closeConn(c);
+            closeAfterSend(c);
             return;
         }
         c.fresh = false;
         Worker w = acquireWorker();
-        // second parse, now into the fiber's own structures (parsing is cheap;
-        // the head stays alive while the fiber is suspended)
-        parseRequestHead(cast(const(char)[]) c.buf.data, w.req, w.store[], cfg.limits);
+        // the head moves into the fiber's own structures: the loop's are reused by the next connection, while the
+        // fiber may stay suspended
+        auto r = &parsedHead(c);
+        immutable n = r.headers.length;
+        w.store[0 .. n] = r.headers[];
+        w.req = *r;
+        w.req.headers = w.store[0 .. n];
         w.req.body = c.buf.mem[c.headLen .. c.total];
         w.req.peer = IpAddress.fromNetworkOrderV4(c.peerIp, c.peerPort);
         if (stopping)
@@ -1023,7 +1078,21 @@ final class EpollLoop : EventLoop, Scheduler
     private void sendFully(Worker w, const(char)* p, size_t len)
     {
         Conn c = w.conn;
+        if (c.hasPending)
+        {
+            // the responses to earlier pipelined requests go first (they are not this response's bytes: flushedAny
+            // stays as it is)
+            sendFrom(w, c.pending.data.ptr, c.pending.length, c.pendingOff, false);
+            clearPending(c);
+        }
         size_t off;
+        sendFrom(w, p, len, off, true);
+    }
+
+    /// Sends `p[off .. len]` from the fiber, waiting for the socket as needed; `off` follows the progress.
+    private void sendFrom(Worker w, const(char)* p, size_t len, ref size_t off, bool ours)
+    {
+        Conn c = w.conn;
         while (off < len)
         {
             if (w.cancelled)
@@ -1032,7 +1101,8 @@ final class EpollLoop : EventLoop, Scheduler
             if (n > 0)
             {
                 off += n;
-                w.flushedAny = true;
+                if (ours)
+                    w.flushedAny = true;
                 continue;
             }
             if (n < 0 && errno == EINTR)
@@ -1299,15 +1369,105 @@ final class EpollLoop : EventLoop, Scheduler
             w.output.put("Internal Server Error");
             w.closeAfter = true;
         }
+        if (coalesce(c, w))
+            return;
         c.phase = Phase.writing;
         c.sent = 0;
         c.deadlineMs = nowMs + cfg.writeTimeoutMs;
         trySend(c);
     }
 
+    /// Most bytes of answered pipelined requests held back for one send.
+    private enum maxCoalescedBytes = 16 << 10;
+
+    /// Pipelining: when the next request is already in the buffer, the response is not sent now but appended to
+    /// `c.pending`, so the responses to a batch of requests leave in one send instead of one each. `pendingQ` sends them
+    /// at the end of the event batch at the latest; anything that writes to the connection before that sends them
+    /// first, so the order on the wire is kept. Cleartext only: OpenSSL wants a retried write to repeat the same bytes.
+    private bool coalesce(Conn c, Worker w)
+    {
+        if (c.ssl !is null || c.buf.len <= c.total || !w.req.keepAlive || w.closeAfter || stopping
+            || c.pending.length - c.pendingOff + w.output.length > maxCoalescedBytes)
+            return false;
+        c.pending.put(w.output.data);
+        queuePending(c);
+        completeResponse(c);
+        return true;
+    }
+
+    private void queuePending(Conn c)
+    {
+        if (c.pendingQueued)
+            return;
+        c.pendingQueued = true;
+        pendingQ.push(c);
+    }
+
+    private Stack!Conn pendingQ;
+
+    /// Sends what `coalesce` held back, at the end of an event batch.
+    private void flushPendingQ()
+    {
+        while (!pendingQ.empty)
+        {
+            auto c = pendingQ.pop();
+            c.pendingQueued = false;
+            if (c.fd < 0 || !c.hasPending)
+                continue;
+            if (c.phase == Phase.reading)
+                startPendingSend(c);
+            else if (c.phase == Phase.running && !c.worker.waitingWrite)
+                pushPending(c); // the next request is suspended; whatever does not fit goes out with its response
+            // Phase.writing: trySend is already on it
+        }
+    }
+
+    /// Sends `c.pending` from the loop, as a response of its own: the connection reads again once it is out.
+    private void startPendingSend(Conn c)
+    {
+        c.phase = Phase.writing;
+        c.deadlineMs = nowMs + cfg.writeTimeoutMs;
+        trySend(c);
+    }
+
+    /// Sends `c.pending` without blocking: 1 = all of it is out, 0 = the socket is full, -1 = the connection broke.
+    private int pushPending(Conn c)
+    {
+        while (c.hasPending)
+        {
+            immutable n = ioSend(c, c.pending.data.ptr + c.pendingOff, c.pending.length - c.pendingOff);
+            if (n > 0)
+            {
+                c.pendingOff += n;
+                continue;
+            }
+            if (n < 0 && errno == EINTR)
+                continue;
+            return n < 0 && errno == EAGAIN ? 0 : -1;
+        }
+        clearPending(c);
+        return 1;
+    }
+
+    private static void clearPending(Conn c)
+    {
+        c.pending.clear();
+        c.pendingOff = 0;
+    }
+
+    /// Sends the response of `c.worker` -- or, without a worker, only what `coalesce` held back -- until EAGAIN.
     private void trySend(Conn c)
     {
+        immutable r = pushPending(c); // earlier responses first
+        if (r <= 0)
+        {
+            if (r < 0)
+                closeConn(c);
+            return; // 0: wait for the next EPOLLOUT
+        }
         auto w = c.worker;
+        if (w is null)
+            return completeResponse(c);
         auto data = w.output.data;
         while (c.sent < data.length)
         {
@@ -1330,6 +1490,17 @@ final class EpollLoop : EventLoop, Scheduler
     private void completeResponse(Conn c)
     {
         auto w = c.worker;
+        if (w is null)
+        {
+            // only held-back responses were being sent: the request in progress (if any) is still being read
+            if (c.closeWhenSent)
+                return closeConn(c);
+            c.phase = Phase.reading;
+            c.deadlineMs = nowMs + (c.buf.len ? cfg.headerTimeoutMs : cfg.idleTimeoutMs);
+            if (!c.buf.isNull && c.buf.len == 0)
+                pool.release(c.buf);
+            return;
+        }
         immutable keep = w.req.keepAlive && !w.closeAfter && !stopping;
         c.worker = null;
         releaseWorker(w);
@@ -1380,8 +1551,7 @@ final class EpollLoop : EventLoop, Scheduler
     /// the request never reaches the application.
     private void answerRedirectPort(Conn c)
     {
-        Request req;
-        parseRequestHead(cast(const(char)[]) c.buf.data, req, scratch[], cfg.limits);
+        const req = parsedHead(c);
         redirectsN++;
         errOut.clear();
         enum string acmePrefix = "/.well-known/acme-challenge/";
@@ -1609,8 +1779,7 @@ final class EpollLoop : EventLoop, Scheduler
     {
         if (c.ssl !is null)
             return false; // "h2c" means cleartext; over TLS the token is ignored (RFC 9113 §3.1)
-        Request tmp;
-        parseRequestHead(cast(const(char)[]) c.buf.data, tmp, scratch[], cfg.limits);
+        const tmp = parsedHead(c);
         const(char)[] settings;
         if (!wantsH2cUpgrade(tmp, settings))
             return false;
@@ -2201,6 +2370,14 @@ final class EpollLoop : EventLoop, Scheduler
 
     private void sendRaw(Conn c, const(char)[] data)
     {
+        if (c.hasPending)
+        {
+            // behind the held-back responses; what does not go out now is sent at the end of the batch
+            c.pending.put(data);
+            if (pushPending(c) == 0)
+                queuePending(c);
+            return;
+        }
         // error responses are short: one non-blocking send is enough
         ioSend(c, data.ptr, data.length);
     }
@@ -2210,6 +2387,18 @@ final class EpollLoop : EventLoop, Scheduler
         errOut.clear();
         writeResponseHead(errOut, status, null, 0, null, false);
         sendRaw(c, errOut.data);
+        closeAfterSend(c);
+    }
+
+    /// Closes `c`, but only once the responses `coalesce` held back are out (`writeTimeoutMs` at most): they answer
+    /// requests that came before the one that ends the connection.
+    private void closeAfterSend(Conn c)
+    {
+        if (c.fd >= 0 && c.hasPending && c.phase == Phase.reading)
+        {
+            c.closeWhenSent = true;
+            return startPendingSend(c);
+        }
         closeConn(c);
     }
 
@@ -2227,6 +2416,9 @@ final class EpollLoop : EventLoop, Scheduler
         conns[c.fd] = null;
         c.fd = -1;
         connCount--;
+        clearPending(c);
+        c.pending.shrinkTo(maxCoalescedBytes * 2); // a pooled Conn does not pin a peak
+        c.closeWhenSent = false;
         if (!c.buf.isNull)
             pool.release(c.buf);
         if (c.h2 !is null)
@@ -2321,7 +2513,8 @@ final class EpollLoop : EventLoop, Scheduler
         {
             if (c is null || c.fd < 0)
                 continue;
-            if (c.phase == Phase.handshake || (c.phase == Phase.reading && (c.buf.isNull || c.buf.len == 0)))
+            if (c.phase == Phase.handshake
+                || (c.phase == Phase.reading && (c.buf.isNull || c.buf.len == 0) && !c.hasPending))
                 closeConn(c);
             else if (c.phase == Phase.h2)
             {

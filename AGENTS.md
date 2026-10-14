@@ -70,7 +70,7 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 | `source/vela/` (`vela`) | `import vela;`, `server.d` (the only glue between web and engine), `staticfiles.d`. |
 | `examples/hello`, `examples/api` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI. |
 | `tests/` | `web/` (no network; helper modules in `web/support/`), `h2/` (HTTP/2 session), `net/` (real sockets), `db/` (needs Postgres), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
-| `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, and the helpers that start a throwaway Postgres / test upstream. |
+| `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, `bench.sh`, and the helpers that start a throwaway Postgres / test upstream. |
 | `docs/`, `README.md` | User-facing docs (quickstart, deploy, streaming, http2, tls, database, configuration). Keep them in sync with behavior; code blocks whose first line is `// check` are compiled by `tools/doc_examples.sh`. |
 | `.github/workflows/check.yml` | CI: DMD and LDC at the minimum and latest versions, strict mode; browser test and nightly fuzzing in their own jobs. |
 
@@ -84,6 +84,7 @@ tools/check.sh                 # full verification (DMD); DC=ldmd2 for LDC
 VELA_STRICT=1 tools/check.sh   # a skipped section fails the run (CI does this)
 VELA_ONLY="memory" tools/check.sh   # only the sections whose name contains the text
 tools/fuzz.sh [seconds] [parse|h2]  # libFuzzer + ASan on the HTTP/1 parser or the HTTP/2 session (needs LDC)
+tools/bench.sh [seconds]       # throughput (req/s) of one worker, with and without pipelining; for before/after, not a gate
 tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SPEC=/path); also run by check.sh
 ```
 
@@ -133,6 +134,14 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
   finish with `sendResponse`.
 - Request bodies: HTTP/1 chunked bodies are decoded in place by `ChunkedDecoder` (`tryParse`); the decoded body ends up right after
   the head and the next pipelined request right behind it, so `compact(c.total)` is unchanged.
+- Pipelining (cleartext HTTP/1.1): when the next request is already in the buffer, `coalesce` appends the finished response to
+  `Conn.pending` instead of sending it, so a batch of responses leaves in one send (16 KiB at most). `pendingQ` sends it at the end
+  of the event batch at the latest. **Every write to the connection sends `pending` first**: `trySend`, `sendFully` (from the
+  fiber), `sendRaw`; an error that closes the connection goes through `closeAfterSend`; an `Upgrade: h2c` behind held-back
+  responses is served as HTTP/1.1. A new place that writes to an HTTP/1 connection must keep that order.
+- The loop parses each head once: `parseHead` (in `tryParse`) fills the loop's `head`/`scratch`, and `parsedHead` hands it to
+  `startRequest`, `tryUpgrade`, the `Expect` check and the redirect port, parsing again only if another connection's head or a
+  grow came in between. Nothing else may write into `scratch`.
 
 ## HTTP/2 (read before touching `http/.../h2.d` or the h2 part of `epoll.d`)
 
@@ -192,6 +201,7 @@ require (response sink, memory model). Everything below still applies to those.
 
 ## Out of scope for now
 
-Performance work (M4: benchmarks, SIMD head search, GC tuning, `sendfile`), kqueue (M5) and io_uring (M6), streamed (unbuffered)
+The rest of the performance work (M4: SIMD head search, GC tuning, `sendfile`; the benchmark, single parse and pipelined-response
+coalescing are done, see `PLAN.md` Phase 8), kqueue (M5) and io_uring (M6), streamed (unbuffered)
 request bodies and multipart uploads, WebSockets, Range requests, serving the app in cleartext next to TLS, IPv6 listeners, OCSP
 stapling, response trailers (gRPC), streaming responses in the HTTP client. Do not start these unless asked.

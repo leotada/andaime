@@ -55,6 +55,7 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 - [Phase 5 — Missing basics](#phase-5--missing-basics)
 - [Phase 6 — Docs and AGENTS.md](#phase-6--docs-and-agentsmd)
 - [Phase 7 — Parked](#phase-7--parked-do-not-start-without-the-owner)
+- [Phase 8 — Performance](#phase-8--performance-m4-first-items)
 - [Open owner decisions](#open-owner-decisions-not-blocking)
 - [Appendix A — Evidence](#appendix-a--evidence-gathered-during-the-review)
 - [Appendix B — Definition of done](#appendix-b--definition-of-done-every-item)
@@ -1289,8 +1290,64 @@ and the main quickstart examples.
 - Process-per-core workers: revisit if GC contention shows up (see the measurement in Phase 2).
 - A separate concurrency limit for long-lived streams, instead of counting them in `maxInFlight`.
 - Streaming responses in the HTTP client (proxying an upstream LLM stream).
-- Everything already in `AGENTS.md`'s out-of-scope list: M4 performance, kqueue (M5), io_uring (M6), IPv6 listeners,
-  OCSP stapling, response trailers and gRPC.
+- Everything already in `AGENTS.md`'s out-of-scope list: the rest of M4 (see Phase 8), kqueue (M5), io_uring (M6), IPv6
+  listeners, OCSP stapling, response trailers and gRPC.
+
+## Phase 8 — Performance (M4, first items)
+
+Started on 2026-10-13 at the owner's request, after Phase 6. Only the HTTP/1.1 engine was touched; HTTP/2 and TLS stay frozen
+(D3).
+
+**Where the time goes (measured before any change).** One worker (LDC `-O3`, loopback, the client on other CPUs) served
+~90-100k requests per second with or without pipelining, pinned at 100% of one core: ~10 µs of CPU per request. In process,
+without sockets, the parser takes ~190 ns per head, `App.handle` plus `sendResponse` ~210 ns and the HTTP/1.1 head encoding
+~57 ns. So the web layer is about 5% of the cost; the rest is the engine and the kernel (one `read`, one `send`, a share of
+`epoll_wait`, two fiber switches). With 16 pipelined requests per connection it only reached ~120-130k: one `send` per
+response.
+
+### [x] 8.1 A throughput benchmark — S
+
+> **Done.** `tests/net/bench.d` (a small wrk: keep-alive connections over threads, each with its own epoll loop, optional
+> pipelining, latency percentiles), `tests/net/bench_serve.d` (`/plaintext`, `/json`, `/users/{id}` with a query parameter, a
+> header and an app middleware) and `tools/bench.sh` (pins the server to CPU 0 with `taskset`). Not part of `check.sh`: the
+> numbers are for before/after comparisons on one machine.
+
+### [x] 8.2 Send the responses to pipelined requests together — M
+
+> **Done.** `EpollLoop.coalesce`: when the next request is already in the buffer, the finished response is appended to
+> `Conn.pending` (16 KiB at most) instead of being sent; `pendingQ` sends it at the end of the event batch at the latest, and
+> every other write on the connection (`trySend`, `sendFully` from a streaming fiber, `sendRaw`) sends it first. An error that
+> closes the connection waits for it (`closeAfterSend`, also used on EOF, when the client half-closes after its batch); an
+> `Upgrade: h2c` behind held-back responses is served as HTTP/1.1. Cleartext only: OpenSSL wants a retried `SSL_write` to
+> repeat the same bytes. `tools/bench.sh`, HEAD and this change back to back: 16 pipelined requests per connection
+> **~124k -> ~444k requests per second** (3.6x); one request at a time ~91-93k -> ~95-97k (+3-5%, mostly 8.3). Tests:
+> `testCoalescedPipelining` in `tests/net/epoll_net.d` (order, a suspended request behind a held-back response, a malformed
+> request, half-close, `Expect: 100-continue`, a large response to a slow reader) and a stream behind a held-back response
+> in `tests/net/stream_net.d` (it fails if `sendFully` does not send `pending` first).
+
+### [x] 8.3 Parse each head once — S
+
+> **Done.** Every HTTP/1.1 request was parsed three times: in `tryParse`, in `tryUpgrade` (h2c is on by default) and in
+> `startRequest`, plus a fourth time for `Expect`. `parseHead` now remembers the result (`head`/`scratch`, keyed by connection,
+> a per-connection head counter and the buffer address) and `parsedHead` hands it out; `startRequest` copies it into the
+> fiber's own `Request`. About 0.4 µs per request: +3-5% without pipelining, within the noise of one run.
+
+### [x] 8.4 Found while doing 8.2: chunked uploads above 64 KiB were quadratic — S
+
+> **Done.** Above the largest buffer class (64 KiB) `fill` grew the read buffer by one byte when it was full, so a chunked body
+> (whose size is not known up front) was copied once per read: the 700 KB upload in `testChunkedUploads` hung `check.sh` for
+> minutes on HEAD too (5 runs out of 5 with `dmd -g`; it passed only when the timing was lucky). The buffer now doubles, capped at
+> `headLen + maxBodyBytes + maxHeadBytes`; the test asserts the upload takes under 3 s.
+
+### [ ] 8.5 Candidates, not started (measure with a profiler first)
+
+- `EPOLLOUT` is always in the interest set (edge-triggered): count the events per request and try adding it only after a send
+  hits `EAGAIN`.
+- The read buffer goes back to the pool after every response and is taken again for the next request.
+- `resume` reads the clock twice; `checkResponse` scans the headers once per vela-owned name (8 scans).
+- SIMD search for the end of the head, GC tuning, `sendfile` for static files (the rest of M4).
+- No profiler was available on the machine where 8.1-8.3 were done (`perf` missing): get one before going further, the
+  estimates above are guesses.
 
 ## Open owner decisions (not blocking)
 

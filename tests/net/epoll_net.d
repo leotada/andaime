@@ -363,6 +363,90 @@ void testKeepAliveAndPipelining()
     ok("pipelining with a handler suspended midway, order preserved");
 }
 
+/// The responses to pipelined requests are held back and sent together (EpollLoop.coalesce).
+void testCoalescedPipelining()
+{
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+    enum fastReq = "GET /fast HTTP/1.1\r\nHost: t\r\n\r\n";
+
+    // a batch: every response arrives, in order, the last one with a body read from the batch
+    auto c = dial(s.port);
+    string batch;
+    foreach (_; 0 .. 50)
+        batch ~= fastReq;
+    batch ~= "POST /echo HTTP/1.1\r\nHost: t\r\nContent-Length: 4\r\n\r\nlast";
+    c.tx(batch);
+    foreach (_; 0 .. 50)
+    {
+        auto r = c.rx();
+        assert(r.status == 200 && r.body == "ok", r.head);
+    }
+    assert(c.rx().body == "last");
+    c.hang();
+
+    // a held-back response does not wait for a request behind it that suspends
+    c = dial(s.port);
+    immutable t0 = MonoTime.currTime;
+    c.tx(fastReq ~ "GET /nap/300 HTTP/1.1\r\nHost: t\r\n\r\n");
+    assert(c.rx().body == "ok");
+    assert(MonoTime.currTime - t0 < 200.msecs, "a held-back response waited for the next request");
+    assert(c.rx().body == "slept");
+    c.hang();
+
+    // a malformed request behind good ones: their responses arrive first, then the 400, then the close
+    c = dial(s.port);
+    c.tx(fastReq ~ fastReq ~ "BROKEN\r\n\r\n");
+    assert(c.rx().body == "ok");
+    assert(c.rx().body == "ok");
+    auto r = c.rx();
+    assert(r.status == 400 && r.closed, r.head);
+    assert(c.rx().status == 0);
+    c.hang();
+
+    // the client half-closes right after its batch: every response arrives before the server closes
+    c = dial(s.port);
+    c.tx(fastReq ~ fastReq ~ fastReq);
+    shutdown(c.fd, SHUT_WR);
+    foreach (_; 0 .. 3)
+        assert(c.rx().body == "ok");
+    assert(c.rx().status == 0);
+    c.hang();
+    // ... also when the batch ends with an incomplete request (the server sees EOF in the middle of a head)
+    c = dial(s.port);
+    c.tx(fastReq ~ fastReq ~ "GET /fa");
+    shutdown(c.fd, SHUT_WR);
+    foreach (_; 0 .. 2)
+        assert(c.rx().body == "ok");
+    assert(c.rx().status == 0);
+    c.hang();
+
+    // Expect: 100-continue behind a held-back response: the response first, then the 100
+    c = dial(s.port);
+    c.tx(fastReq ~ "POST /len HTTP/1.1\r\nHost: t\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n");
+    assert(c.rx().body == "ok");
+    assert(c.rx().status == 100);
+    c.tx("hello");
+    assert(c.rx().body == "5");
+    c.hang();
+
+    // held-back responses ahead of a large one, to a client that is slow to read: all of it, in order
+    c = dial(s.port, 10_000);
+    batch = null;
+    foreach (_; 0 .. 20)
+        batch ~= fastReq;
+    batch ~= "GET /big HTTP/1.1\r\nHost: t\r\n\r\n" ~ fastReq;
+    c.tx(batch);
+    Thread.sleep(200.msecs);
+    foreach (_; 0 .. 20)
+        assert(c.rx().body == "ok");
+    r = c.rx();
+    assert(r.status == 200 && r.body.length == (8 << 20), r.head);
+    assert(c.rx().body == "ok");
+    c.hang();
+    ok("pipelined responses sent together: order, a suspended request, errors, half-close, 100-continue, a large body");
+}
+
 void testResponseHeaders()
 {
     import std.algorithm : canFind, count;
@@ -572,9 +656,12 @@ void testChunkedUploads()
     auto big = new char[700_000];
     foreach (i, ref x; big)
         x = cast(char)('a' + i % 23);
+    immutable t0 = MonoTime.currTime;
     c.tx(head ~ chunkify(big.idup, 16 << 10));
     r = c.rx();
     assert(r.status == 200 && r.body == big.idup, "a 700 KB chunked body arrives intact");
+    // the buffer grows geometrically (it once grew by one byte per read, copying the body each time: minutes)
+    assert(MonoTime.currTime - t0 < 3.seconds, "a 700 KB chunked upload took too long");
     c.hang();
 
     // Expect: 100-continue is answered before the chunks are sent
@@ -1041,6 +1128,7 @@ void main()
     configureOffload(2, 2);
     testBasic();
     testKeepAliveAndPipelining();
+    testCoalescedPipelining();
     testResponseHeaders();
     testChunkedUploads();
     testHandlerErrors();

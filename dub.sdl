@@ -9,5 +9,6 @@ dependency "vela:engine" version="*"
 subPackage "http"
 subPackage "web"
 subPackage "engine"
+subPackage "jobs"
 
 toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

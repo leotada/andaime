@@ -88,6 +88,27 @@ s_web() {
     return $rc
 }
 
+
+# -Ijobs/source stays on these commands only. The global I= must not grow it: the compile budget
+# type-checks examples/hello with the current -I list.
+s_jobs() {
+    local rc=0 t ji="-Ijobs/source"
+    for t in tests/jobs/*.d; do
+        if ! $DC -unittest -main $I $ji -i -run "$t" > /dev/null 2>&1; then
+            echo "FAILED: $t"
+            $DC -unittest -main $I $ji -i -run "$t" 2>&1 | tail -40
+            rc=1
+        fi
+    done
+    if ! $DC -unittest -main $I $ji -i -run jobs/source/vela/jobs/package.d > /dev/null 2>&1; then
+        echo "FAILED: jobs/source/vela/jobs/package.d"
+        $DC -unittest -main $I $ji -i -run jobs/source/vela/jobs/package.d 2>&1 | tail -40
+        rc=1
+    fi
+    echo "ok  $(ls tests/jobs/*.d | wc -l) files in tests/jobs"
+    return $rc
+}
+
 s_docs() {
     tools/doc_examples.sh
 }
@@ -128,6 +149,8 @@ s_net() {
     $DC $I -i -run tests/net/workers_net.d
     $DC $I -i -run tests/net/stream_net.d
     $DC $I -i -run tests/net/spawn_net.d
+    # jobs_worker_net.d imports vela.jobs; -Ijobs/source stays on this command only
+    $DC $I -Ijobs/source -i -run tests/net/jobs_worker_net.d
 }
 
 s_h2_net() {
@@ -333,12 +356,13 @@ s_dub() {
     dub build $dubc -q :http || rc=1
     dub build $dubc -q :web || rc=1
     dub build $dubc -q :engine || rc=1
+    dub build $dubc -q :jobs || rc=1
     (cd drivers/pg && dub build $dubc -q) || rc=1
     (cd examples/hello && dub build $dubc -q) || rc=1
     (cd examples/api && dub build $dubc -q) || rc=1
-    # the core must never import a driver
-    if grep -rn "import vela\.db" http web engine source --include=*.d; then
-        echo "FAILED: the core imports a driver (vela.db)"; rc=1
+    # the core must never import a driver; jobs depends on web and engine, not on vela-pg
+    if grep -rn "import vela\.db" http web engine source jobs --include=*.d; then
+        echo "FAILED: the core or vela:jobs imports a driver (vela.db)"; rc=1
     fi
     return $rc
 }
@@ -376,6 +400,7 @@ s_budget() {
 
 section "module unittests" s_unittests
 section "web-layer features (groups, locals, onError, CORS, static files, OpenAPI, middlewares)" s_web
+section "background jobs (memory store, retry, unique window)" s_jobs
 section "documentation examples compile (blocks marked // check)" s_docs
 section "OpenAPI document validity (openapi-spec-validator)" s_openapi
 section "HTTP parser: attack corpus and mutation fuzz" s_parser

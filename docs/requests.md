@@ -12,7 +12,7 @@ fails, the client gets a **422** listing every problem and the handler does not 
 | `string[] tag`, `int[] ids` | a repeated query key (`?tag=a&tag=b`); absent = empty list |
 | `JsonBody!T body_` | the JSON body, decoded into `T` |
 | `Query!T f` | a struct filled from the query string, field by field |
-| `Form!T f` | a struct filled from an `application/x-www-form-urlencoded` body |
+| `Form!T f` | a struct filled from an `application/x-www-form-urlencoded` or `multipart/form-data` body |
 | `Header!"Authorization" auth` | a header (case-insensitive name), copied into a `string` |
 | `Cookie!"session" s` | a cookie, copied into a `string` |
 | `Optional!X` | any of the above, present or not, without an error |
@@ -74,11 +74,62 @@ struct Filters
 }
 
 Page search(Query!Filters f) { ... }      // GET /search?q=boots&page_size=50&tag=a&tag=b
-string login(Form!Login f) { ... }        // POST, Content-Type: application/x-www-form-urlencoded (415 otherwise)
+string login(Form!Login f) { ... }        // POST, urlencoded or multipart text (415 otherwise)
 ```
 
 A field is a scalar, a text type, an `Optional` of those or a list of them. It is optional when it is an `Optional`, a list,
-marked `@optional`, or has an initializer other than the type's default. OpenAPI lists each field as its own parameter.
+marked `@optional`, or has an initializer other than the type's default. OpenAPI lists each query field as its own parameter.
+`Query!T` cannot hold a file.
+
+## File uploads
+
+A file is an `UploadedFile` field on `Form!T`. The body must then be `multipart/form-data` (415 otherwise). A form with no
+file fields accepts either urlencoded or multipart.
+
+```d
+// check
+@safe:
+
+import vela;
+
+struct Profile
+{
+    @minLength(1) string name;
+    @maxLength(512 * 1024) UploadedFile avatar; // required; maxLength is bytes
+    @optional UploadedFile banner;              // absent keeps the initial value
+    UploadedFile[] photos;                      // every part named "photos"; absent = empty
+}
+
+string save(Form!Profile f)
+{
+    if (f.banner.filename.length)
+        return f.banner.filename;
+    return f.name ~ ":" ~ f.avatar.filename;
+}
+
+void main()
+{
+    auto app = new App;
+    app.post!("/profile", save);
+}
+```
+
+- `filename` and `contentType` are copies. `contentType` is empty when the part sent none. `bytes` is a view into the
+  request buffer, like `ctx.request.body`: copy it (`.idup`) to keep it ([safety.md](safety.md)). `filename` is the name
+  the client sent (`filename*` in UTF-8 wins over `filename`), not a filesystem path.
+- The part name is the field's `@jsonKey`, or the field name. Unknown parts are ignored. A scalar takes the first part; a
+  list takes every part, in order. A part with no filename still fills an `UploadedFile` (`filename` is empty).
+- Urlencoded text is percent-decoded (`+` is a space). Multipart text is the raw part bytes, not percent-decoded. A file
+  part bound to a string field is those bytes, checked as UTF-8.
+- `@minLength` / `@maxLength` on one `UploadedFile` count bytes (422 `bytes_too_short` / `bytes_too_long`). On
+  `UploadedFile[]` they count files. `@inRange` does not apply to a file (compile error).
+- The whole body, files included, is buffered up to `limits.maxBodyBytes` (1 MiB by default; 413 above). A multipart body
+  is also limited to 128 parts, 8 KiB of headers per part, a name of 256 bytes and a filename of 1024. Over that, or any
+  other broken framing, is 400. A text part whose charset is not `utf-8` or `us-ascii` is 400; a file part keeps its
+  charset in `contentType` and is not decoded. Unbuffered request bodies are not implemented: raise `maxBodyBytes` for a
+  larger upload.
+- OpenAPI describes a file field as a string with `format: binary`. A form that has a file documents
+  `multipart/form-data` only; a text-only form documents both content types.
 
 ## Headers and cookies
 

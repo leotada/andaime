@@ -14,5 +14,5 @@ public import vela.web.openapi : OpenApiInfo, summary;
 public import vela.web.middleware;
 public import vela.web.stream : Stream, StreamWriter, EventStream, EventWriter, produces, sendResponse;
 public import vela.web.router : RouteError;
-public import vela.web.models : Query, Form;
+public import vela.web.models : Query, Form, UploadedFile;
 public import vela.web.cookies : cookie, setCookie, deleteCookie, CookieOptions, SameSite;

@@ -83,7 +83,7 @@ unittest
 
     // any other content type: 415 with a detail
     r = c.post("/login", `{"user":"ana"}`, hdr("Content-Type", "application/json"));
-    assert(r.status == 415 && r.body == `{"detail":"expected Content-Type: application/x-www-form-urlencoded"}`, r.body);
+    assert(r.status == 415 && r.body == `{"detail":"expected Content-Type: application/x-www-form-urlencoded or multipart/form-data"}`, r.body);
     assert(c.post("/login", "user=ana&password=x").status == 415, "no Content-Type at all");
     assert(c.post("/login", "user=ana", hdr("Content-Type", "application/x-www-form-urlencodedX")).status == 415);
 }
@@ -99,5 +99,7 @@ unittest
     assert(required == ["q": "yes", "page_size": "no", "sort": "no", "tag": "no", "exact": "no"], required.to!string);
     auto body_ = doc["paths"]["/login"]["post"]["requestBody"]["content"];
     assert("application/x-www-form-urlencoded" in body_.object);
+    assert("multipart/form-data" in body_.object);
     assert(body_["application/x-www-form-urlencoded"]["schema"]["$ref"].str == "#/components/schemas/Login");
+    assert(body_["multipart/form-data"]["schema"]["$ref"].str == "#/components/schemas/Login");
 }

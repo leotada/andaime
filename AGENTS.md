@@ -203,5 +203,5 @@ require (response sink, memory model). Everything below still applies to those.
 
 The rest of the performance work (M4: SIMD head search, GC tuning, `sendfile`; the benchmark, single parse and pipelined-response
 coalescing are done, see `PLAN.md` Phase 8), kqueue (M5) and io_uring (M6), streamed (unbuffered)
-request bodies and multipart uploads, WebSockets, Range requests, serving the app in cleartext next to TLS, IPv6 listeners, OCSP
+request bodies, WebSockets, Range requests, serving the app in cleartext next to TLS, IPv6 listeners, OCSP
 stapling, response trailers (gRPC), streaming responses in the HTTP client. Do not start these unless asked.

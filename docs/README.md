@@ -9,7 +9,7 @@ things up.
 |------|----------------|
 | [Getting started](getting-started.md) | Install, the first route, a CRUD with JSON, a first test |
 | [Routing](routing.md) | Methods, path parameters, groups, controllers, 404/405, trailing slashes |
-| [Reading the request](requests.md) | Path, query, JSON body, query/form models, headers, cookies, `Optional`, client IP, your own types |
+| [Reading the request](requests.md) | Path, query, JSON body, query/form models, file uploads, headers, cookies, `Optional`, client IP, your own types |
 | [Validation and errors](validation.md) | Validation attributes, the 422 format and its error codes, other error statuses |
 | [Responses](responses.md) | Return types, status codes, JSON, `Response`, headers, cookies |
 | [Middleware and error handling](middleware.md) | Writing middleware, order, `Local!T`, access log, request id, CORS, `onError` |

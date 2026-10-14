@@ -6,7 +6,7 @@ Put them on the fields of a DTO (JSON body, `Query!T`, `Form!T`):
 
 | Attribute | On | Meaning |
 |-----------|----|---------|
-| `@minLength(n)`, `@maxLength(n)` | strings, arrays | length bounds; strings count characters (code points), not bytes |
+| `@minLength(n)`, `@maxLength(n)` | strings, arrays, `UploadedFile` | length bounds; strings count characters (code points), arrays count items, one file counts bytes |
 | `@inRange(min, max)` | numbers | inclusive bounds |
 | `@optional` | any field | may be absent (the field keeps its initial value) |
 | `@jsonKey("name")` | any field | the external name in JSON, query and form |
@@ -55,6 +55,7 @@ Conversion and validation errors become one **422** in FastAPI's (Pydantic v2's)
 | `string_type`, `list_type`, `model_type`, `dict_type` | wrong JSON type (expected a string, array, object, map) |
 | `string_too_short`, `string_too_long` | `@minLength` / `@maxLength` on a string |
 | `too_short`, `too_long` | `@minLength` / `@maxLength` on an array |
+| `bytes_too_short`, `bytes_too_long` | `@minLength` / `@maxLength` on one `UploadedFile` |
 | `greater_than_equal`, `less_than_equal` | outside `@inRange` |
 | `value_error` | one of [your text types](requests.md#your-own-types-uuids-dates-money) refused the value |
 | `json_invalid` | the body is not valid JSON |
@@ -70,7 +71,7 @@ Conversion and validation errors become one **422** in FastAPI's (Pydantic v2's)
 | 404, 405 | no route; route exists for other methods ([routing.md](routing.md)) |
 | 413 | body above `limits.maxBodyBytes` (1 MiB by default) |
 | 414 | request target above `limits.maxTargetBytes` (4 KiB) |
-| 415 | `Form!T` without `application/x-www-form-urlencoded` |
+| 415 | `Form!T` with a content type it does not accept (urlencoded or multipart for text; multipart only when a field is `UploadedFile`) |
 | 431 | request head above `limits.maxHeadBytes` (8 KiB) |
 | 500 | an uncaught exception, an invalid response header, a missing `Local!T` |
 | 503 | the worker is at `maxInFlight`; sent with `Retry-After` |

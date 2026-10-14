@@ -1,8 +1,9 @@
 # vela
 
 A micro web framework for D with FastAPI-style ergonomics: **the function signature is the HTTP contract**. Path, query,
-headers, cookies and JSON bodies are extracted and validated from the parameter types and names, by code generated at compile
-time. Bad input is a 422 before your handler runs, and the OpenAPI document comes from the same signatures.
+headers, cookies, JSON and form bodies (including file uploads) are extracted and validated from the parameter types and
+names, by code generated at compile time. Bad input is a 422 before your handler runs, and the OpenAPI document comes from
+the same signatures.
 
 ```d
 // check
@@ -155,7 +156,7 @@ HTTPS, streaming, the PostgreSQL driver and the HTTP client.
 Not supported yet:
 
 - Linux only for the real server (epoll); elsewhere `serve` runs a blocking development server.
-- WebSockets, `multipart/form-data` uploads, streamed request bodies (bodies are buffered up to `limits.maxBodyBytes`, 1 MiB
+- WebSockets, streamed request bodies (bodies, including multipart uploads, are buffered up to `limits.maxBodyBytes`, 1 MiB
   by default), Range requests.
 - Response trailers, so no gRPC; HTTP/2 server push and priorities.
 - IPv6 listeners, OCSP stapling, kqueue/io_uring backends.

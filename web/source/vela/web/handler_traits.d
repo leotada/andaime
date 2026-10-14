@@ -26,7 +26,7 @@ import vela.http.utf8 : validUtf8;
 import vela.web.convert;
 import vela.web.json;
 import vela.web.cookies : cookie;
-import vela.web.models : Query, Form, isQueryModel, isFormModel, bindModel, modelError;
+import vela.web.models : Query, Form, isQueryModel, isFormModel, bindModel, bindFormBody, modelError;
 import vela.web.stream : Stream, EventStream, isStreamReturn, runStream;
 
 // =====================================================================
@@ -173,7 +173,7 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
                         bodies++;
                         if (method == Method.GET || method == Method.HEAD)
                             return head ~ bad ~ "is a Form, but " ~ methodName(method) ~ " has no body; use POST, PUT or PATCH";
-                        enum merr = modelError!(typeof(T.value));
+                        enum merr = modelError!(typeof(T.value), true);
                         static if (merr.length)
                             return head ~ bad ~ "is Form!" ~ typeof(T.value).stringof ~ ": " ~ merr;
                     }
@@ -285,7 +285,7 @@ void dispatch(Method method, string path, alias fn, Self...)(Context ctx, Self s
             else static if (isQueryModel!T)
                 bindModel(ctx, "query", ctx.request.query, args[i].value);
             else static if (isFormModel!T)
-                bindForm(ctx, args[i].value);
+                bindFormBody(ctx, args[i].value);
             else static if (is(T == JsonBody!U, U))
                 bindBody(ctx, args[i].value);
             else static if (is(T == Cookie!c, string c))
@@ -436,17 +436,6 @@ private bool bindListItem(T)(Context ctx, const(char)[] raw, string name, size_t
         return false;
     }
     return true;
-}
-
-/// A form body: `application/x-www-form-urlencoded` only, anything else is a 415.
-private void bindForm(T)(Context ctx, ref T dest)
-{
-    enum wanted = "application/x-www-form-urlencoded";
-    auto ct = ctx.request.header("content-type");
-    if (ct.length < wanted.length || !equalsIgnoreCase(ct[0 .. wanted.length], wanted)
-        || (ct.length > wanted.length && ct[wanted.length] != ';' && ct[wanted.length] != ' '))
-        throw new HttpError(415, "expected Content-Type: application/x-www-form-urlencoded");
-    bindModel(ctx, "body", cast(const(char)[]) ctx.request.body, dest);
 }
 
 private bool bindBody(T)(Context ctx, ref T dest)

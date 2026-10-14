@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Real browser against vela (Chromium through Playwright): loads a page over HTTPS with 26 static
 assets and three API calls, checks the protocol Chromium negotiated for every resource (h2 by
-default, http/1.1 with HTTP/2 disabled), follows the redirect from the cleartext port, and checks a
-2 MiB script arrives intact. Usage: browser_test.py <server binary>. Prints "skip: <reason>" and exits 77
+default, http/1.1 with HTTP/2 disabled), follows the redirect from the cleartext port, checks a
+2 MiB script arrives intact, and opens a wss:// WebSocket (echo, 140 KB message, permessage-deflate). Usage: browser_test.py <server binary>. Prints "skip: <reason>" and exits 77
 when Playwright or Chromium is not available."""
 import os
 import socket
@@ -89,6 +89,11 @@ try:
             fail("%s: the handler saw %s" % (label, result["proto"]))
         if not result["bigOk"]:
             fail("%s: the 2 MiB script did not run" % label)
+        ws = result["ws"]
+        if ws["echo"] != "hello from the browser" or not ws["bigOk"] or ws["code"] != 1000:
+            fail("%s: WebSocket -> %s" % (label, ws))
+        if not ws["extensions"].startswith("permessage-deflate"):
+            fail("%s: WebSocket not compressed (extensions %r)" % (label, ws["extensions"]))
 
     with sync_playwright() as p:
         try:
@@ -104,7 +109,8 @@ try:
         check_result(result, failed, "h2", "HTTP/2")
         if len(protos) < 29 or any(x != "h2" for x in protos):
             fail("expected h2 for every resource, got %s" % protos)
-        print("ok  Chromium %s over HTTPS: page, 26 assets (2 MiB script) and 3 API calls, all h2" % version)
+        print("ok  Chromium %s over HTTPS: page, 26 assets (2 MiB script) and 3 API calls, all h2; a wss WebSocket "
+              "with permessage-deflate" % version)
 
         _, result, protos, failed, final = load(browser, "http://localhost:%d/" % rport)
         if final != "https://localhost:%d/" % port:

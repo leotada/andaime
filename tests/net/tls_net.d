@@ -68,9 +68,26 @@ string proto(Context c) => c.request.protocol == Protocol.http2 ? "h2" : "http/1
 
 string myIp(ClientIp ip) => ip.toString;
 
+WebSocket wsEcho()
+{
+    auto w = WebSocket((scope WsConn ws) @system {
+        foreach (m; ws)
+        {
+            if (m.isText)
+                ws.send(m.text);
+            else
+                ws.sendBinary(m.data);
+        }
+    });
+    w.compression = true;
+    w.maxMessageBytes = 8 << 20;
+    return w;
+}
+
 App buildApp()
 {
     auto app = new App;
+    app.ws!("/ws", wsEcho);
     app.get!("/fast", fast);
     app.get!("/nap/{ms}", nap);
     app.get!("/cancel", cancelMe);
@@ -945,6 +962,36 @@ void testManyConnections()
     ok("100 TLS connections (half h2, half HTTP/1.1) with requests in flight at once, all recycled");
 }
 
+void testWebSocketOverTls()
+{
+    auto s = start(ServerConfig.init);
+    scope (exit) stop(s);
+    HttpClientConfig cc;
+    cc.caFile = dir ~ "/a.pem"; // the self-signed test certificate
+    httpClient(cc);
+    foreach (compression; [false, true])
+    {
+        WsClientOptions opts;
+        opts.compression = compression;
+        opts.maxMessageBytes = 8 << 20;
+        auto ws = wsConnect("wss://localhost:" ~ s.port.to!string ~ "/ws", null, opts);
+        ws.send("over TLS");
+        assert(ws.receive().text == "over TLS");
+        // several MiB: many TLS records each way, partial writes on both sides
+        auto big = new ubyte[3 << 20];
+        foreach (i, ref b; big)
+            b = cast(ubyte)(i * 13 + (i >> 11));
+        ws.sendBinary(big);
+        auto m = ws.receive();
+        assert(m.isBinary && m.data == big, "3 MiB over wss");
+        ws.close(1000);
+        assert(ws.receive().closeCode == 1000);
+        ws.disconnect();
+    }
+    assert(waitFor(() => s.loop.stats().webSockets == 0, 2000));
+    ok("WebSocket over TLS (wss): echo, 3 MiB both ways, with and without permessage-deflate, close handshake");
+}
+
 void main()
 {
     import std.file : tempDir, mkdirRecurse, rmdirRecurse;
@@ -976,5 +1023,6 @@ void main()
     testRedirectPort();
     testLogging();
     testManyConnections();
+    testWebSocketOverTls();
     printf("all TLS network tests passed\n");
 }

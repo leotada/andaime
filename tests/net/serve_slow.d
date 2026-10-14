@@ -28,6 +28,15 @@ string slow()
     return "ok";
 }
 
+/// An echo that stays open: the memory test holds 1,000 of them at once.
+WebSocket wsEcho()
+{
+    return WebSocket((scope WsConn c) @system {
+        foreach (m; c)
+            c.send(m.text);
+    });
+}
+
 @system:
 
 void main(string[] args)
@@ -50,6 +59,7 @@ void main(string[] args)
         auto app = new App;
         app.get!("/slow", slow);
         app.post!("/len", bodyLen);
+        app.ws!("/ws", wsEcho);
         return app;
     }, cfg);
 }

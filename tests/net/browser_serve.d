@@ -42,11 +42,31 @@ Response page() => Response.html(`<!doctype html>
     body: JSON.stringify({name: 'from the browser'})});
   const made = await created.json();
   const proto = await (await fetch('/api/proto')).text();
-  window.result = {item, status: created.status, made, proto, bigOk: window.bigOk === true};
+  // a WebSocket next to the page (Chromium opens it on its own HTTP/1.1 connection), compressed
+  const ws = await new Promise((ok, fail) => {
+    const s = new WebSocket('wss://' + location.host + '/api/ws');
+    const big = 'chunk of text '.repeat(10000);
+    const got = [];
+    s.onopen = () => { s.send('hello from the browser'); s.send(big); };
+    s.onmessage = e => { got.push(e.data); if (got.length == 2) s.close(1000, 'done'); };
+    s.onclose = e => ok({echo: got[0], bigOk: got[1] === big, extensions: s.extensions, code: e.code});
+    s.onerror = () => fail(new Error('WebSocket error'));
+  });
+  window.result = {item, status: created.status, made, proto, bigOk: window.bigOk === true, ws};
   document.getElementById('title').textContent = 'done';
 })().catch(e => { window.result = {error: String(e)}; });
 </script>
 </body></html>`);
+
+WebSocket echo()
+{
+    auto w = WebSocket((scope WsConn ws) @system {
+        foreach (m; ws)
+            ws.send(m.text);
+    });
+    w.compression = true;
+    return w;
+}
 
 string idToString(long id)
 {
@@ -73,6 +93,7 @@ void main(string[] args) @system
         app.get!("/api/items/{id}", getItem);
         app.post!("/api/items", createItem);
         app.get!("/api/proto", proto);
+        app.ws!("/api/ws", echo);
         app.serveStatic("/static", staticDir);
         return app;
     }, cfg);

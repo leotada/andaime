@@ -62,8 +62,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libpq5 libssl3 openssl curl python3 python3-h2
 
-      - name: OpenAPI validator
-        run: pip install --user --break-system-packages openapi-spec-validator
+      - name: OpenAPI validator and the WebSocket interop client
+        # (Ubuntu's python3-websockets is 10.x; tools/ws_interop.sh needs the asyncio API of 13+)
+        run: pip install --user --break-system-packages openapi-spec-validator 'websockets>=13'
 
       - name: h2spec
         run: |
@@ -116,7 +117,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [parse, h2]
+        target: [parse, h2, ws]
     steps:
       - uses: actions/checkout@v4
       - uses: dlang-community/setup-dlang@v2

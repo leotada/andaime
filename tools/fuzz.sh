@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fuzzing with libFuzzer + AddressSanitizer (needs LDC).
-# Usage: tools/fuzz.sh [seconds] [parse|h2]   (default: 60 s, the HTTP/1 parser).
+# Usage: tools/fuzz.sh [seconds] [parse|h2|ws]   (default: 60 s, the HTTP/1 parser; ws: the WebSocket message layer).
 # Findings go to tests/fuzz/crashes/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -21,8 +21,14 @@ case "$target" in
         extra="-detect_leaks=0"
         leaks="detect_leaks=0:"
         maxlen=32768 ;;
+    ws)
+        # the target starts druntime itself (rt_init), whose module-constructor sorting keeps ~100 bytes of malloc that
+        # LeakSanitizer reports at exit; the WebSocket code itself allocates only on the GC heap
+        extra="-detect_leaks=0"
+        leaks="detect_leaks=0:"
+        maxlen=16384 ;;
     *)
-        echo "unknown target: $target (parse or h2)"; exit 2 ;;
+        echo "unknown target: $target (parse, h2 or ws)"; exit 2 ;;
 esac
 ldmd2 -g -Ihttp/source -Itests/fuzz -i -fsanitize=fuzzer,address -of"/tmp/vela_fuzz_$target" "tests/fuzz/libfuzzer_$target.d"
 cd tests/fuzz/crashes

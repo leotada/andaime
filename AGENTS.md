@@ -24,7 +24,7 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 - Prefer shallow constructs (`static foreach`, `static if`) over deep recursive templates.
 - Every invalid handler signature must produce a **one-line `static assert` message** that says exactly what to fix
   (see `handlerError` in `web/source/vela/web/handler_traits.d`). Add a case to `tests/compile_fail/` when you add a rule.
-- Error messages from the library start with `vela:` (`vela.db:`, `vela.http:` for the drivers/client).
+- Error messages from the library start with `vela:` (`vela.db:`, `vela.http:`, `vela.jobs:` for the drivers, the client and jobs).
 - Use only one import of a name per module (a private selective import next to a `public import` of the same name made
   `is(T == X!U, U)` false on DMD 2.109).
 - Never use `pkill -f` with a pattern that appears in your own command line.
@@ -66,16 +66,20 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 | `http/` (`vela:http`) | HTTP types, `Optional`, text types, IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64. No I/O. |
 | `web/` (`vela:web`) | `App`, `Group`, router, handler introspection, JSON, OpenAPI, CORS, cookies, streaming, WebSocket routes, models, middleware, `TestClient`. No sockets. |
 | `engine/` (`vela:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload`, HTTP/HTTPS client, WebSocket client (`wsclient.d`), OpenSSL (dlopen, `tls.d`), zlib (dlopen, `zlib.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
+| `jobs/` (`vela:jobs`) | Background jobs: `@Job` / `perform`, in-memory and test queues, cron, `--role` and `--queues`. Depends on `vela:web` and `vela:engine`. The root package does not depend on it. |
 | `drivers/pg/` (`vela-pg`) | PostgreSQL driver over async libpq (dlopen). **Independent package; the core must never depend on it.** |
+| `drivers/pgjobs/` (`vela-pg-jobs`) | Postgres `JobStore` (`PgJobStore`): `SKIP LOCKED` claims, `LISTEN`/`NOTIFY`, a lease reaper, one cron slot across processes. Depends on `vela:jobs` and `vela-pg`. |
 | `source/vela/` (`vela`) | `import vela;`, `server.d` (the only glue between web and engine), `staticfiles.d`. |
 | `examples/hello`, `examples/api` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI. |
-| `tests/` | `web/` (no network; helper modules in `web/support/`), `h2/` (HTTP/2 session), `net/` (real sockets), `db/` (needs Postgres), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
+| `tests/` | `web/` (no network; helper modules in `web/support/`), `jobs/` (no network), `h2/` (HTTP/2 session), `net/` (real sockets), `db/` (needs Postgres), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
 | `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `ws_interop.sh` (python `websockets`), `proxy_interop.sh` (behind Caddy over h2c), `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, `bench.sh`, and the helpers that start a throwaway Postgres / test upstream. |
-| `docs/`, `README.md` | User-facing docs: `docs/README.md` is the index (guides: getting-started, routing, requests, validation, responses, middleware, streaming, websocket, static files/OpenAPI, concurrency, database, http-client, testing, safety; reference: deploy, tls, http2, configuration). Keep them in sync with behavior; code blocks whose first line is `// check` are compiled by `tools/doc_examples.sh`. Contributor material goes in `CONTRIBUTING.md`, not the README. |
+| `docs/`, `README.md` | User-facing docs: `docs/README.md` is the index (guides: getting-started, routing, requests, validation, responses, middleware, streaming, websocket, static files/OpenAPI, concurrency, database, jobs and cron, http-client, testing, safety; reference: deploy, tls, http2, configuration). Keep them in sync with behavior; code blocks whose first line is `// check` are compiled by `tools/doc_examples.sh`. Contributor material goes in `CONTRIBUTING.md`, not the README. |
 | `.github/workflows/check.yml` | CI: DMD and LDC at the minimum and latest versions, strict mode; browser test and nightly fuzzing in their own jobs. |
 
-Dependency direction: `http` <- `web`, `http` <- `engine` <- `drivers/*`; `source/vela/server.d` is the only module that knows both
-`web` and `engine`. Do not introduce a dependency from the core to any driver.
+Dependency direction: `http` <- `web`, `http` <- `engine` <- `drivers/pg`. `jobs` depends on `web` and `engine`, not on `pg`.
+`drivers/pgjobs` depends on `jobs` and `vela-pg`. The root `vela` package does not depend on `jobs`. `web` does not depend on
+`engine`. `source/vela/server.d` is the only module that knows both `web` and `engine`. Do not introduce a dependency from the
+core to any driver.
 
 ## Commands and the definition of done
 
@@ -113,6 +117,24 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
   App); an `Error` (RangeError, AssertError...) also gets a 500, a full trace in the log (5 per second per worker, the rest
   counted), and the fiber is retired (`LoopStats.fibersPoisoned`): after an `Error`, cleanup may not have run. A fiber stack
   overflow is a SIGSEGV that kills the process; `onCrash` in `epoll.d` prints which request was running first.
+
+## Background jobs (read before touching `jobs/` or `drivers/pgjobs/`)
+
+- `perform` is `@safe`. A missing `perform`, an `@system` `perform`, a payload `writeJson` cannot encode, or a bad `@Cron` is one
+  line from `jobError`, asserted by `JobSet`. Cover a new rule with `tests/compile_fail/job_*.d` (`// FLAGS: -Ijobs/source`).
+- I/O that waits (`sleep`, `awaitFd`, the Postgres driver, the HTTP client) runs on the fiber. CPU-heavy work and blocking C go
+  through `@Offload` or `offload`.
+- A Postgres claim is `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)` and that transaction commits before `perform`.
+  Do not hold the row lock across the work.
+- Cron dedupe across processes is `INSERT ... ON CONFLICT` on `(job_name, scheduled_slot)` in `vela_cron_executions`
+  (`claimCronSlot`). Only the insert that wins enqueues.
+- Shutdown stops calling `claimBatch`. `release` returns an in-flight row to `retryable` without spending the attempt: a claimed
+  row not yet run, `RequestCancelled` inside `perform`, and an `Error`.
+- The cron parser (`cronError`, `parseCron`) is `@safe pure nothrow @nogc`. Keep it that way.
+- `InMemoryJobStore` is one thread. `runJobs` forces `workers = 1` by default. Several cores or processes use `PgJobStore`, one
+  store per worker thread, and only worker 0 consumes. Queue concurrency is that worker's fiber count, not per core.
+  `WorkerHooks.extra` runs on worker 0 before the loop polls: `spawn` from there, and do not call `sleep` or `awaitFd` in `extra`
+  itself.
 
 ## The response contract (read before touching `engine/`, `server.d` or `web/.../stream.d`)
 
@@ -238,6 +260,8 @@ Everything below still applies to those.
 
 - **A new handler parameter kind**: add the wrapper in `web/.../params.d`, bind it in `handler_traits.d` (dispatch and `handlerError`),
   describe it in `openapi.d`, and add tests in `tests/web/` plus a `tests/compile_fail/` case for its misuse.
+- **A new job rule**: extend `jobError` in `jobs/source/vela/jobs/job.d` with one `vela.jobs:` line, and add
+  `tests/compile_fail/job_*.d` (`// FLAGS: -Ijobs/source`).
 - **A new driver** (MySQL, Redis...): a new package under `drivers/`, depending only on `vela:engine`, using `awaitFd`/`offload`;
   load native libraries at run time (dlopen) so the framework still builds without them.
 - **A new event-loop backend** (kqueue, io_uring): implement the `EventLoop` interface in `engine/source/vela/engine/loop.d`.

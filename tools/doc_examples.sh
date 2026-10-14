@@ -5,7 +5,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DC="${DC:-dmd}"
-I="-Isource -Ihttp/source -Iweb/source -Iengine/source -Idrivers/pg/source"
+I="-Isource -Ihttp/source -Iweb/source -Iengine/source -Idrivers/pg/source -Ijobs/source"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 

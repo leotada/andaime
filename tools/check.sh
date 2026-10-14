@@ -275,11 +275,14 @@ s_memory_uploads() {
 s_compile_fail() {
     local rc=0 f expect flags out errlines
     # Newer DMD prints source context by default and has -verrors=simple to turn it off; older DMD rejects the
-    # switch (and prints no context anyway).
-    local errflag=""
+    # switch (and prints no context anyway). LDC (ldc2 and ldmd2) uses --verrors-context=false; some LDC builds show
+    # the context by default.
+    local errflag="" f2
     local probe; probe=$(mktemp -d)
     echo 'void main() {}' > "$probe/ok.d"
-    if $DC -verrors=simple -o- -c "$probe/ok.d" > /dev/null 2>&1; then errflag="-verrors=simple"; fi
+    for f2 in -verrors=simple --verrors-context=false; do
+        if $DC $f2 -o- -c "$probe/ok.d" > /dev/null 2>&1; then errflag=$f2; break; fi
+    done
     rm -rf "$probe"
     for f in tests/compile_fail/*.d; do
         expect=$(sed -n 's#^// EXPECT: ##p' "$f")

@@ -80,7 +80,9 @@ jobs:
           echo "CADDY=$RUNNER_TEMP/caddy" >> "$GITHUB_ENV"
 
       - name: tools/check.sh
-        run: tools/check.sh
+        # setup-dlang overrides DC with the compiler's own driver (ldc2 for LDC); $DMD is the DMD-style one (ldmd2),
+        # which is what check.sh expects
+        run: DC="${DMD:-$DC}" tools/check.sh
 
   # The real-browser test needs Chromium (a large download), so it has its own job: weekly and on demand.
   browser:

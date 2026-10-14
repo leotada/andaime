@@ -136,8 +136,34 @@ interface JobStore
 
     /// `running` -> `retryable`, and the attempt `claimBatch` added is given back.
     /// `runAtUs` stays as it was, so a job that was due is due again under the same attempt number.
-    /// Shutdown, a lease reaper and a poisoned fiber use this. The run is not a failed attempt.
+    /// Shutdown and a poisoned fiber use this. The run is not a failed attempt.
     void release(long id);
+}
+
+/// What a durable store adds to the in-memory queue: one cron slot across processes, a wake
+/// instead of a poll, and the fibers that listen and reap. `InMemoryJobStore` does not implement
+/// this. The supervisor checks with `cast(JobRuntime)`.
+interface JobRuntime
+{
+    /// True when this process may enqueue that cron slot. False when another process already inserted it.
+    bool claimCron(string jobName, long slotStdTime);
+
+    /// Starts the store's own fibers (listen, reaper). Called once on worker 0, during init.
+    /// `spawn` from here is queued until the loop polls. Do not `sleep` or `awaitFd` in this call.
+    void startServices();
+
+    /// After an empty claim: return when a job may be waiting, or when `maxWait` has passed.
+    void waitIdle(Duration maxWait);
+}
+
+/// One line on stderr. The consumer and the cron fiber log and keep running.
+void logJobFailure(string where, Exception e) @trusted
+{
+    // sound: stderr only; both strings are read for this call and not kept
+    import core.stdc.stdio : fprintf, stderr;
+
+    fprintf(stderr, "vela.jobs: %.*s: %.*s\n", cast(int) where.length, where.ptr,
+        cast(int) e.msg.length, e.msg.ptr);
 }
 
 // =====================================================================

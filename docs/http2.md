@@ -22,6 +22,7 @@ cfg.http2 = true;               // default; false = HTTP/1.1 only
 cfg.http2MaxStreams = 100;      // SETTINGS_MAX_CONCURRENT_STREAMS per connection
 cfg.http2StreamWindowBytes = 256 << 10;   // per-stream receive window: upload throughput per stream
 cfg.http2ConnectionWindowBytes = 1 << 20; // connection receive window: request bodies in flight
+cfg.http2WebSockets = true;     // default; WebSockets as streams (RFC 8441), see websocket.md
 ```
 
 The windows only limit upload throughput: request bodies are buffered whole either way (up to `maxBodyBytes`), so memory does
@@ -49,6 +50,9 @@ Browsers only speak HTTP/2 over TLS: use h2c service to service, or behind a pro
   cancels only that handler, and closing the connection cancels all of them.
 - Streamed responses ([streaming.md](streaming.md)) are DATA frames under flow control; a stalled stream suspends only its own
   handler.
+- WebSockets (RFC 8441): vela announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`, and a `CONNECT` with `:protocol websocket` reaches
+  the `ws!` route of its `:path` as a GET; the stream then carries the WebSocket both ways, under the same flow control
+  ([websocket.md](websocket.md#http2)). Other `:protocol` values get 501, a plain `CONNECT` (a proxy tunnel) too.
 - Graceful stop sends `GOAWAY`; streams already accepted finish first (those still open after `shutdownGraceMs` are cancelled).
   Idle connections get `GOAWAY` after `idleTimeoutMs`.
 - Limits are the same as HTTP/1.1 (`Limits`: header list, `:path`, body) and answer with the same statuses (431, 414, 413).
@@ -65,9 +69,11 @@ Browsers only speak HTTP/2 over TLS: use h2c service to service, or behind a pro
 [h2spec](https://github.com/summerwind/h2spec) passes all 146 cases over TLS and 145 in cleartext. The remaining one (3.5/2, an
 invalid preface) cannot pass on a cleartext port that also serves HTTP/1.1: there it is a malformed HTTP/1.1 request, which
 correctly gets a 400. Also tested against curl (nghttp2) and python-h2, in cleartext and over TLS (`tools/h2_interop.sh`);
-against Chromium over TLS, where a page with 26 assets and API calls loads entirely over h2 (`tests/net/browser_test.py`); and
-behind Caddy as an h2c reverse proxy, including concurrent requests, Server-Sent Events and a 20 MiB stream
-(`tools/proxy_interop.sh`).
+against Chromium over TLS, where a page with 26 assets and API calls loads entirely over h2 and its WebSocket opens as a
+stream of the same connection (`tests/net/browser_test.py`); WebSockets over h2c and TLS against python-h2 carrying the python
+`websockets` library's frames (`tools/ws_interop.sh`); and behind Caddy as an h2c reverse proxy, including concurrent
+requests, Server-Sent Events and a 20 MiB stream (`tools/proxy_interop.sh`).
 
-Measured: 1,000 in-flight streams over 10 connections peak at ~16 MB of RSS; the HTTP/2 hot path (frames, HPACK, dispatch,
-framing the response) does not allocate on the GC.
+Measured: 1,000 in-flight streams over 10 connections peak at ~16 MB of RSS, 1,000 open WebSockets over 10 connections at
+~19 MB; the HTTP/2 hot path (frames, HPACK, dispatch, framing the response, a WebSocket's messages) does not allocate on the
+GC.

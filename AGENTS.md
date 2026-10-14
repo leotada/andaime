@@ -143,8 +143,10 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 - The loop parses each head once: `parseHead` (in `tryParse`) fills the loop's `head`/`scratch`, and `parsedHead` hands it to
   `startRequest`, `tryUpgrade`, the `Expect` check and the redirect port, parsing again only if another connection's head or a
   grow came in between. Nothing else may write into `scratch`.
-- `sink.upgrade(head, protocol)` instead of `start` answers 101 and hands the connection over (an `UpgradedConn`); it returns null
-  where that is impossible (HTTP/2, `BufferedSink`, the devserver), before anything was sent. See the WebSocket section.
+- `sink.upgrade(head, protocol)` instead of `start` answers 101 and hands the connection over (an `UpgradedConn`); on HTTP/2 it
+  answers an extended CONNECT with `head` (2xx) and hands the stream over. It returns null where that is impossible
+  (`BufferedSink`, the devserver, an HTTP/2 stream that is not an extended CONNECT), before anything was sent. See the
+  WebSocket section.
 
 ## WebSockets (read before touching `http/.../websocket.d`, `web/.../websocket.d`, `wsclient.d` or `Phase.upgraded` in `epoll.d`)
 
@@ -166,14 +168,28 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 - When the owner returns, `finishUpgraded` sends what is left of `wsOut` (`writeTimeoutMs`) and closes with `lingerClose`;
   graceful stop wakes the readers (`fill` returns `stopping`, `WsConn` closes with 1001). `sweepUpgraded` drops a connection
   whose output is blocked longer than `writeTimeoutMs`.
-- HTTP/2 stays frozen: no RFC 8441. A WebSocket route reached over HTTP/2 answers 426.
-- A WebSocket change: cases in `tests/web/websocket.d` (TestClient) or `tests/net/ws_net.d` (sockets), `tools/ws_interop.sh`,
-  `tools/fuzz.sh 300 ws`, and the hot path (`tests/alloc/ws_hot_path.d`) stays GC-free.
+- Over HTTP/2 (RFC 8441) a WebSocket is a stream. The session announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`
+  (`H2Config.enableConnectProtocol`, `ServerConfig.http2WebSockets`), hands an extended CONNECT out at its HEADERS as a GET
+  with `Request.connectProtocol` (`H2Stream.tunnel`), and keeps its DATA for the engine (`tunnelInput`/`tunnelConsume`,
+  `popInput`): the stream window is credited only as the owner consumes, so it bounds the buffer. `runWebSocket` answers 200
+  without an accept key; only a WebSocket route may answer an extended CONNECT (`dispatch` refuses it with 400 elsewhere).
+- The engine side is `H2Tunnel` in `epoll.d` (one per stream, never pooled, like `WsPort`): `upgradeStream` sends the 2xx with
+  `beginResponse`; writes are `sendData` plus a wait in `t.writers` (woken from `wakeH2Writers`); readers and writers are
+  woken with `wsDefer`; a peer RST breaks the tunnel (`tunnelBreak`: the reader sees 1006) instead of cancelling the owner.
+  `finishTunnel` ends the stream with `endResponse` (END_STREAM after the queued DATA) or `cancelStream(CANCEL)`; the session
+  then keeps it half-closed (local) until the peer's END_STREAM, resetting it after a second (`tick`). `closeH2` detaches
+  every tunnel before it cancels the owners. Set `st.deadlineMs = 0` at the upgrade: WsConn's pings are the liveness check.
+- A WebSocket change: cases in `tests/web/websocket.d` (TestClient, `c.http2 = true` for RFC 8441) or `tests/net/ws_net.d` /
+  `tests/net/ws_h2_net.d` (sockets), `tools/ws_interop.sh`, `tools/fuzz.sh 300 ws` (and `h2` for the session's tunnels), and
+  the hot path (`tests/alloc/ws_hot_path.d`, both transports) stays GC-free.
+- A socket test client running in the server's process must retry `read`/`send` on `EINTR`: the server's GC stops every
+  thread with signals.
 
 ## HTTP/2 (read before touching `http/.../h2.d` or the h2 part of `epoll.d`)
 
 **Frozen (D3).** No new HTTP/2 or TLS features until the owner says so. Allowed: bug fixes, and the changes other plan items
-require (response sink, memory model). Everything below still applies to those.
+require (response sink, memory model). The owner lifted it once, for WebSockets over HTTP/2 (RFC 8441, `PLAN.md` 10.7).
+Everything below still applies to those.
 
 - Protocol logic lives in `H2Session` (`vela.http.h2`), which does no I/O: the engine feeds it bytes (`receive`), runs what
   `popReady` hands out (one fiber per stream), cancels what `popReset` hands out, hands each response back with `respond` (or
@@ -235,5 +251,5 @@ require (response sink, memory model). Everything below still applies to those.
 
 The rest of the performance work (M4: SIMD head search, GC tuning, `sendfile`; the benchmark, single parse and pipelined-response
 coalescing are done, see `PLAN.md` Phase 8), kqueue (M5) and io_uring (M6), streamed (unbuffered)
-request bodies, WebSockets over HTTP/2 (RFC 8441), Range requests, serving the app in cleartext next to TLS, IPv6 listeners, OCSP
+request bodies, the WebSocket client over HTTP/2, Range requests, serving the app in cleartext next to TLS, IPv6 listeners, OCSP
 stapling, response trailers (gRPC), streaming responses in the HTTP client. Do not start these unless asked.

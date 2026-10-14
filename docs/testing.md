@@ -72,7 +72,8 @@ assert(r.status == 101 && r.texts == ["a: hi"] && r.pongs == ["p"] && r.closeCod
 ```
 
 `WsScript` has `text`, `binary`, `continuation`, `ping`, `close` and `raw` (any bytes, to test the server's checks). A refused
-upgrade shows up in `r.status` and `r.response`.
+upgrade shows up in `r.status` and `r.response`. With `c.http2 = true` the client sends HTTP/2 requests, and `websocket`
+opens the WebSocket as a browser does on an HTTP/2 connection (RFC 8441): a successful one answers 200 instead of 101.
 
 ## Tips
 

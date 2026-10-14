@@ -164,14 +164,14 @@ CRUD, controller, tests) and `examples/api` (Postgres, external API, auth, CORS,
 
 vela is young: the API may still change before a first release. What works is tested (see [CONTRIBUTING.md](CONTRIBUTING.md)):
 the web layer, the epoll server, HTTP/2 (RFC 9113; h2spec 146/146 over TLS; tested with Chromium, curl, python-h2 and Caddy),
-HTTPS, streaming, WebSockets (RFC 6455 with permessage-deflate; tested with Chromium and python's `websockets`), the
-PostgreSQL driver and the HTTP and WebSocket clients.
+HTTPS, streaming, WebSockets (RFC 6455 with permessage-deflate, over HTTP/1.1 and as HTTP/2 streams per RFC 8441; tested
+with Chromium, python's `websockets` and python-h2), the PostgreSQL driver and the HTTP and WebSocket clients.
 
 Not supported yet:
 
 - Linux only for the real server (epoll); elsewhere `serve` runs a blocking development server.
-- WebSockets over HTTP/2 (RFC 8441; browsers use HTTP/1.1 for WebSockets anyway), streamed request bodies (bodies, including
-  multipart uploads, are buffered up to `limits.maxBodyBytes`, 1 MiB by default), Range requests.
+- Streamed request bodies (bodies, including multipart uploads, are buffered up to `limits.maxBodyBytes`, 1 MiB by default),
+  Range requests; the WebSocket client speaks HTTP/1.1 only.
 - Response trailers, so no gRPC; HTTP/2 server push and priorities.
 - IPv6 listeners, OCSP stapling, kqueue/io_uring backends.
 

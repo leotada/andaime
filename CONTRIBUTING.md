@@ -54,7 +54,7 @@ jobs.
 ```sh
 tools/fuzz.sh 300 parse              # libFuzzer + ASan on the HTTP/1 parser (needs LDC); "h2": HTTP/2 session, "ws": WebSockets
 tools/h2_interop.sh                  # HTTP/2 against curl, python-h2 and h2spec
-tools/ws_interop.sh                  # WebSockets against python websockets (server and client, permessage-deflate)
+tools/ws_interop.sh                  # WebSockets against python websockets (server and client, permessage-deflate; RFC 8441 with python-h2)
 tools/proxy_interop.sh               # behind Caddy over h2c
 tools/bench.sh 10                    # requests per second of one worker, for before/after comparisons
 ```
@@ -62,7 +62,7 @@ tools/bench.sh 10                    # requests per second of one worker, for be
 ### Numbers the suite enforces
 
 - The hot path does not allocate on the GC (`tests/alloc/`).
-- Peak RSS under 30 MB for 1,000 in-flight requests over HTTP/1.1 and HTTP/2, and for 1,000 open WebSockets; under 80 MB over
+- Peak RSS under 30 MB for 1,000 in-flight requests over HTTP/1.1 and HTTP/2, and for 1,000 open WebSockets on each; under 80 MB over
   HTTPS (OpenSSL 3.5).
 - `examples/hello/source/app.d` type-checks in under 400 ms on DMD (fails above 440 ms; timing is noisy).
 - Every invalid handler signature is a one-line `static assert` with a case in `tests/compile_fail/` (at most 2 error lines).

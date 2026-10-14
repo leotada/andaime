@@ -23,6 +23,7 @@
 | `reusePort` | true | `SO_REUSEPORT`: one listener per worker |
 | `trimAfterBurst` | true | after a burst and a quiet second: retire idle fibers, drop the buffer cache and collect, returning memory to the OS |
 | `http2`, `http2MaxStreams`, `http2StreamWindowBytes`, `http2ConnectionWindowBytes` | true, 100, 256 KiB, 1 MiB | see [http2.md](http2.md) |
+| `http2WebSockets` | true | WebSockets as HTTP/2 streams (RFC 8441); false: browsers open an HTTP/1.1 connection for each, see [websocket.md](websocket.md#http2) |
 | `tls` (`certFile`, `keyFile`, `reloadCheckMs`, `redirectPort`, `acmeWebroot`) | off | see [tls.md](tls.md) |
 | `logConnectionErrors` | true | log failed handshakes and HTTP/2 connection errors (rate-limited) |
 | `limits` (`maxHeadBytes`, `maxTargetBytes`, `maxBodyBytes`) | 8 KiB, 4 KiB, 1 MiB | request size limits (431, 414, 413) |

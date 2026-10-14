@@ -2,7 +2,8 @@
 
 A WebSocket route is a GET whose handler returns a `WebSocket`. The parameters are bound and the middleware runs first,
 exactly as for any other route, so authentication, validation errors and refusals are ordinary HTTP responses. Then the
-connection is upgraded (`101 Switching Protocols`) and the body talks to the client.
+connection is upgraded (`101 Switching Protocols`) and the body talks to the client. Over HTTP/2 the WebSocket is a stream
+of the connection instead (RFC 8441); the handler is the same, see [HTTP/2](#http2).
 
 ```d
 // check
@@ -42,10 +43,12 @@ void main() { serve(&buildApp, 8080); }
   `WebSocket`, and a `get!`/`post!` handler cannot (both are one-line compile errors). `@status` does not apply.
 - Parameters work as for a GET: path, query, `Header!`, `Cookie!`, `Local!` (set by middleware), `ClientIp`, `Context`. A
   missing or invalid one is a 422, before any upgrade.
-- Headers the handler sets on the context go out with the 101: `ctx.setHeader("Sec-WebSocket-Protocol", "chat.v1")` picks a
-  subprotocol (read the client's offer with `Header!"Sec-WebSocket-Protocol"`), `setCookie` works too.
+- Headers the handler sets on the context go out with the 101 (the 200 on HTTP/2):
+  `ctx.setHeader("Sec-WebSocket-Protocol", "chat.v1")` picks a subprotocol (read the client's offer with
+  `Header!"Sec-WebSocket-Protocol"`), `setCookie` works too.
 - A request that is not a WebSocket upgrade gets a 426; a wrong `Sec-WebSocket-Version` gets a 426 with
-  `Sec-WebSocket-Version: 13`; a missing or malformed `Sec-WebSocket-Key` gets a 400.
+  `Sec-WebSocket-Version: 13`; a missing or malformed `Sec-WebSocket-Key` gets a 400. An HTTP/2 WebSocket request (an
+  extended CONNECT) on a route that is not a WebSocket route gets a 400.
 - WebSocket routes are not in the OpenAPI document (OpenAPI cannot describe them).
 - A function of your own named `ws` hides vela's (like `get`); use `vela.ws!(...)(app)` then.
 
@@ -69,16 +72,35 @@ close.
 
 ## Contract
 
-- The 101 is sent when the handler returns the `WebSocket`; the body runs inside the middleware chain, so middleware sees the
-  whole session (an access log records 101 and its duration) and its `scope(exit)` runs after the connection ends.
+- The 101 (200 on HTTP/2) is sent when the handler returns the `WebSocket`; the body runs inside the middleware chain, so
+  middleware sees the whole session (an access log records 101 or 200 and its duration) and its `scope(exit)` runs after
+  the connection ends.
 - When the body returns, the connection is closed with 1000 (if it is still open) and vela waits up to a second for the client's
   answer. When it throws, the client gets a close with 1011 and the error is logged, as any handler error. A client that
   disappears ends `receive` with a close whose code is 1006.
 - Receiving belongs to the fiber that runs the body. `send`, `sendBinary`, `ping` and `close` may be called from any fiber of
   the same worker: see the next section.
-- The protocol is RFC 6455 over HTTP/1.1, cleartext and TLS (`wss://`). HTTP/2 is not used for WebSockets (RFC 8441 is not
-  implemented): a WebSocket request that arrives over HTTP/2 gets a 426, and browsers open a separate HTTP/1.1 connection for
-  WebSockets anyway, also when the page itself came over HTTP/2.
+- The protocol is RFC 6455, over HTTP/1.1 or as an HTTP/2 stream (RFC 8441), cleartext and TLS (`wss://`).
+
+## HTTP/2
+
+A browser that loaded the page over HTTP/2 opens its WebSockets on the same connection, as streams (RFC 8441, "extended
+CONNECT"): vela announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`, the browser sends a `CONNECT` with `:protocol websocket`, and
+vela answers `200` instead of `101`. Chromium and Firefox do it; a client that does not simply uses HTTP/1.1.
+
+- Nothing changes for the handler: the same route, parameters, middleware, `WsConn`, limits and compression.
+  `ctx.request.protocol` is `Protocol.http2` and `ctx.request.connectProtocol` is `"websocket"`; the request's method is GET.
+- No TCP handshake, no TLS handshake: opening a WebSocket costs one round trip on a page that is already open.
+- The stream's flow control is the backpressure: the client can send at most one stream window
+  (`http2StreamWindowBytes`, 256 KiB) that the handler has not read yet, and a `send` waits while the client has not opened
+  its window for more than `streamHighWaterBytes`. A client that reads nothing for `writeTimeoutMs` gets its stream reset
+  (`CANCEL`), not the whole connection.
+- A WebSocket counts as a stream: at most `http2MaxStreams` (100) per connection, together with the page's own requests.
+- Closing is the WebSocket close handshake, then `END_STREAM` both ways. A stream reset by the client ends `receive` with
+  1006, like a TCP connection that vanished; if the whole connection drops, the handler gets `RequestCancelled`.
+- `ServerConfig.http2WebSockets = false` stops announcing it: browsers then open their own HTTP/1.1 connection for each
+  WebSocket, as before.
+- `wsConnect` (the client) always uses HTTP/1.1.
 
 ## Sending from other fibers (a chat room)
 
@@ -194,7 +216,9 @@ assert(r.pongs == ["p"] && r.closeCode == 1000);
 ```
 
 A refused upgrade shows up as `r.status` (403, 422, 426) with `r.response` holding the HTTP answer. Once the script is used up
-the client's input ends (the server sees 1006 unless the script ended with `close`).
+the client's input ends (the server sees 1006 unless the script ended with `close`). Set `c.http2 = true` to send the
+requests as HTTP/2 ones: `websocket` then opens the WebSocket as a browser does on an HTTP/2 connection (an extended
+CONNECT), and a successful one has `r.status == 200`.
 
 ## Behind a proxy
 
@@ -210,4 +234,6 @@ location /ws/ {
 }
 ```
 
-Caddy's `reverse_proxy` forwards WebSockets without extra configuration.
+Caddy's `reverse_proxy` forwards WebSockets without extra configuration. A proxy terminates the browser's HTTP/2 itself:
+whether the browser's WebSocket rides its HTTP/2 connection is between the browser and the proxy, and the proxy then speaks
+HTTP/1.1 (the upgrade) to vela.

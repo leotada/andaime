@@ -1380,8 +1380,8 @@ already covered RFC 9113; what was missing was evidence, not features. HTTP/2 co
 Started on 2026-10-13 at the owner's request ("implement WebSockets"), on the `websockets` branch (a git worktree). Owner
 choices: **a handler returns `WebSocket`** (like `Stream`, P6: parameters and middleware first, so a refusal is an ordinary
 response), and the first version includes **a client** and **permessage-deflate**; no subprotocol API (the handler sets
-`Sec-WebSocket-Protocol` on the context) and no Autobahn run (python `websockets` and Chromium instead). HTTP/2 stays frozen
-(D3): no RFC 8441, a WebSocket route reached over HTTP/2 answers 426 (browsers use HTTP/1.1 for WebSockets anyway).
+`Sec-WebSocket-Protocol` on the context) and no Autobahn run (python `websockets` and Chromium instead). HTTP/2 stayed frozen
+(D3) at first; RFC 8441 came later, in 10.7.
 Reference: `docs/websocket.md`; rules for contributors: `AGENTS.md`, "WebSockets".
 
 ### [x] 10.1 Protocol, no I/O (`vela:http`) — M
@@ -1430,7 +1430,27 @@ Reference: `docs/websocket.md`; rules for contributors: `AGENTS.md`, "WebSockets
 - A client send that finds the socket full while its owner waits stays queued until the owner's next wait; a per-connection
   writer wait (as on the server) would fix it if it matters.
 - Fan-out across workers (a hub over `LISTEN/NOTIFY` in `vela-pg`, say).
-- WebSockets over HTTP/2 (RFC 8441), when D3 is lifted.
+- `wsConnect` over HTTP/2 (the client stays HTTP/1.1).
+
+### [x] 10.7 WebSockets over HTTP/2 (RFC 8441) — L
+
+Requested by the owner on 2026-10-14 ("implement the websocket via HTTP 2"), which lifts D3 for this item only. Branch
+`websocket-h2`.
+
+> **Done.** `vela:http`: `Request.connectProtocol`; `H2Session` announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`
+> (`H2Config.enableConnectProtocol`), accepts `:protocol`, hands an extended CONNECT out at its HEADERS as a GET
+> (`H2Stream.tunnel`), keeps its DATA without a body limit and credits the stream window only as the engine consumes
+> (`popInput`, `tunnelInput`, `tunnelConsume`, `tunnelEnded`); ending our side half-closes the stream (reset after 1 s in
+> `tick`); other `:protocol` values get 501. `ByteBuffer.dropFront`. `vela:web`: `checkUpgradeRequest` for HTTP/2,
+> `runWebSocket` answers 200 without an accept key, `dispatch` refuses an extended CONNECT on a non-WebSocket route with 400,
+> `TestClient.http2`. `vela:engine`: `H2Tunnel` (`upgradeStream`, `tunnelFill/Write/Break`, `finishTunnel`), graceful stop
+> (1001), `ServerConfig.http2WebSockets`.
+> Evidence: 10 session tests, `tests/web/websocket.d` (h2 mode), `tests/net/ws_h2_net.d` (9 socket tests, 3/3 runs green),
+> `tests/net/ws_h2_interop.py` (python-h2 + the `websockets` frame codec and permessage-deflate, h2c and TLS) in
+> `tools/ws_interop.sh`, Chromium 156 opens the page's `wss` WebSocket as a stream of its h2 connection (and on HTTP/1.1 with
+> `http2WebSockets = false`), the fuzz invariants drive tunnels (`fuzz_h2.d` seeds also start libFuzzer's corpus: 12.6M runs
+> clean), 0 GC bytes in 100k echoes over a session tunnel, 1,000 open WebSockets over 10 h2 connections peak at ~19 MB RSS
+> (checked < 30 MB), compile budget 398 -> 401 ms. Not run here: h2spec (not installed on this machine).
 
 ## Open owner decisions (not blocking)
 

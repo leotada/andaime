@@ -84,6 +84,30 @@ long transfer(long from, long to, long cents)
 
 `BEGIN` and `COMMIT` on one connection; `ROLLBACK` if the delegate throws.
 
+Transactions nest: `transaction` on a connection that is already in one (`PgConn.transaction`, or `db.transaction` on a
+pinned connection, below) becomes a savepoint. `c.savepoint((PgConn c) { ... })` is the explicit form: `SAVEPOINT`, then
+`RELEASE`, or `ROLLBACK TO SAVEPOINT` if it throws, so the outer transaction goes on without what the savepoint did (an
+insert that may hit a unique constraint, say). Outside a transaction it throws `PgError`. `c.inTransaction` tells whether
+one is open.
+
+### Tests that roll back
+
+`db.rollbackAfter(() { ... })` runs the delegate with the pool pinned to one connection inside a transaction that is
+always rolled back: everything the code under test writes through that pool, including its own transactions (they become
+savepoints), disappears afterwards. `pin(conn)`/`unpin()` are the building blocks, for a harness that opens the outer
+transaction itself. Run one request at a time while pinned: a connection runs one query at a time.
+
+```d
+unittest
+{
+    auto c = TestClient(buildApp());
+    db.rollbackAfter(() {
+        assert(c.post("/users", `{"name":"Ana"}`).status == 201);
+        assert(c.get("/users").body == `[{"id":1,"name":"Ana"}]`);
+    });   // the user is gone
+}
+```
+
 ## Errors
 
 | Exception | When |

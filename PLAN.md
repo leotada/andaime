@@ -1487,6 +1487,7 @@ timeouts, any HTTP/2 or TLS feature (D3).
 | F21 | 11.4 | Web Push: `webPushEncrypt` (fresh key and salt; an overload takes them for known-answer tests), one 4096-byte record, payload <= 3993 bytes; `webPushDecrypt` for the receiver. The VAPID JWT is left to the app (`es256Sign` + `base64UrlEncode`, shown in the guide). | A full Web Push client (HTTP POST, VAPID header building). | The task asked for the primitives; sending is a few lines with `httpClient`, and VAPID claims are app policy. |
 | F22 | 11.5 | `T[]` parameters become a text array literal with every element quoted and `"`/`\` escaped, elements encoded exactly as a single parameter of that type would be; an empty `Optional` element is `NULL`; `ubyte[]`/`byte[]` and nested arrays are compile errors. | Binary array format; quoting only when needed. | Text keeps one encoding path for scalars and elements; always quoting makes `NULL`, commas, braces and spaces data with no special cases. `ubyte[]` could mean bytea. |
 | F23 | 11.6 | `@prefix("author_")` (in `vela.db`) on a struct or `Optional!struct` field; prefixes compose when nested; column indexes resolved once per result; an `Optional` is empty only when all its columns are NULL; misuse is a one-line `vela.db:` static assert. | Inferring nesting from `author_` names without an attribute; empty when the first (id) column is NULL. | Explicit is predictable; "all NULL" is what a LEFT JOIN with no match produces, and does not depend on which column is the key. |
+| F24 | 11.7 | `PgConn.savepoint` (`vela_sp_N` by depth; `RELEASE` on success, `ROLLBACK TO` on throw), `PgConn.transaction` that becomes a savepoint inside an open transaction (`PQtransactionStatus`), `PgPool.transaction` delegating to it; tests pin the pool to one connection (`pin`/`unpin`, `rollbackAfter`). | A separate "test mode" flag in `PgConfig`; a fake pool. | Nesting through the transaction status makes app code unchanged under a harness; pinning is two lines in `acquire`/`release` and touches no hot path. |
 | F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
 
 ### [x] 11.1 Custom validation error responses: `onValidationError` — M
@@ -1548,7 +1549,13 @@ timeouts, any HTTP/2 or TLS feature (D3).
 > Tests (`tests/db/pg_features.d`): LEFT JOIN with and without a match, a required nested struct, composed prefixes, the
 > missing-column message, a NULL in a required nested field. Docs: `database.md`.
 
-### [ ] 11.7 Savepoints in `vela-pg` — S
+### [x] 11.7 Savepoints in `vela-pg` — S
+
+> **Done.** `PgConn.inTransaction`, `transaction`, `savepoint`, `finishBlock` (utility statements through `exec_`, never the
+> statement cache); `PgPool.pin`, `unpin`, `rollbackAfter`; `PQtransactionStatus` in the libpq table. Tests
+> (`tests/db/pg_features.d`): a savepoint that hits a unique violation without aborting the transaction, nesting,
+> `transaction` inside `transaction`, return values, the error outside a transaction, and `rollbackAfter` with the app's
+> own commits and rollbacks inside it. Docs: `database.md`.
 
 ### [ ] 11.8 Structured logger `vela.log` — M
 

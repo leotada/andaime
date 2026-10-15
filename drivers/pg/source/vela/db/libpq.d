@@ -38,6 +38,16 @@ enum : int
     PGRES_FATAL_ERROR = 7,
 }
 
+/// `PQtransactionStatus`.
+enum : int
+{
+    PQTRANS_IDLE = 0,
+    PQTRANS_ACTIVE = 1,
+    PQTRANS_INTRANS = 2,
+    PQTRANS_INERROR = 3,
+    PQTRANS_UNKNOWN = 4,
+}
+
 enum char PG_DIAG_SQLSTATE = 'C';
 
 alias NoticeProc = extern (C) void function(void* arg, const(char)* message) nothrow;
@@ -62,6 +72,7 @@ struct Api
     PGconn* function(const(char)*) PQconnectStart;
     int function(PGconn*) PQconnectPoll;
     int function(const(PGconn)*) PQstatus;
+    int function(const(PGconn)*) PQtransactionStatus;
     int function(const(PGconn)*) PQsocket;
     int function(PGconn*, int) PQsetnonblocking;
     void function(PGconn*) PQfinish;

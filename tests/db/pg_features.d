@@ -133,6 +133,88 @@ void testNestedRows()
     ok("nested rows: @prefix on Optional and required structs, LEFT JOIN with no match, composed prefixes, missing column");
 }
 
+int count(PgConn c) => c.query("select count(*)::int from t_sp").get!int(0, 0);
+
+void testSavepoints()
+{
+    auto c = connect();
+    scope (exit) c.shutdown();
+    c.exec("drop table if exists t_sp");
+    c.exec("create table t_sp(n int unique)");
+    assert(!c.inTransaction);
+
+    // a savepoint needs a transaction
+    bool threw;
+    try
+        c.savepoint((PgConn x) { });
+    catch (PgError e)
+        threw = e.msg == "vela.db: savepoint needs an open transaction (use transaction)";
+    assert(threw);
+
+    // inside a transaction: a failed savepoint rolls back only its own work, the rest commits
+    c.transaction((PgConn x) {
+        assert(x.inTransaction);
+        x.exec("insert into t_sp values (1)");
+        try
+            x.savepoint((PgConn y) {
+                y.exec("insert into t_sp values (2)");
+                y.exec("insert into t_sp values (1)"); // unique violation: the transaction would be aborted without it
+            });
+        catch (PgError e)
+            assert(e.isUniqueViolation);
+        x.savepoint((PgConn y) { y.exec("insert into t_sp values (3)"); });
+        // nested savepoints, and transaction() inside a transaction is a savepoint too
+        x.transaction((PgConn y) {
+            y.exec("insert into t_sp values (4)");
+            try
+                y.savepoint((PgConn z) {
+                    z.exec("insert into t_sp values (5)");
+                    throw new Exception("undo 5");
+                });
+            catch (Exception) {}
+        });
+    });
+    assert(!c.inTransaction);
+    assert(c.query("select string_agg(n::text, ',' order by n) from t_sp").get!string(0, 0) == "1,3,4");
+
+    // the result of the body comes back
+    assert(c.transaction((PgConn x) => x.savepoint((PgConn y) => y.query("select 7").get!int(0, 0))) == 7);
+    c.exec("delete from t_sp");
+    ok("savepoints: SAVEPOINT/RELEASE/ROLLBACK TO, nesting, transaction() inside a transaction, return values");
+}
+
+void testRollbackHarness()
+{
+    PgConfig cfg;
+    cfg.conninfo = conninfo;
+    auto pool = new PgPool(cfg);
+
+    // the code under test commits through the pool; the harness rolls everything back
+    pool.rollbackAfter(() @safe {
+        pool.exec("insert into t_sp values (10)");
+        pool.transaction((PgConn x) { x.exec("insert into t_sp values (11)"); });
+        try
+            pool.transaction((PgConn x) {
+                x.exec("insert into t_sp values (12)");
+                throw new Exception("the app's own rollback");
+            });
+        catch (Exception) {}
+        assert(pool.query("select string_agg(n::text, ',' order by n) from t_sp").get!string(0, 0) == "10,11",
+            "inside the harness, the app sees its own writes");
+        assert(pool.openCount == 0, "the pinned connection is not one of the pool's");
+    });
+    auto c = connect();
+    scope (exit) c.shutdown();
+    assert(count(c) == 0, "everything was rolled back");
+
+    // after unpinning, the pool hands out its own connections again
+    pool.exec("insert into t_sp values (20)");
+    assert(count(c) == 1 && pool.openCount == 1);
+    c.exec("drop table t_sp");
+    pool.closeAll();
+    ok("test harness: rollbackAfter pins one connection, app transactions become savepoints, nothing survives");
+}
+
 void main()
 {
     auto env = getenv("VELA_PG");
@@ -147,5 +229,7 @@ void main()
     conninfo = cast(string) env[0 .. strlen(env)].idup;
     testArrays();
     testNestedRows();
+    testSavepoints();
+    testRollbackHarness();
     printf("all Postgres feature tests passed\n");
 }

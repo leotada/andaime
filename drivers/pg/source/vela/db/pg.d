@@ -285,6 +285,19 @@ private template rowColumnCount(T)
     }();
 }
 
+private string itoaU(uint v) pure nothrow
+{
+    char[10] t;
+    size_t n = t.length;
+    do
+    {
+        t[--n] = cast(char)('0' + v % 10);
+        v /= 10;
+    }
+    while (v);
+    return t[n .. $].idup;
+}
+
 private const(char)[] cstr(const(char)* p) nothrow
 {
     if (p is null)
@@ -643,6 +656,72 @@ final class PgConn
         query(sql, args).close();
     }
 
+    /// Whether a transaction is open on this connection (also when it failed and waits for ROLLBACK).
+    bool inTransaction() const nothrow
+    {
+        if (c is null)
+            return false;
+        immutable s = pq.PQtransactionStatus(c);
+        return s == PQTRANS_INTRANS || s == PQTRANS_INERROR;
+    }
+
+    /// Runs `body` inside a transaction on this connection: BEGIN/COMMIT, ROLLBACK if it throws. When a transaction is
+    /// already open (an outer `transaction`, or a test harness's), it is a `savepoint` instead, so transactions nest.
+    T transaction(T)(T delegate(PgConn) @safe body_)
+    {
+        if (inTransaction)
+            return savepoint(body_);
+        exec_("BEGIN");
+        return finishBlock(body_, "COMMIT", "ROLLBACK");
+    }
+
+    /// Runs `body` inside a savepoint of the open transaction: `SAVEPOINT`, then `RELEASE` on success or
+    /// `ROLLBACK TO SAVEPOINT` if it throws (the outer transaction goes on, without what the body did). Throws `PgError`
+    /// when no transaction is open.
+    T savepoint(T)(T delegate(PgConn) @safe body_)
+    {
+        if (!inTransaction)
+            throw new PgError("vela.db: savepoint needs an open transaction (use transaction)");
+        immutable name = "vela_sp_" ~ itoaU(++savepoints);
+        scope (exit)
+            savepoints--;
+        exec_("SAVEPOINT " ~ name);
+        return finishBlock(body_, "RELEASE SAVEPOINT " ~ name, "ROLLBACK TO SAVEPOINT " ~ name);
+    }
+
+    private uint savepoints; // depth of the open `savepoint`s, for their names
+
+    /// Runs the body of a transaction or savepoint: `commit` after it, `rollback` if it throws (a connection that cannot
+    /// roll back is closed, so it never goes back to the pool mid-transaction).
+    private T finishBlock(T)(T delegate(PgConn) @safe body_, string commit, string rollback)
+    {
+        try
+        {
+            static if (is(T == void))
+            {
+                body_(this);
+                exec_(commit);
+            }
+            else
+            {
+                auto r = body_(this);
+                exec_(commit);
+                return r;
+            }
+        }
+        catch (Throwable t)
+        {
+            if (usable)
+            {
+                try
+                    exec_(rollback);
+                catch (Throwable)
+                    shutdown();
+            }
+            throw t;
+        }
+    }
+
     private PgResult run(const(char)[] sql, const(char)*[] vals, bool retried = false)
     {
         if (!usable)
@@ -892,6 +971,7 @@ final class PgPool
     private PgConn[] idle;
     private uint open;
     private Waiter[] waiters;
+    private PgConn pinned; // see `pin`
 
     this(PgConfig cfg)
     {
@@ -907,6 +987,8 @@ final class PgPool
     /// Give it back with `release` (or use `lease`/`query`).
     PgConn acquire()
     {
+        if (pinned !is null)
+            return pinned;
         immutable deadline = MonoTime.currTime + cfg.acquireTimeout;
         for (;;)
         {
@@ -967,7 +1049,7 @@ final class PgPool
     /// Gives the connection back. Broken/closed: it is discarded and frees the slot.
     void release(PgConn c) nothrow
     {
-        if (c is null)
+        if (c is null || c is pinned)
             return;
         if (!c.usable)
         {
@@ -1022,36 +1104,44 @@ final class PgPool
         query(sql, args).close();
     }
 
-    /// Runs `body` inside BEGIN/COMMIT on the same connection; ROLLBACK if it throws.
+    /// Runs `body` inside BEGIN/COMMIT on the same connection; ROLLBACK if it throws (see `PgConn.transaction`; on a
+    /// pinned connection that is already in a transaction, it becomes a savepoint).
     T transaction(T)(T delegate(PgConn) @safe body_)
     {
         auto l = lease();
-        l.conn.exec("BEGIN");
-        try
-        {
-            static if (is(T == void))
-            {
-                body_(l.conn);
-                l.conn.exec("COMMIT");
-            }
-            else
-            {
-                auto r = body_(l.conn);
-                l.conn.exec("COMMIT");
-                return r;
-            }
-        }
-        catch (Throwable t)
-        {
-            if (l.conn.usable)
-            {
-                try
-                    l.conn.exec("ROLLBACK");
-                catch (Throwable)
-                    l.conn.shutdown();
-            }
-            throw t;
-        }
+        return l.conn.transaction(body_);
+    }
+
+    /// For tests: every `acquire` (and so `query`, `exec`, `transaction`, `lease`) hands out `c` until `unpin`, and giving
+    /// it back keeps it pinned. With a transaction open on `c`, everything the code under test does runs inside it, and
+    /// its own transactions become savepoints. One request at a time: a connection runs one query at a time.
+    void pin(PgConn c)
+    {
+        assert(c !is null, "vela.db: pin(null); use unpin");
+        pinned = c;
+    }
+
+    /// Stops handing out the pinned connection (it is not closed, nor returned to the pool).
+    void unpin() nothrow
+    {
+        pinned = null;
+    }
+
+    /// For tests: runs `body` on a pinned connection inside a transaction that is always rolled back, so whatever it
+    /// writes through this pool disappears afterwards: `db.rollbackAfter({ client.post("/users", ...); });`.
+    void rollbackAfter(void delegate() @safe body_)
+    {
+        auto c = PgConn.connect(cfg.conninfo, cfg.connectTimeout, cfg.queryTimeout, cfg.cacheStatements);
+        scope (exit)
+            c.shutdown();
+        c.exec_("BEGIN");
+        pin(c);
+        scope (exit)
+            unpin();
+        scope (exit)
+            if (c.usable)
+                c.exec_("ROLLBACK");
+        body_();
     }
 
     /// Closes all idle connections.

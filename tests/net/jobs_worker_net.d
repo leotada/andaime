@@ -23,7 +23,51 @@ struct Ping
 
     void perform(ref JobContext ctx)
     {
+        import vela.log : logInfo;
+
+        logInfo("ping ran");
         atomicStore(ran, 1);
+    }
+}
+
+/// Sends stderr to a pipe until `stderrText` gives it back (the server's lines included).
+struct StderrCapture
+{
+    int saved = -1;
+    int[2] p;
+
+    void start() @trusted
+    {
+        import core.sys.posix.fcntl : fcntl, F_SETFL, O_NONBLOCK;
+        import core.sys.posix.unistd : dup, dup2, pipe;
+
+        pipe(p);
+        fcntl(p[0], F_SETFL, O_NONBLOCK);
+        saved = dup(2);
+        dup2(p[1], 2);
+    }
+
+    string stop() @trusted
+    {
+        import core.sys.posix.unistd : close, dup2, read;
+
+        if (saved < 0)
+            return null;
+        dup2(saved, 2);
+        close(saved);
+        saved = -1;
+        close(p[1]);
+        char[] all;
+        char[4096] buf;
+        for (;;)
+        {
+            auto n = read(p[0], buf.ptr, buf.length);
+            if (n <= 0)
+                break;
+            all ~= buf[0 .. n];
+        }
+        close(p[0]);
+        return cast(string) all;
     }
 }
 
@@ -227,6 +271,7 @@ void testHealthAndJob()
             failed = e;
     });
     bool joined;
+    StderrCapture cap;
     scope (failure)
     {
         if (!joined)
@@ -234,7 +279,9 @@ void testHealthAndJob()
             kill(getpid(), SIGTERM);
             t.join();
         }
+        cap.stop();
     }
+    cap.start();
     t.start();
 
     bool up;
@@ -271,7 +318,11 @@ void testHealthAndJob()
     assert(rows[0].state == JobState.completed);
     assert(rows[0].attempt == 1);
     assert(rows[0].queue == "default");
-    ok("worker role: GET /health, one job, stop does not wait out grace");
+    // the line `perform` logged on the worker's fiber names the job
+    immutable log = cap.stop();
+    import std.algorithm : canFind;
+    assert(log.canFind("ping ran job=jobs_worker_net.Ping job_id=1 attempt=1"), log);
+    ok("worker role: GET /health, one job (its log line names it), stop does not wait out grace");
 }
 
 void testReleaseOnShutdown()

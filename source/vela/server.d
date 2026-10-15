@@ -10,15 +10,22 @@ import vela.web.stream : sendResponse;
 import vela.web.context : Context;
 import vela.engine.loop : ServerConfig, HandlerFactory, RequestCallback, WorkerInit;
 import vela.engine.fiberio : workerIndex, currentFiberLocal, setCurrentFiberLocal;
-import vela.log : setLogFiberSource;
+import vela.log : LogScope, setLogFiberSource;
 
-/// vela.log's request id inside an engine fiber: the id of the Context the running request fiber carries. True when
-/// running in a request fiber (even without an id), so the logger never falls back to another request's.
-private bool fiberRequestId(out const(char)[] id) nothrow
+/// vela.log's context inside an engine fiber: the id of the Context the running request fiber carries, or the LogScope
+/// of a job (`--role=all` runs jobs on worker 0). True when running in such a fiber (even without an id), so the logger
+/// never falls back to another request's.
+private bool fiberRequestId(out const(char)[] id, out LogScope fields) nothrow
 {
-    if (auto ctx = cast(Context) currentFiberLocal())
+    auto local = currentFiberLocal();
+    if (auto ctx = cast(Context) local)
     {
         id = ctx.logRequestId();
+        return true;
+    }
+    if (auto s = cast(LogScope) local)
+    {
+        fields = s;
         return true;
     }
     return false;

@@ -27,7 +27,8 @@ module vela.jobs.worker;
 
 import core.time : Duration, msecs, seconds;
 import std.datetime.systime : Clock, SysTime;
-import vela.engine.fiberio : sleep, spawn, stopping, workerIndex;
+import vela.engine.fiberio : currentFiberLocal, sleep, spawn, stopping, workerIndex;
+import vela.log : LogScope, setLogFiberSource;
 import vela.engine.loop : HandlerFactory, RequestCallback, ServerConfig, TlsConfig, WorkerInit;
 import vela.http.response : ResponseSink;
 import vela.http.types : Method, Request;
@@ -163,6 +164,7 @@ void runJobs(Jobs...)(JobStore store, Startup startup, ServerConfig cfg = Server
     version (linux)
     {
         WorkerInit init = () {
+            setLogFiberSource(&jobFiberLog); // vela.log reads the running job from its fiber
             if (workerIndex == 0)
                 startSupervisor!Jobs(store, startup, hooks, idleBackoff);
             if (healthPort == 0)
@@ -181,6 +183,18 @@ void runJobs(Jobs...)(JobStore store, Startup startup, ServerConfig cfg = Server
     else
         throw new Exception(
             "vela.jobs: background jobs need the epoll loop (the development server runs spawn inline)");
+}
+
+/// vela.log's context in a `--role=worker` fiber: the `LogScope` the runner put in the fiber's slot while `perform`
+/// runs. (`--role=all` uses the server's source, which knows both requests and jobs.)
+private bool jobFiberLog(out const(char)[] id, out LogScope fields) nothrow
+{
+    if (auto s = cast(LogScope) currentFiberLocal())
+    {
+        fields = s;
+        return true;
+    }
+    return false;
 }
 
 /// `--role=all`. Pass the result as `onWorker0` to `serve` / `tryServe`.

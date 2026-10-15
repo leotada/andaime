@@ -11,7 +11,9 @@ module vela.jobs.backend;
 @safe:
 
 import core.time : Duration, usecs;
+import vela.engine.fiberio : currentFiberLocal, setCurrentFiberLocal;
 import vela.engine.offload : offload;
+import vela.log : LogScope, setLogSyncScope;
 import vela.jobs.job;
 import vela.web.numtext : itoa;
 
@@ -613,6 +615,22 @@ private void runTyped(J)(JobStore store, JobRecord rec) @safe
     ctx.attempt = rec.attempt;
     ctx.maxAttempts = rec.maxAttempts;
     ctx.queue = rec.queue;
+
+    // vela.log lines of `perform` carry the job: through the fiber's slot, or the thread's scope without a fiber
+    // (`drainJobs`). Not across `@Offload`: the pool thread has neither.
+    auto fields = new LogScope().add("job", rec.name).add("job_id", rec.id).add("attempt", rec.attempt);
+    auto prevLocal = currentFiberLocal();
+    immutable inFiber = setCurrentFiberLocal(fields);
+    LogScope prevScope;
+    if (!inFiber)
+        prevScope = setLogSyncScope(fields);
+    scope (exit)
+    {
+        if (inFiber)
+            setCurrentFiberLocal(prevLocal);
+        else
+            setLogSyncScope(prevScope);
+    }
 
     // Still running when an Error (or any other non-Exception) leaves. scope(failure) gives the
     // attempt back and the Throwable keeps going; a caught Exception sets this false first.

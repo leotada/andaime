@@ -77,6 +77,10 @@ around. vela keeps the id with the request's fiber, so lines of requests that in
 the database, another runs) never get each other's id. Outside a request (startup, a background job) there is no
 `request_id`.
 
+Inside a background job's `perform` every line carries the job instead: `job` (its name), `job_id` and `attempt`
+(`msg="mail sent" job=app.jobs.SendMail job_id=42 attempt=2 to=ana@x.com`), on any role and in `TestJobStore.drainJobs`.
+A job with `@Offload` runs `perform` on a pool thread, whose lines carry neither.
+
 ## vela's own lines
 
 The access log (`accessLog()`, `info`), the exceptions behind a 500 (`error`, with the stack trace, rate-limited by

@@ -141,15 +141,53 @@ package(vela) void logVela(Args...)(LogLevel level, scope const(char)[] legacy, 
 
 // ------------------------------------------------------------ the request id
 
-/// Per thread: the request id of the request whose fiber is running (installed by the server on each worker thread; true
-/// when called from a request fiber, even when it has no id).
-private bool function(out const(char)[] id) @safe nothrow fiberSource;
+/// Fields added to every line logged by the code a layer runs: the job runner adds `job`, `job_id` and `attempt` to the
+/// lines of `perform`. Values are rendered when the scope is built.
+final class LogScope
+{
+    private string[] keys, values;
+    private bool[] numbers;
+
+    /// Adds a text field.
+    LogScope add(string key, string value) pure nothrow
+    {
+        keys ~= key;
+        values ~= value;
+        numbers ~= false;
+        return this;
+    }
+
+    /// Adds a number field (bare in JSON).
+    LogScope add(string key, long value) pure nothrow
+    {
+        import vela.web.numtext : itoa;
+
+        keys ~= key;
+        values ~= itoa(value);
+        numbers ~= true;
+        return this;
+    }
+}
+
+/// Per thread: the request id (or the `LogScope`) of the code whose fiber is running, installed by the server and by
+/// `runJobs` on each worker thread. True when called from such a fiber, even when it has neither.
+private bool function(out const(char)[] id, out LogScope fields) @safe nothrow fiberSource;
 /// Per thread: the request being handled without fibers (`TestClient`, the development server), set by `App.handle`.
 private const(char)[] delegate() @safe nothrow syncSource;
+/// Per thread: the scope of the code running without fibers (`TestJobStore.drainJobs`).
+private LogScope syncScope;
 
-package(vela) void setLogFiberSource(bool function(out const(char)[] id) @safe nothrow src) nothrow @nogc
+package(vela) void setLogFiberSource(bool function(out const(char)[] id, out LogScope fields) @safe nothrow src) nothrow @nogc
 {
     fiberSource = src;
+}
+
+/// Sets the per-thread scope (code that runs without fibers) and returns the previous one.
+package(vela) LogScope setLogSyncScope(LogScope s) nothrow @nogc
+{
+    auto prev = syncScope;
+    syncScope = s;
+    return prev;
 }
 
 /// Sets the per-thread source and returns the previous one (to restore after the request).
@@ -160,12 +198,13 @@ package(vela) const(char)[] delegate() @safe nothrow setLogSyncSource(const(char
     return prev;
 }
 
-private const(char)[] currentRequestId() nothrow
+/// The request id and the scope of the running code.
+private void currentContext(out const(char)[] id, out LogScope fields) nothrow
 {
-    const(char)[] id;
-    if (fiberSource !is null && fiberSource(id))
-        return id;
-    return syncSource is null ? null : syncSource();
+    if (fiberSource !is null && fiberSource(id, fields))
+        return;
+    id = syncSource is null ? null : syncSource();
+    fields = syncScope;
 }
 
 // ------------------------------------------------------------ writing
@@ -179,7 +218,9 @@ private void emit(Args...)(LogLevel level, scope const(char)[] legacy, bool hasL
     {
         line.clear();
         immutable fmt = logFormat();
-        auto rid = currentRequestId();
+        const(char)[] rid;
+        LogScope scoped;
+        currentContext(rid, scoped);
         final switch (fmt)
         {
             case LogFormat.text:
@@ -194,6 +235,7 @@ private void emit(Args...)(LogLevel level, scope const(char)[] legacy, bool hasL
                     line.put(" request_id=");
                     putText(line, rid, false);
                 }
+                putScope(line, scoped, false);
                 static foreach (i; 0 .. Args.length / 2)
                 {
                     line.put(' ');
@@ -214,6 +256,7 @@ private void emit(Args...)(LogLevel level, scope const(char)[] legacy, bool hasL
                     line.put(" request_id=");
                     putText(line, rid, false);
                 }
+                putScope(line, scoped, false);
                 static foreach (i; 0 .. Args.length / 2)
                 {
                     line.put(' ');
@@ -234,6 +277,7 @@ private void emit(Args...)(LogLevel level, scope const(char)[] legacy, bool hasL
                     line.put(`,"request_id":`);
                     writeJsonString(line, rid);
                 }
+                putScope(line, scoped, true);
                 static foreach (i; 0 .. Args.length / 2)
                 {
                     line.put(',');
@@ -252,6 +296,33 @@ private void emit(Args...)(LogLevel level, scope const(char)[] legacy, bool hasL
     catch (Exception)
     {
         // a value that cannot be written loses its line, never the request
+    }
+}
+
+/// The fields of `s`, after the request id: ` key=value` (text, kv) or `,"key":value` (json).
+private void putScope(ref ByteBuffer o, LogScope s, bool json) nothrow
+{
+    if (s is null)
+        return;
+    foreach (i, k; s.keys)
+    {
+        if (json)
+        {
+            o.put(',');
+            writeJsonString(o, k);
+            o.put(':');
+            if (s.numbers[i])
+                o.put(s.values[i]);
+            else
+                writeJsonString(o, s.values[i]);
+        }
+        else
+        {
+            o.put(' ');
+            o.put(k);
+            o.put('=');
+            putText(o, s.values[i], false);
+        }
     }
 }
 

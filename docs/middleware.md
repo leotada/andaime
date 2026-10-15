@@ -110,6 +110,7 @@ app.onError((Context ctx, Exception e) {
 });
 
 app.onNotFound((Context ctx) { ctx.text("nothing here", 404); });
+app.onMethodNotAllowed((Context ctx) { ctx.text("wrong method", 405); }); // the Allow header is already set
 ```
 
 Middleware sees the final status after `next()` returns, even when the handler threw: the error has already been turned into

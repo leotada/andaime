@@ -301,6 +301,7 @@ final class App
     private Middleware[] middlewares;
     private ErrorHandler errorHandler;
     private UserHandler notFoundHandler;
+    private UserHandler methodNotAllowedHandler;
     private ValidationHook validation;
     private void delegate(Context) @safe[] validationFor; // per handler, built by freeze; null: the default 422
     private OpRecord[] ops;
@@ -399,6 +400,14 @@ final class App
     {
         mustBeOpen();
         notFoundHandler = h;
+    }
+
+    /// Response for a path that exists for other methods (replaces the default JSON 405). The `Allow` header is already
+    /// set when `h` runs, and the status is 405 until `h` sets one (`ctx.json(err, 405)`).
+    void onMethodNotAllowed(UserHandler h)
+    {
+        mustBeOpen();
+        methodNotAllowedHandler = h;
     }
 
     /// Registers an already-generated handler. The `get`/`post`/... functions below
@@ -623,7 +632,16 @@ final class App
                 break;
             case MatchStatus.methodNotAllowed:
                 ctx.setHeader("Allow", allowList(ctx, r.allowed));
-                renderError(ctx, 405, "method not allowed");
+                if (methodNotAllowedHandler !is null)
+                {
+                    ctx.response.status = 405;
+                    try
+                        callUser(methodNotAllowedHandler, ctx);
+                    catch (Exception e)
+                        fail(ctx, e);
+                }
+                else
+                    renderError(ctx, 405, "method not allowed");
                 break;
         }
     }

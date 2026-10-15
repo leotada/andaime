@@ -160,6 +160,7 @@ unittest
             ctx.text("failure", 500);
     });
     app.onNotFound((Context ctx) { ctx.text("gone", 404); });
+    app.onMethodNotAllowed((Context ctx) { ctx.json(MethodError("method"), 405); }); // Allow is already set
     auto c = TestClient(app);
 
     auto r = c.get("/boom");
@@ -168,10 +169,14 @@ unittest
     assert(r.status == 403 && r.body == "http:forbidden");
     r = c.get("/does-not-exist");
     assert(r.status == 404 && r.body == "gone");
+    r = c.request(Method.DELETE, "/boom", null);
+    assert(r.status == 405 && r.body == `{"error":"method"}` && r.header("Allow") == "GET", r.body);
     // an exception thrown by a middleware also goes through onError
     r = c.get("/api/admin/me");
     assert(r.status == 401 && r.body == "http:missing token");
 }
+
+struct MethodError { string error; }
 
 unittest
 {

@@ -105,7 +105,8 @@ the paths are full paths (`mount` is on `App`, not on a group).
 ## 404, 405 and trailing slashes
 
 - No route for the path: **404** `{"detail":"not found"}`. Replace it with `app.onNotFound((Context ctx) { ... })`.
-- The path exists for other methods: **405** with an `Allow` header.
+- The path exists for other methods: **405** `{"detail":"method not allowed"}` with an `Allow` header. Replace the body with
+  `app.onMethodNotAllowed((Context ctx) { ctx.json(MyError("method not allowed"), 405); })`; `Allow` is already set.
 - A trailing slash is significant by default (`TrailingSlash.strict`): `/users/` is not `/users`. `app.trailingSlash` changes it:
   - `TrailingSlash.redirect` (or `app.redirectTrailingSlash = true`): `/users/` answers **308** to `/users` (and the
     reverse) when only the other form exists. 308 keeps the method and body.

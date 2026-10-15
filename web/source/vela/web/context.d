@@ -276,6 +276,9 @@ final class Context
     bool aborted;
     /// Creates a connection's permessage-deflate state (zlib, set by the server); null: WebSockets are not compressed.
     WsDeflateFactory newDeflate;
+    /// Set by `App` for the matched route: answers a request whose parameters failed to bind (`App.onValidationError`).
+    /// Null: the default 422.
+    package void delegate(Context) @safe onValidation;
     package char[64] allowBuf; // value of the 405 Allow header
     private char[512] scratchBuf;
     private size_t scratchUsed;
@@ -299,6 +302,7 @@ final class Context
         request = r;
         this.sink = sink;
         committed = aborted = false;
+        onValidation = null;
         streamLength = -1;
         params.count = 0;
         response.reset();
@@ -409,6 +413,18 @@ final class Context
         response.contentType = "text/plain; charset=utf-8";
         response.body.clear();
         response.body.put(s);
+    }
+
+    /// Answers `value` as JSON (any type a handler may return as JSON: a struct, an array, a map...), replacing the
+    /// body. For error and validation handlers: `ctx.json(ApiError("invalid email"), 400);`
+    void json(T)(auto ref const T value, int status = 200)
+    {
+        import vela.web.json : writeJson;
+
+        response.status = status;
+        response.contentType = "application/json";
+        response.body.clear();
+        writeJson(response.body, value);
     }
 }
 

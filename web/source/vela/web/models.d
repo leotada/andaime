@@ -136,6 +136,7 @@ bool bindModel(T)(Context ctx, string location, const(char)[] source, ref T dest
     immutable before = ctx.errors.count + ctx.errors.dropped;
     FieldPath path;
     path.location = location;
+    path.source = location == "query" ? ErrorSource.query : ErrorSource.form;
     static foreach (i; 0 .. T.tupleof.length)
     {
         static if (!hasUda!(T, i, jsonIgnore))
@@ -271,6 +272,7 @@ private void bindMultipart(T)(Context ctx, MultipartPart[] parts, ref T dest)
 {
     FieldPath path;
     path.location = "body";
+    path.source = ErrorSource.form;
     static foreach (i; 0 .. T.tupleof.length)
     {
         static if (!hasUda!(T, i, jsonIgnore))

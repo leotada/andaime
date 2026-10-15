@@ -7,7 +7,9 @@ module vela.web;
 public import vela.web.application;
 public import vela.web.context;
 public import vela.web.params;
-public import vela.web.dto : jsonKey, optional, jsonIgnore, minLength, maxLength, inRange, schemaName;
+public import vela.web.dto : jsonKey, optional, jsonIgnore, minLength, maxLength, inRange, schemaName,
+    ValidationErrors, FieldError, ErrorSource, LocPart;
+public import vela.web.handler_traits : writeDefaultValidationErrors;
 public import vela.web.testing;
 public import vela.web.cors;
 public import vela.web.openapi : OpenApiInfo, summary;

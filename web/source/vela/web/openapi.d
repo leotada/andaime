@@ -59,6 +59,7 @@ struct Components
     string[string] ownerOfName;  // schema name -> the type that owns it (T.mangleof)
     string[string] nameOfType;   // T.mangleof -> its schema name
     bool[string] operationIds;   // operationIds already used in this document
+    ValidationDoc validation;    // how the operation being described answers validation failures
 
     /// Reserves the names vela itself defines, so a user struct called `HTTPError` gets another name.
     void reserveBuiltins() @safe
@@ -430,7 +431,7 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
 
         // responses
         string resp;
-        bool declares422;
+        string[] declared; // status codes given by @responds
         static if (is(typeof(fn) R == return))
         {
             enum st = successStatus!fn;
@@ -466,14 +467,17 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
                 ensureHttpError(comps);
                 resp ~= (resp.length ? "," : "") ~ `"` ~ ctNum(a.code) ~ `":{"description":` ~ q(a.description)
                     ~ `,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HTTPError"}}}}`;
-                static if (a.code == 422)
-                    declares422 = true;
+                declared ~= ctNum(a.code);
             }
-        if (canFail && !declares422)
+        if (canFail)
         {
-            ensureValidationError(comps);
-            resp ~= (resp.length ? "," : "") ~ `"422":{"description":"Validation error","content":{"application/json":`
-                ~ `{"schema":{"$ref":"#/components/schemas/HTTPValidationError"}}}}`;
+            string key;
+            auto entry = validationEntry(comps, key);
+            bool taken;
+            foreach (d; declared)
+                taken |= d == key;
+            if (!taken)
+                resp ~= (resp.length ? "," : "") ~ q(key) ~ ":" ~ entry;
         }
         o ~= `,"responses":{` ~ resp ~ `}}`;
         return o;
@@ -528,6 +532,33 @@ private void ensureValidationError(ref Components comps) @safe
             ~ `"required":["type","loc","msg"]}}}}`;
 }
 
+/// How a route documents its validation failures: the default 422, or what `App.onValidationError` declared.
+struct ValidationDoc
+{
+    bool custom;        /// a custom handler answers them
+    int status;         /// its declared status; 0: not declared (documented as "4XX", without a body schema)
+    string description;
+    string delegate(ref Components) @safe schema; /// the body's schema; null: none declared
+}
+
+/// The responses entry for a route that can fail validation, and its key ("422", "400", "4XX").
+private string validationEntry(ref Components comps, out string key) @safe
+{
+    auto v = comps.validation;
+    if (!v.custom)
+    {
+        ensureValidationError(comps);
+        key = "422";
+        return `{"description":"Validation error","content":{"application/json":`
+            ~ `{"schema":{"$ref":"#/components/schemas/HTTPValidationError"}}}}`;
+    }
+    key = v.status ? itoa(v.status) : "4XX";
+    auto desc = v.description.length ? v.description : "Validation error";
+    if (v.schema is null)
+        return `{"description":` ~ q(desc) ~ `}`;
+    return `{"description":` ~ q(desc) ~ `,"content":{"application/json":{"schema":` ~ v.schema(comps) ~ `}}}`;
+}
+
 // ------------------------------------------------------------ document
 
 struct OpRecord
@@ -535,6 +566,7 @@ struct OpRecord
     Method method;
     string pattern;     // as registered (includes the group prefix)
     OpDescribe describe; // null for routes without introspection (static files...)
+    ValidationDoc validation; // filled when the app freezes
 }
 
 /// `{*rest}` -> `{rest}` (OpenAPI does not know the asterisk).
@@ -571,6 +603,7 @@ string buildOpenApi(const(OpRecord)[] ops, OpenApiInfo info) @safe
             case Method.OPTIONS: verb = "options"; break;
             case Method.unknown: continue;
         }
+        comps.validation = op.validation;
         auto body_ = q(verb) ~ ":" ~ op.describe(comps, op.pattern);
         if (auto cur = p in byPath)
             *cur ~= "," ~ body_;

@@ -33,9 +33,10 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 ## Safety model (`@safe`)
 
 - Framework-internal delegate types (`RequestCallback`, `HandlerFactory`, `WorkerInit`, `HandlerFn`, `offload`'s work delegate) are `@safe`.
-- **User-facing callbacks accept `@system`** (`Middleware`, `ErrorHandler`, `UserHandler`, route handlers, a text type's methods):
-  user code may call C libraries without ceremony, and `@safe` code converts to them implicitly. The framework invokes user code
-  only through `callMiddleware`, `callUser`, `callBuild` (the app build function, `server.d`), `callStream`/`callEvents` (stream
+- **User-facing callbacks accept `@system`** (`Middleware`, `ErrorHandler`, `UserHandler`, `ValidationErrorHandler`, route
+  handlers, a text type's methods): user code may call C libraries without ceremony, and `@safe` code converts to them implicitly.
+  The framework invokes user code only through `callMiddleware`, `callUser` (one overload per handler type, `application.d`;
+  a validation handler is reached from `dispatch` through the `@safe` `Context.onValidation` that `App.freeze` sets), `callBuild` (the app build function, `server.d`), `callStream`/`callEvents` (stream
   bodies, `stream.d`), `callWebSocket` (a WebSocket body, `web/.../websocket.d`), `textFromString`/`textToString` (a user's
   text type, `vela.http.texttype`) and the `@trusted` lambda in `dispatch`. Add no other call sites.
 - `-version=VelaStrictSafe` (dub: `versions "VelaStrictSafe"`) makes `handlerError` reject `@system` handlers with a one-line

@@ -373,7 +373,7 @@ void dispatch(Method method, string path, alias fn, Self...)(Context ctx, Self s
         }}
 
         if (ctx.errors.any)
-            return writeValidationErrors(ctx);
+            return reportValidationErrors(ctx);
 
         static if (Self.length)
             enum call = "__traits(child, self[0], fn)(args)";
@@ -466,8 +466,19 @@ private bool bindBody(T)(Context ctx, ref T dest)
     return decodeJson(cast(const(char)[]) ctx.request.body, dest, ctx.errors);
 }
 
-/// 422 in FastAPI/Pydantic v2 format: {"detail":[{"type":"missing","loc":["query","limit"],"msg":"Field required"}]}
-void writeValidationErrors(Context ctx)
+/// Answers a request whose parameters failed to bind: the route's `onValidationError` handler, or the default 422.
+private void reportValidationErrors(Context ctx)
+{
+    if (ctx.onValidation !is null)
+        ctx.onValidation(ctx);
+    else
+        writeDefaultValidationErrors(ctx);
+}
+
+/// The default answer to a validation failure, 422 in FastAPI/Pydantic v2 format:
+/// `{"detail":[{"type":"missing","loc":["query","limit"],"msg":"Field required"}]}`. Public so a custom
+/// `onValidationError` handler can fall back to it.
+void writeDefaultValidationErrors(Context ctx)
 {
     auto o = &ctx.response.body;
     ctx.response.status = 422;
@@ -501,6 +512,9 @@ void writeValidationErrors(Context ctx)
     }
     o.put("]}");
 }
+
+/// The former name of `writeDefaultValidationErrors`.
+alias writeValidationErrors = writeDefaultValidationErrors;
 
 /// Writes the value returned by the handler.
 void writeResult(R)(Context ctx, ref R r)

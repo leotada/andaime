@@ -60,6 +60,7 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 - [Phase 8 — Performance](#phase-8--performance-m4-first-items)
 - [Phase 9 — Evidence for "HTTP/2 compatible"](#phase-9--evidence-for-http2-compatible)
 - [Phase 10 — WebSockets](#phase-10--websockets)
+- [Phase 11 — Features for real applications](#phase-11--features-for-real-applications)
 - [Open owner decisions](#open-owner-decisions-not-blocking)
 - [Appendix A — Evidence](#appendix-a--evidence-gathered-during-the-review)
 - [Appendix B — Definition of done](#appendix-b--definition-of-done-every-item)
@@ -1451,6 +1452,56 @@ Requested by the owner on 2026-10-14 ("implement the websocket via HTTP 2"), whi
 > `http2WebSockets = false`), the fuzz invariants drive tunnels (`fuzz_h2.d` seeds also start libFuzzer's corpus: 12.6M runs
 > clean), 0 GC bytes in 100k echoes over a session tunnel, 1,000 open WebSockets over 10 h2 connections peak at ~19 MB RSS
 > (checked < 30 MB), compile budget 398 -> 401 ms. Not run here: h2spec (not installed on this machine).
+
+## Phase 11 — Features for real applications
+
+Started on 2026-10-14, branch `real-app-features`. A production app (Visto) is moving its backend from Python/Sanic to
+vela and must keep its HTTP contract exactly. Checking what it uses against vela gave the items below. Each is a general
+feature with docs and tests, and every default stays what it was. Out of scope (stop and ask if an item seems to need
+one): per-route body limits, unbuffered request bodies, streaming responses in the HTTP client, per-route request
+timeouts, any HTTP/2 or TLS feature (D3).
+
+### Decision log
+
+| # | Item | Decision | Rejected | Why |
+|---|------|----------|----------|-----|
+| F1 | 11.1 | `app.onValidationError(h)` with `h(Context, ValidationErrors)`; the response starts as an empty 422. | Throwing a `ValidationError` exception to `onError`; passing `ref FieldErrors`. | Exceptions would cost the hot error path an allocation and mix framing errors with field errors. A small view struct (`items`, `dropped`) is easy to take by value, `@safe`, and points into the Context, so nothing is copied. |
+| F2 | 11.1 | `FieldError` gains `source` (`ErrorSource`: path, query, header, cookie, jsonBody, form), `path()` and `dotted()`. `location`/`locJson` unchanged. | Storing the path as segments instead of `locJson`. | The default 422 stays byte-identical and the hot path stores the same as before; `path()` parses `locJson` only when a handler asks. `form` tells a `Form!T` body from a JSON one, which `loc` (`"body"` for both) cannot. |
+| F3 | 11.1 | A group can override the app's handler; the nearest group wins; resolved once per route at `freeze`, stored in `Context.onValidation` when the route matches (one pointer store). Controllers from `mount` use the app's. | App-only handler. | APIs often mount a public `/api` and an internal part with different contracts; the cost is one store per request, and the resolution happens once. |
+| F4 | 11.1 | 415 (wrong form content type) and 400 (malformed multipart) stay `HttpError`s for `onError`. | Turning them into validation errors. | They are about the framing, not a field; routing them through validation would change which hook sees them for existing apps. Documented, with the statuses unchanged. |
+| F5 | 11.1 | OpenAPI: the default documents the 422 as before; `onValidationError!Body(status, h, description)` documents `status` with `Body`'s schema; a handler without a declaration documents a generic `4XX` without a schema. | Keeping the 422 entry; an OpenAPI-only attribute per route. | A 422 that the app never sends would lie. `4XX` says only what is known. Other statuses the handler picks (a 404 for a path) go on routes with `@responds`. |
+| F6 | 11.1 | The user handler is called through a new `callUser` overload (the existing call site name); `dispatch` reaches it through `Context.onValidation`, a framework `@safe` delegate. | A new call-site function in `handler_traits.d`. | Keeps the list of places that call user code the same. |
+| F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
+
+### [x] 11.1 Custom validation error responses: `onValidationError` — M
+
+> **Done.** `vela.web.application`: `ValidationErrorHandler`, `App/Group.onValidationError(h)` and `!Body(status, h,
+> description)` (one-line compile errors for a wrong handler type and a non-struct body; a bad status throws `RouteError`),
+> resolution at `freeze`; `vela.web.dto`: `ErrorSource`, `LocPart`, `FieldError.source/path/dotted`, `ValidationErrors`
+> (`has`), `FieldErrors.view`; `vela.web.openapi`: `ValidationDoc`, `Components.validation`, `OpRecord.validation`;
+> `Context.json`. Tests: `tests/web/validation_handler.d` (every failure kind, path -> 404, framing errors unchanged, dropped
+> count, default byte-identical, a handler that writes only a body / falls back / throws, nested group override, a mounted
+> controller with a `@system` function, the three OpenAPI cases, a bad status, registration after freeze), `dto.d`
+> unittest, `tests/compile_fail/validation_handler_signature.d`, `validation_handler_body.d`. Docs: `validation.md` (a
+> `// check` example), `static-files-and-openapi.md`, the index; `AGENTS.md` call sites.
+
+### [ ] 11.2 Tri-state JSON fields: `PatchField!T` — M
+
+### [ ] 11.3 Dynamic JSON value: `JsonValue` — M
+
+### [ ] 11.4 `vela:crypto` — L
+
+### [ ] 11.5 Array parameters in `vela-pg` — S
+
+### [ ] 11.6 Nested row mapping in `rowsAs!T` — S/M
+
+### [ ] 11.7 Savepoints in `vela-pg` — S
+
+### [ ] 11.8 Structured logger `vela.log` — M
+
+### [ ] 11.9 `TestClient` ergonomics — S/M
+
+### [ ] 11.10 `httpClient` additions — S
 
 ## Open owner decisions (not blocking)
 

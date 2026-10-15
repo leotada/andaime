@@ -7,6 +7,8 @@ import vela.http.types;
 import vela.http.ip : Cidr, parseCidr;
 import vela.web.context;
 import vela.web.params : HttpError;
+import vela.web.dto : ValidationErrors;
+import vela.web.numtext : itoa;
 import vela.web.router;
 import vela.web.handler_traits : handlerError, dispatch;
 import vela.web.json : writeJsonString;
@@ -39,9 +41,93 @@ alias UserHandler = void delegate(Context) @system;
 /// Write the response into `ctx` (`ctx.text(...)`, `ctx.response.status = ...`).
 alias ErrorHandler = void delegate(Context ctx, Exception e) @system;
 
+/// Answers a request whose parameters failed to bind (see `App.onValidationError`). Read the errors from `errors`
+/// and write the response into `ctx`.
+alias ValidationErrorHandler = void delegate(Context ctx, ValidationErrors errors) @system;
+
 // @trusted: single entry points for user callbacks (their safety is the user's business)
 private void callUser(UserHandler h, Context ctx) @trusted { h(ctx); }
 private void callUser(ErrorHandler h, Context ctx, Exception e) @trusted { h(ctx, e); }
+private void callUser(ValidationErrorHandler h, Context ctx, ValidationErrors errors) @trusted { h(ctx, errors); }
+
+/// A validation error handler set on an App or a Group, with what OpenAPI says about it.
+private final class ValidationHook
+{
+    ValidationErrorHandler handler;
+    ValidationDoc doc;
+
+    this(ValidationErrorHandler handler, ValidationDoc doc)
+    {
+        this.handler = handler;
+        this.doc = doc;
+    }
+
+    /// `Context.onValidation` for the routes it covers. The response starts as an empty 422, like `onError`'s starts as
+    /// an empty 500, so a handler that only writes a body still answers 422.
+    void respond(Context ctx)
+    {
+        ctx.response.status = 422;
+        ctx.response.contentType = null;
+        ctx.response.body.clear();
+        callUser(handler, ctx, ctx.errors.view);
+    }
+}
+
+/// `onValidationError` for `App` and `Group` (the difference is only where the hook is stored).
+private mixin template ValidationSetters()
+{
+    /// Answers requests whose parameters fail to bind (wrong or missing query, header, cookie, path or body fields)
+    /// instead of the default 422. The handler gets the errors and writes the response:
+    ///
+    ///     app.onValidationError((Context ctx, ValidationErrors errors) {
+    ///         if (errors.has(ErrorSource.path))
+    ///             return ctx.json(Message("not found"), 404);
+    ///         ctx.json(Message(errors.items[0].dotted ~ ": " ~ errors.items[0].message), 400);
+    ///     });
+    ///
+    /// OpenAPI then documents a generic "4XX" error without a body schema; use the `!Body(status, h)` form to declare it.
+    /// A group's handler replaces the app's (and a parent group's) for its routes.
+    void onValidationError(F)(F h)
+    {
+        static if (validationHandlerError!F.length)
+            static assert(0, validationHandlerError!F);
+        else
+            setValidation(new ValidationHook(toValidationHandler(h), ValidationDoc(true, 0, null, null)));
+    }
+
+    /// Same, and the OpenAPI document says these errors are `status` with a `Body` JSON body:
+    /// `app.onValidationError!ApiError(400, (Context ctx, ValidationErrors errors) { ... });`
+    void onValidationError(Body, F)(int status, F h, string description = "Validation error")
+    {
+        static if (!is(Body == struct))
+            static assert(0, "vela: onValidationError!(" ~ Body.stringof ~ "): the error body type must be a struct "
+                ~ "(it documents the JSON the handler writes)");
+        else static if (validationHandlerError!F.length)
+            static assert(0, validationHandlerError!F);
+        else
+        {
+            if (status < 100 || status > 599)
+                throw new RouteError("vela: onValidationError: " ~ itoa(status) ~ " is not an HTTP status");
+            setValidation(new ValidationHook(toValidationHandler(h), ValidationDoc(true, status, description,
+                delegate string(ref Components cs) @safe { return schemaOf!Body(cs); })));
+        }
+    }
+}
+
+/// One line saying what is wrong with a validation handler of type `F`, or "".
+private enum string validationHandlerError(F) = is(F : ValidationErrorHandler)
+    || is(F : void function(Context, ValidationErrors) @system) ? ""
+    : "vela: onValidationError takes a function (Context ctx, ValidationErrors errors) returning void, not '"
+        ~ F.stringof ~ "'";
+
+/// A user's handler (delegate or function) as a `ValidationErrorHandler`.
+private ValidationErrorHandler toValidationHandler(F)(F h)
+{
+    static if (is(F : ValidationErrorHandler))
+        return h;
+    else
+        return delegate(Context c, ValidationErrors e) @system { h(c, e); };
+}
 
 /// Runs a group's middlewares and, at the end, the route's handler.
 private final class Chain
@@ -79,12 +165,30 @@ final class Group
     private string prefix;
     private Group parent;
     private Middleware[] mws;
+    private ValidationHook validation;
 
     private this(App app, string prefix, Group parent)
     {
         this.app = app;
         this.prefix = prefix;
         this.parent = parent;
+    }
+
+    mixin ValidationSetters;
+
+    private void setValidation(ValidationHook hook)
+    {
+        app.mustBeOpen();
+        validation = hook;
+    }
+
+    /// The nearest validation hook: this group's, a parent's, or null.
+    private ValidationHook findValidation()
+    {
+        for (auto g = this; g !is null; g = g.parent)
+            if (g.validation !is null)
+                return g.validation;
+        return null;
     }
 
     void use(Middleware mw)
@@ -140,6 +244,8 @@ final class App
     private Middleware[] middlewares;
     private ErrorHandler errorHandler;
     private UserHandler notFoundHandler;
+    private ValidationHook validation;
+    private void delegate(Context) @safe[] validationFor; // per handler, built by freeze; null: the default 422
     private OpRecord[] ops;
 
     private bool frozen;
@@ -218,6 +324,14 @@ final class App
         errorHandler = h;
     }
 
+    mixin ValidationSetters;
+
+    private void setValidation(ValidationHook hook)
+    {
+        mustBeOpen();
+        validation = hook;
+    }
+
     /// Response for nonexistent routes (replaces the default JSON 404).
     void onNotFound(UserHandler h)
     {
@@ -246,8 +360,17 @@ final class App
     {
         if (frozen)
             return;
+        validationFor = new void delegate(Context) @safe[handlers.length];
         foreach (i, g; owners)
         {
+            auto hook = g is null ? null : g.findValidation();
+            if (hook is null)
+                hook = validation;
+            if (hook !is null)
+            {
+                validationFor[i] = &hook.respond;
+                ops[i].validation = hook.doc;
+            }
             if (g is null)
                 continue;
             Middleware[] all;
@@ -394,6 +517,7 @@ final class App
         final switch (r.status)
         {
             case MatchStatus.found:
+                ctx.onValidation = validationFor[r.handler];
                 try
                     handlers[r.handler](ctx);
                 catch (Exception e) // caught here so the middlewares see the final status

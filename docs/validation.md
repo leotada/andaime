@@ -63,6 +63,87 @@ Conversion and validation errors become one **422** in FastAPI's (Pydantic v2's)
 | `percent_encoding` | a bad `%xx` in the path or query |
 | `too_many_errors` | more than 16 errors |
 
+## Your own validation response
+
+An application with an existing contract can answer validation failures its own way with `app.onValidationError`. The
+handler runs instead of the 422 (the route's handler still does not run), gets the errors, and writes the response:
+
+```d
+// check
+import vela;
+
+struct Message { string message; }
+
+struct Item
+{
+    string id;
+}
+
+/// A typed path segment: 8 hexadecimal digits.
+struct ItemId
+{
+    string text;
+
+    static bool fromString(scope const(char)[] t, out ItemId v)
+    {
+        if (t.length != 8)
+            return false;
+        foreach (c; t)
+            if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+                return false;
+        v.text = t.idup;
+        return true;
+    }
+
+    void toString(scope void delegate(scope const(char)[]) @safe sink) const { sink(text); }
+}
+
+Item getItem(ItemId id) => Item(id.text);
+
+void main()
+{
+    serve(() {
+        auto app = new App;
+        // 400 {"message": "..."} for bad input, and 404 when a typed path segment does not parse
+        app.onValidationError!Message(400, (Context ctx, ValidationErrors errors) {
+            if (errors.has(ErrorSource.path))
+                return ctx.json(Message("not found"), 404);
+            auto first = errors.items[0];
+            ctx.json(Message(first.dotted ~ ": " ~ first.message), 400);
+        });
+        app.get!("/items/{id}", getItem);
+        return app;
+    });
+}
+```
+
+What the handler gets, in `ValidationErrors`:
+
+- `items`: the errors, in the order they were found. Each `FieldError` has `type` and `message` (the 422's `type` and
+  `msg`), `source` (`ErrorSource.path`, `query`, `header`, `cookie`, `jsonBody` or `form`), `path()` (the field's keys
+  and indexes, `items`, `1`, `code`) and `dotted()` (`"items.1.code"`; `""` for a missing or malformed body). `location`
+  and `locJson` are the raw `loc` of the 422.
+- `dropped`: how many more errors there were past the first 16.
+- `has(source)`: whether some error came from that source.
+
+The response starts as an empty 422, so a handler that only writes a body still answers 422. `ctx.json(value, status)`
+writes any JSON-serializable value; `writeDefaultValidationErrors(ctx)` writes the default body, for a handler that only
+changes some cases. A handler that throws is handled like any handler failure (`onError`, or a 500).
+
+Every way a parameter can fail goes through it: a missing or malformed JSON body, wrong types, missing required query
+parameters, headers and cookies, a path segment that does not convert, and field errors in `Form!T` (urlencoded and
+multipart) and `Query!T`. Errors about the framing of the request are not field errors and stay `HttpError`s for `onError`:
+a `Form!T` sent with a content type it does not accept (415) and a malformed multipart body (400). A JSON body is read
+whatever its `Content-Type` says.
+
+A group can have its own: `api.onValidationError(...)` covers the group's routes and its subgroups', and the nearest one
+wins. Controllers registered with `mount` use the app's. Handlers may be `@safe` or `@system`, like `onError`'s.
+
+**OpenAPI.** With the default, every route that can fail documents the 422 above. With
+`onValidationError!Body(status, handler, "description")` it documents `status` with `Body`'s schema instead. With
+`onValidationError(handler)` nothing says what the handler writes, so the document gives a generic `4XX` response without
+a body schema. Other statuses your handler uses (the 404 above) go on the routes with `@responds(404, "...")`.
+
 ## Other errors
 
 | Status | Cause |
@@ -78,7 +159,8 @@ Conversion and validation errors become one **422** in FastAPI's (Pydantic v2's)
 | 504 | the handler did not start its response within `requestTimeoutMs` |
 
 Your own errors: `throw new HttpError(status, "message")` gives `{"detail":"message"}` with that status. To change how errors
-look, use `app.onError` ([middleware.md](middleware.md#error-handling)).
+look, use `app.onError` ([middleware.md](middleware.md#error-handling)), and `app.onValidationError` for validation errors
+([above](#your-own-validation-response)).
 
 ## Signature mistakes are compile errors
 

@@ -151,24 +151,75 @@ final class PgResult
         }
     }
 
-    /// Maps all rows to a struct, matching fields and columns by name.
+    /// Maps all rows to a struct, matching fields and columns by name. A struct field marked `@prefix("author_")` (or an
+    /// `Optional` of a struct) takes its fields from the columns with that prefix (`author_id`, `author_email`...); an
+    /// `Optional` one is empty when all of its columns are NULL (a LEFT JOIN that found nothing). A missing column throws.
     T[] rowsAs(T)() const if (is(T == struct))
     {
-        int[T.tupleof.length] idx;
-        static foreach (i, f; T.tupleof)
-        {
-            idx[i] = column(__traits(identifier, f));
-            if (idx[i] < 0)
-                throw new PgError("vela.db: the query did not return the column '"
-                        ~ __traits(identifier, f) ~ "' expected by " ~ T.stringof);
-        }
+        int[rowColumnCount!T] idx;
+        size_t k;
+        resolveColumns!T(idx[], k, null);
         auto out_ = new T[rows];
         foreach (r; 0 .. rows)
         {
-            static foreach (i, f; T.tupleof)
-                mixin("out_[r].", __traits(identifier, f), " = get!(typeof(f))(r, idx[i]);");
+            k = 0;
+            fillRow(out_[r], r, idx[], k);
         }
         return out_;
+    }
+
+    /// The column index of every leaf field of `T` (depth first, in field order), with `pre` before each name.
+    private void resolveColumns(T)(int[] idx, ref size_t k, string pre) const
+    {
+        static foreach (i, f; T.tupleof)
+        {{
+            alias F = typeof(f);
+            enum p = prefixOf!(T, i);
+            static if (p.length)
+                resolveColumns!(NestedRow!F)(idx, k, pre ~ p);
+            else
+            {
+                immutable name = pre ~ __traits(identifier, f);
+                idx[k] = column(name);
+                if (idx[k] < 0)
+                    throw new PgError("vela.db: the query did not return the column '" ~ name ~ "' expected by "
+                        ~ T.stringof);
+                k++;
+            }
+        }}
+    }
+
+    private void fillRow(T)(ref T dest, int r, const(int)[] idx, ref size_t k) const
+    {
+        static foreach (i, f; T.tupleof)
+        {{
+            alias F = typeof(f);
+            static if (prefixOf!(T, i).length)
+            {
+                static if (is(F == Optional!S, S))
+                {
+                    enum n = rowColumnCount!S;
+                    bool allNull = true;
+                    foreach (j; k .. k + n)
+                        allNull &= isNull(r, idx[j]);
+                    if (allNull)
+                    {
+                        dest.tupleof[i] = F.init;
+                        k += n;
+                    }
+                    else
+                    {
+                        S s;
+                        fillRow(s, r, idx, k);
+                        dest.tupleof[i] = F(s);
+                    }
+                }
+                else
+                    fillRow(dest.tupleof[i], r, idx, k);
+            }
+            else
+                dest.tupleof[i] = get!F(r, idx[k++]);
+        }}
     }
 
     /// First row as a struct; throws if there is none.
@@ -184,6 +235,54 @@ final class PgResult
     {
         assert(row >= 0 && row < rows && col >= 0 && col < cols, "vela.db: row/column outside the result");
     }
+}
+
+/// Maps a struct field of a row to the columns that start with `value`: `@prefix("author_") Optional!UserSummary author;`
+/// (see `PgResult.rowsAs`).
+struct prefix
+{
+    string value;
+}
+
+/// The `@prefix` of field `i` of `T`, or "".
+private template prefixOf(T, size_t i)
+{
+    enum prefixOf = () {
+        string r;
+        static foreach (a; __traits(getAttributes, T.tupleof[i]))
+            static if (is(typeof(a) == prefix))
+                r = a.value;
+        return r;
+    }();
+    static if (prefixOf.length)
+        static assert(is(NestedRow!(typeof(T.tupleof[i])) == struct) && !isTextType!(NestedRow!(typeof(T.tupleof[i]))),
+            "vela.db: @prefix applies to a struct or Optional!struct field, but '" ~ __traits(identifier, T.tupleof[i])
+            ~ "' of " ~ T.stringof ~ " is " ~ typeof(T.tupleof[i]).stringof);
+}
+
+/// The struct a `@prefix` field holds (unwrapping `Optional`).
+private template NestedRow(F)
+{
+    static if (is(F == Optional!S, S))
+        alias NestedRow = S;
+    else
+        alias NestedRow = F;
+}
+
+/// How many columns a row struct reads (nested `@prefix` fields count their own columns).
+private template rowColumnCount(T)
+{
+    enum size_t rowColumnCount = () {
+        size_t n;
+        static foreach (i; 0 .. T.tupleof.length)
+        {
+            static if (prefixOf!(T, i).length)
+                n += rowColumnCount!(NestedRow!(typeof(T.tupleof[i])));
+            else
+                n++;
+        }
+        return n;
+    }();
 }
 
 private const(char)[] cstr(const(char)* p) nothrow

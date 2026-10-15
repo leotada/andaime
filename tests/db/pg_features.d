@@ -78,6 +78,61 @@ void testArrays()
     ok("array parameters: uuid[], int[], bigint[], text[] with special characters, empty, Optional elements, bool[]");
 }
 
+struct UserSummary { int id; string email; Optional!string nickname; }
+struct Post { int id; string title; @prefix("author_") Optional!UserSummary author; }
+struct Audit { string action; @prefix("by_") UserSummary by; @prefix("post_") Optional!PostRef post; }
+struct PostRef { int id; @prefix("owner_") Optional!UserSummary owner; }
+
+void testNestedRows()
+{
+    auto c = connect();
+    scope (exit) c.shutdown();
+    c.exec("drop table if exists t_posts");
+    c.exec("drop table if exists t_people");
+    c.exec("create table t_people(id int primary key, email text not null, nickname text)");
+    c.exec("create table t_posts(id int primary key, title text not null, author_id int references t_people)");
+    c.exec("insert into t_people values (1, 'ana@x.com', null), (2, 'bia@x.com', 'bia')");
+    c.exec("insert into t_posts values (10, 'first', 1), (11, 'orphan', null), (12, 'third', 2)");
+
+    // a LEFT JOIN: the author is there, or all its columns are NULL and the Optional is empty
+    auto posts = c.query("select p.id, p.title, u.id as author_id, u.email as author_email, u.nickname as author_nickname"
+        ~ " from t_posts p left join t_people u on u.id = p.author_id order by p.id").rowsAs!Post;
+    assert(posts.length == 3);
+    assert(posts[0].author.has && posts[0].author.get.email == "ana@x.com" && !posts[0].author.get.nickname.has);
+    assert(!posts[1].author.has, "no author: every author_ column is NULL");
+    assert(posts[2].author.get.nickname.get == "bia");
+
+    // a missing column still throws, with the prefixed name
+    bool threw;
+    try
+        c.query("select p.id, p.title, null::int as author_id, null::text as author_email from t_posts p").rowsAs!Post;
+    catch (PgError e)
+        threw = e.msg == "vela.db: the query did not return the column 'author_nickname' expected by UserSummary";
+    assert(threw);
+
+    // a required (non-Optional) nested struct, and prefixes that compose (post_owner_...)
+    auto a = c.query("select 'edit' as action, 2 as by_id, 'bia@x.com' as by_email, null::text as by_nickname,"
+        ~ " 10 as post_id, 1 as post_owner_id, 'ana@x.com' as post_owner_email, 'a' as post_owner_nickname").one!Audit;
+    assert(a.by.id == 2 && a.post.get.id == 10 && a.post.get.owner.get.email == "ana@x.com");
+    a = c.query("select 'login' as action, 1 as by_id, 'ana@x.com' as by_email, null::text as by_nickname,"
+        ~ " null::int as post_id, null::int as post_owner_id, null::text as post_owner_email,"
+        ~ " null::text as post_owner_nickname").one!Audit;
+    assert(!a.post.has);
+
+    // a NULL in a required nested column is the usual error
+    threw = false;
+    try
+        c.query("select 'x' as action, null::int as by_id, 'e' as by_email, null::text as by_nickname, null::int as post_id,"
+            ~ " null::int as post_owner_id, null::text as post_owner_email, null::text as post_owner_nickname").one!Audit;
+    catch (PgError e)
+        threw = true;
+    assert(threw);
+
+    c.exec("drop table t_posts");
+    c.exec("drop table t_people");
+    ok("nested rows: @prefix on Optional and required structs, LEFT JOIN with no match, composed prefixes, missing column");
+}
+
 void main()
 {
     auto env = getenv("VELA_PG");
@@ -91,5 +146,6 @@ void main()
     }
     conninfo = cast(string) env[0 .. strlen(env)].idup;
     testArrays();
+    testNestedRows();
     printf("all Postgres feature tests passed\n");
 }

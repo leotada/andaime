@@ -53,6 +53,19 @@ void touch(int id) { db.exec("update users set seen_at = now() where id = $1", i
 - `rowsAs!T` maps every row to a struct, matching fields to columns by name (a missing column throws). `one!T` returns the
   first row and throws when there is none.
 - A column that may be NULL is an `Optional!T`; the same type is `null` in JSON, so rows serialize with no conversion.
+- A joined row goes into a nested struct with `@prefix`: its fields come from the columns with that prefix. On an
+  `Optional` struct, all of its columns NULL (a LEFT JOIN that found nothing) gives an empty `Optional`:
+
+  ```d
+  struct UserSummary { int id; string email; }
+  struct Post { int id; string title; @prefix("author_") Optional!UserSummary author; }
+
+  auto posts = db.query("select p.id, p.title, u.id as author_id, u.email as author_email"
+      ~ " from posts p left join users u on u.id = p.author_id").rowsAs!Post;
+  ```
+
+  Prefixes nest (`post_owner_id` for an `owner` inside a `post`). A missing prefixed column throws like any other, and a
+  NULL in a non-`Optional` field of a struct that is there is the usual error.
 - Lower level: `r.rows`, `r.cols`, `r.get!T(row, col)`, `r.isNull(row, col)`, `r.column("name")`, `r.affected()`.
 
 ## Transactions

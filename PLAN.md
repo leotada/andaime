@@ -1486,6 +1486,7 @@ timeouts, any HTTP/2 or TLS feature (D3).
 | F20 | 11.4 | bcrypt via libxcrypt `crypt_rn`/`crypt_gensalt_rn` (32 KiB scratch, zeroed after), `$2b$`, cost 4..31 (default 12), NUL in a password is an error (verify: false), 72-byte truncation documented; `bcryptHashOffload`/`bcryptVerifyOffload` wrap `offload`. | glibc `crypt_r` only; our own bcrypt. | libxcrypt is the system's bcrypt everywhere glibc dropped its own; `crypt_rn` returns null instead of a magic string. |
 | F21 | 11.4 | Web Push: `webPushEncrypt` (fresh key and salt; an overload takes them for known-answer tests), one 4096-byte record, payload <= 3993 bytes; `webPushDecrypt` for the receiver. The VAPID JWT is left to the app (`es256Sign` + `base64UrlEncode`, shown in the guide). | A full Web Push client (HTTP POST, VAPID header building). | The task asked for the primitives; sending is a few lines with `httpClient`, and VAPID claims are app policy. |
 | F22 | 11.5 | `T[]` parameters become a text array literal with every element quoted and `"`/`\` escaped, elements encoded exactly as a single parameter of that type would be; an empty `Optional` element is `NULL`; `ubyte[]`/`byte[]` and nested arrays are compile errors. | Binary array format; quoting only when needed. | Text keeps one encoding path for scalars and elements; always quoting makes `NULL`, commas, braces and spaces data with no special cases. `ubyte[]` could mean bytea. |
+| F23 | 11.6 | `@prefix("author_")` (in `vela.db`) on a struct or `Optional!struct` field; prefixes compose when nested; column indexes resolved once per result; an `Optional` is empty only when all its columns are NULL; misuse is a one-line `vela.db:` static assert. | Inferring nesting from `author_` names without an attribute; empty when the first (id) column is NULL. | Explicit is predictable; "all NULL" is what a LEFT JOIN with no match produces, and does not depend on which column is the key. |
 | F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
 
 ### [x] 11.1 Custom validation error responses: `onValidationError` — M
@@ -1541,7 +1542,11 @@ timeouts, any HTTP/2 or TLS feature (D3).
 > through `unnest`, `Optional` elements, `const` arrays, `bool[]`. Docs: `database.md`. Reading array columns back is not
 > part of this item.
 
-### [ ] 11.6 Nested row mapping in `rowsAs!T` — S/M
+### [x] 11.6 Nested row mapping in `rowsAs!T` — S/M
+
+> **Done.** `rowsAs` rewritten around `resolveColumns` / `fillRow`; `prefix`, `prefixOf`, `NestedRow`, `rowColumnCount`.
+> Tests (`tests/db/pg_features.d`): LEFT JOIN with and without a match, a required nested struct, composed prefixes, the
+> missing-column message, a NULL in a required nested field. Docs: `database.md`.
 
 ### [ ] 11.7 Savepoints in `vela-pg` — S
 

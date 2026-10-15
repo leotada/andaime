@@ -33,8 +33,8 @@ import vela.http.response : ResponseSink;
 import vela.http.types : Method, Request;
 import vela.jobs.backend : JobRecord, JobRuntime, JobState, JobStore, jobSpec, logJobFailure, runClaimed;
 import vela.jobs.cli : ProcessRole, Startup, parseStartup, roleText;
-import vela.jobs.cron : CronClock, ScheduleKind, ScheduledFire, ScheduledJob, slotUnseen;
-import vela.jobs.job : JobContext, jobCronExpr, jobEveryPeriod, jobName;
+import vela.jobs.cron : CronClock, ScheduleKind, ScheduledFire, ScheduledJob, cronError, slotUnseen;
+import vela.jobs.job : JobContext, jobCronExpr, jobError, jobEveryPeriod, jobName;
 import vela.web.application : App;
 import vela.web.context : Context;
 import vela.web.stream : sendResponse;
@@ -65,6 +65,61 @@ void applyJobGrace(ref ServerConfig cfg) pure @safe
 struct WorkerHooks
 {
     void delegate() @safe extra;
+    /// Schedules set at startup (see `JobSchedule`). Empty: the `@Every` / `@Cron` UDAs alone.
+    JobSchedule schedule;
+}
+
+/// Schedules decided when the process starts, for periods that come from configuration. Each call
+/// replaces one half of a job's schedule (its `@Every` period or its `@Cron` expression); a job with
+/// neither UDA can be scheduled here alone. Pass it as `WorkerHooks.schedule` to `runJobs` or
+/// `supervisorHook`, which check it before anything starts: a period that is not positive, a bad
+/// cron expression or a job missing from their `Jobs` list throws one `vela.jobs:` line.
+///
+///     JobSchedule s;
+///     s.every!Recurrence(seconds(envLong("RECURRENCE_INTERVAL_SECONDS", 300)));
+///     s.cron!PurgeTokens(environment.get("PURGE_CRON", "0 3 * * *"));
+///     runJobs!(Recurrence, PurgeTokens)(store, startup, cfg, true, 0, WorkerHooks(null, s));
+///
+/// Every process that runs the scheduler must use the same values. Slots are still deduplicated
+/// across processes (`claimCron`), but an `@Every` slot is a multiple of the period: processes
+/// with different periods enqueue different slots.
+struct JobSchedule
+{
+    private ScheduleChange[] changes;
+
+    /// Enqueue `J` on every multiple of `period`, in place of its `@Every`.
+    ref JobSchedule every(J)(Duration period) return
+    {
+        static assert(jobError!J.length == 0, jobError!J);
+        changes ~= ScheduleChange(jobName!J, ScheduleChange.What.every, period, null);
+        return this;
+    }
+
+    /// Enqueue `J` on the five-field cron expression `expr`, in place of its `@Cron`.
+    ref JobSchedule cron(J)(string expr) return
+    {
+        static assert(jobError!J.length == 0, jobError!J);
+        changes ~= ScheduleChange(jobName!J, ScheduleChange.What.cron, Duration.zero, expr);
+        return this;
+    }
+
+    /// Never enqueue `J` on a schedule (neither its `@Every` nor its `@Cron`).
+    ref JobSchedule disable(J)() return
+    {
+        static assert(jobError!J.length == 0, jobError!J);
+        changes ~= ScheduleChange(jobName!J, ScheduleChange.What.disable, Duration.zero, null);
+        return this;
+    }
+}
+
+private struct ScheduleChange
+{
+    enum What : ubyte { every, cron, disable }
+
+    string jobName;
+    What what;
+    Duration period;
+    string expr;
 }
 
 /// `--role=api`. Does not start a consumer and does not call `serve`.
@@ -102,6 +157,7 @@ void runJobs(Jobs...)(JobStore store, Startup startup, ServerConfig cfg = Server
     if (startup.role != ProcessRole.worker)
         throw new Exception("vela.jobs: runJobs is for --role=worker, not " ~ roleText(startup.role));
     checkQueues(startup);
+    cast(void) scheduledJobs!Jobs(hooks.schedule); // throws now, not on worker 0 once the loop runs
     idleBackoff = normalizeBackoff(idleBackoff);
     configureWorker(cfg, singleThread, healthPort);
     version (linux)
@@ -140,6 +196,7 @@ void delegate() @safe supervisorHook(Jobs...)(JobStore store, Startup startup,
     if (startup.role != ProcessRole.all)
         throw new Exception("vela.jobs: supervisorHook is for --role=all, not " ~ roleText(startup.role));
     checkQueues(startup);
+    cast(void) scheduledJobs!Jobs(hooks.schedule);
     idleBackoff = normalizeBackoff(idleBackoff);
     return () @safe { startSupervisor!Jobs(store, startup, hooks, idleBackoff); };
 }
@@ -200,7 +257,8 @@ private void startSupervisor(Jobs...)(JobStore store, Startup startup, WorkerHoo
         rt.startServices();
     foreach (q; startup.queues)
         launchQueue!Jobs(store, q.queue, q.concurrency, idleBackoff, stop);
-    spawn(() { cronLoop!Jobs(store, idleBackoff, stop); });
+    auto schedule = scheduledJobs!Jobs(hooks.schedule);
+    spawn(() { cronLoop!Jobs(store, idleBackoff, stop, schedule); });
     if (hooks.extra !is null)
         hooks.extra();
 }
@@ -313,9 +371,9 @@ private void releaseClaim(JobStore store, long id) @safe
     }
 }
 
-private void cronLoop(Jobs...)(JobStore store, Duration backoff, bool delegate() @safe nothrow stop)
+private void cronLoop(Jobs...)(JobStore store, Duration backoff, bool delegate() @safe nothrow stop,
+        ScheduledJob[] jobs)
 {
-    auto jobs = scheduledJobs!Jobs();
     if (jobs.length == 0)
         return;
     auto buf = new ScheduledFire[](jobs.length * 2);
@@ -344,21 +402,45 @@ private struct SeenFire
     SysTime seen;
 }
 
-/// Jobs in `Jobs` that carry `@Cron`, `@Every`, or both. A job may have both; each kind is its own slot.
-private ScheduledJob[] scheduledJobs(Jobs...)() @safe
+/// Jobs in `Jobs` that carry `@Cron`, `@Every`, or both, after the changes of `schedule`. A job may
+/// have both; each kind is its own slot. Throws on a change that is invalid or names a job outside `Jobs`.
+private ScheduledJob[] scheduledJobs(Jobs...)(const JobSchedule schedule = JobSchedule.init) @safe
 {
-    ScheduledJob[] list;
-    static foreach (J; Jobs)
-    {{
-        static if (jobCronExpr!J.length > 0 || jobEveryPeriod!J > Duration.zero)
+    ScheduledJob[Jobs.length] all;
+    static foreach (k, J; Jobs)
+        all[k] = ScheduledJob(jobName!J, jobCronExpr!J, jobEveryPeriod!J);
+    foreach (ch; schedule.changes)
+    {
+        size_t t = all.length;
+        foreach (k, ref s; all)
+            if (s.jobName == ch.jobName)
+                t = k;
+        if (t == all.length)
+            throw new Exception("vela.jobs: job '" ~ ch.jobName ~ "' has a JobSchedule entry but is not one of the jobs given to "
+                ~ "runJobs or supervisorHook");
+        final switch (ch.what)
         {
-            ScheduledJob s;
-            s.jobName = jobName!J;
-            s.cronExpr = jobCronExpr!J;
-            s.every = jobEveryPeriod!J;
-            list ~= s;
+        case ScheduleChange.What.every:
+            if (ch.period <= Duration.zero)
+                throw new Exception("vela.jobs: job '" ~ ch.jobName ~ "' has a JobSchedule period that is not positive");
+            all[t].every = ch.period;
+            break;
+        case ScheduleChange.What.cron:
+            immutable err = cronError(ch.expr);
+            if (err.length)
+                throw new Exception("vela.jobs: job '" ~ ch.jobName ~ "' has an invalid JobSchedule cron '" ~ ch.expr ~ "': " ~ err);
+            all[t].cronExpr = ch.expr;
+            break;
+        case ScheduleChange.What.disable:
+            all[t].cronExpr = null;
+            all[t].every = Duration.zero;
+            break;
         }
-    }}
+    }
+    ScheduledJob[] list;
+    foreach (s; all)
+        if (s.cronExpr.length > 0 || s.every > Duration.zero)
+            list ~= s;
     return list;
 }
 
@@ -745,6 +827,60 @@ unittest
     assert(performCount == 1);
     assert(store.jobs()[0].state == JobState.completed);
     assert(store.jobs()[0].attempt == 1);
+}
+
+unittest
+{
+    // JobSchedule: replaces one half of a job's schedule, adds one to a job with no UDA, or removes both
+    JobSchedule s;
+    s.every!UnitWork(5.minutes).cron!UnitEvery("*/10 * * * *").disable!UnitCron().every!UnitBoth(3.minutes);
+    auto list = scheduledJobs!(UnitWork, UnitEvery, UnitCron, UnitBoth)(s);
+    assert(list.length == 3);
+    assert(list[0] == ScheduledJob(jobName!UnitWork, null, 5.minutes));
+    assert(list[1] == ScheduledJob(jobName!UnitEvery, "*/10 * * * *", 1.minutes), "the @Every half is kept");
+    assert(list[2] == ScheduledJob(jobName!UnitBoth, "* * * * *", 3.minutes));
+    assert(scheduledJobs!(UnitEvery)(JobSchedule.init) == [ScheduledJob(jobName!UnitEvery, null, 1.minutes)]);
+
+    // the period now drives the slots: UnitWork every 5 minutes
+    auto store = new TestJobStore;
+    SeenFire[] seen;
+    auto buf = new ScheduledFire[](2);
+    JobSchedule only;
+    only.every!UnitWork(5.minutes);
+    auto jobs = scheduledJobs!UnitWork(only);
+    assert(enqueueDue!UnitWork(store, utc(2026, 1, 1, 0, 4, 0), seen, jobs, buf) == 1);
+    assert(enqueueDue!UnitWork(store, utc(2026, 1, 1, 0, 4, 59), seen, jobs, buf) == 0);
+    assert(enqueueDue!UnitWork(store, utc(2026, 1, 1, 0, 5, 0), seen, jobs, buf) == 1);
+
+    string failure(JobSchedule bad)
+    {
+        try
+            cast(void) scheduledJobs!(UnitWork, UnitEvery)(bad);
+        catch (Exception e)
+            return e.msg;
+        return null;
+    }
+
+    JobSchedule zero;
+    zero.every!UnitWork(Duration.zero);
+    assert(failure(zero) == "vela.jobs: job '" ~ jobName!UnitWork ~ "' has a JobSchedule period that is not positive");
+    JobSchedule badCron;
+    badCron.cron!UnitEvery("61 * * * *");
+    assert(failure(badCron) == "vela.jobs: job '" ~ jobName!UnitEvery ~ "' has an invalid JobSchedule cron '61 * * * *': "
+        ~ cronError("61 * * * *"));
+    JobSchedule stranger;
+    stranger.every!UnitCron(1.minutes);
+    assert(failure(stranger) == "vela.jobs: job '" ~ jobName!UnitCron ~ "' has a JobSchedule entry but is not one of the "
+        ~ "jobs given to runJobs or supervisorHook");
+
+    // runJobs checks it before it starts anything
+    bool threw;
+    try
+        runJobs!UnitWork(new TestJobStore, parseStartup(["prog", "--role=worker"]), ServerConfig.init, true, 0,
+            WorkerHooks(null, zero));
+    catch (Exception e)
+        threw = e.msg == failure(zero);
+    assert(threw);
 }
 
 unittest

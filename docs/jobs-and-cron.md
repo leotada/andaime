@@ -219,6 +219,52 @@ by hand, and `drainJobs` runs the row.
 On Postgres the supervisor calls `claimCron` first. Only the process that inserts `(job_name, scheduled_slot)` into
 `vela_cron_executions` enqueues the job. See [Postgres](#postgres-vela-pg-jobs) below.
 
+### Schedules from configuration: `JobSchedule`
+
+When a period comes from the environment, set it at startup instead of in the UDA:
+
+```d
+// check
+@safe:
+
+import vela.jobs;
+import vela.engine.loop : ServerConfig;
+
+import core.time : seconds;
+import std.conv : to;
+import std.process : environment;
+
+@Job("maintenance")
+@Every(seconds(300)) // the default; the environment may change it
+struct Recurrence
+{
+    void perform(ref JobContext ctx) @safe {}
+}
+
+@Job("maintenance") // no UDA: scheduled only by JobSchedule
+struct PurgeTokens
+{
+    void perform(ref JobContext ctx) @safe {}
+}
+
+void main(string[] args)
+{
+    JobSchedule s;
+    s.every!Recurrence(seconds(environment.get("RECURRENCE_INTERVAL_SECONDS", "300").to!long));
+    s.cron!PurgeTokens(environment.get("PURGE_CRON", "0 3 * * *"));
+    auto startup = parseStartup(args);
+    if (startup.role == ProcessRole.worker)
+        runJobs!(Recurrence, PurgeTokens)(new InMemoryJobStore, startup, ServerConfig.init, true, 0, WorkerHooks(null, s));
+}
+```
+
+- `every!J(period)` replaces the `@Every` period, `cron!J(expr)` replaces the `@Cron` expression (the other half stays),
+  `disable!J()` removes both. A job with neither UDA can be scheduled here alone.
+- `runJobs` and `supervisorHook` check the schedule before anything starts: a period that is not positive, a bad cron
+  expression or a job that is not in their list throws one `vela.jobs:` line. A type that is not a job is a compile error.
+- **Every process must use the same values.** Slots are still deduplicated across processes (`claimCron`), but an `@Every`
+  slot is a multiple of its period: processes with different periods enqueue different slots.
+
 ## Stores and workers
 
 `InMemoryJobStore` is one thread. Its methods do not wait, so the fibers of that thread can share it. `runJobs` defaults

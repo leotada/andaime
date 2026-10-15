@@ -311,26 +311,65 @@ final class HttpClient
         return n;
     }
 
-    ClientResponse get(string url, const(HeaderPair)[] headers = null) @trusted
-        => request("GET", url, headers, null);
+    // Every call takes an optional `timeout`: the whole request's deadline for this call only (zero: the configured
+    // `HttpClientConfig.timeout`). Bodies are text or bytes (`const(ubyte)[]`: an image, a protobuf, an encrypted
+    // Web Push message); a `null` body is no body.
 
-    ClientResponse post(string url, const(char)[] body_, const(HeaderPair)[] headers = null) @trusted
-        => request("POST", url, headers, body_);
+    ClientResponse get(string url, const(HeaderPair)[] headers = null, Duration timeout = Duration.zero) @trusted
+        => request("GET", url, headers, null, timeout);
 
-    ClientResponse put(string url, const(char)[] body_, const(HeaderPair)[] headers = null) @trusted
-        => request("PUT", url, headers, body_);
+    ClientResponse post(string url, const(char)[] body_, const(HeaderPair)[] headers = null,
+        Duration timeout = Duration.zero) @trusted
+        => request("POST", url, headers, body_, timeout);
 
-    ClientResponse del(string url, const(HeaderPair)[] headers = null) @trusted
-        => request("DELETE", url, headers, null);
+    /// ditto, with a binary body.
+    ClientResponse post(string url, const(ubyte)[] body_, const(HeaderPair)[] headers = null,
+        Duration timeout = Duration.zero) @trusted
+        => request("POST", url, headers, cast(const(char)[]) body_, timeout);
+
+    /// ditto, with no body (`post(url, null)`; without this overload `null` would match both of the above).
+    ClientResponse post(string url, typeof(null), const(HeaderPair)[] headers = null,
+        Duration timeout = Duration.zero) @trusted
+        => request("POST", url, headers, null, timeout);
+
+    ClientResponse put(string url, const(char)[] body_, const(HeaderPair)[] headers = null,
+        Duration timeout = Duration.zero) @trusted
+        => request("PUT", url, headers, body_, timeout);
+
+    /// ditto, with a binary body.
+    ClientResponse put(string url, const(ubyte)[] body_, const(HeaderPair)[] headers = null,
+        Duration timeout = Duration.zero) @trusted
+        => request("PUT", url, headers, cast(const(char)[]) body_, timeout);
+
+    /// ditto, with no body.
+    ClientResponse put(string url, typeof(null), const(HeaderPair)[] headers = null,
+        Duration timeout = Duration.zero) @trusted
+        => request("PUT", url, headers, null, timeout);
+
+    ClientResponse del(string url, const(HeaderPair)[] headers = null, Duration timeout = Duration.zero) @trusted
+        => request("DELETE", url, headers, null, timeout);
 
     /// POST of already-serialized JSON.
-    ClientResponse postJson(string url, const(char)[] json, const(HeaderPair)[] headers = null) @trusted
-        => request("POST", url, headers ~ HeaderPair("Content-Type", "application/json"), json);
+    ClientResponse postJson(string url, const(char)[] json, const(HeaderPair)[] headers = null,
+        Duration timeout = Duration.zero) @trusted
+        => request("POST", url, headers ~ HeaderPair("Content-Type", "application/json"), json, timeout);
 
-    ClientResponse request(string method, string url, const(HeaderPair)[] headers, const(char)[] body_) @trusted
+    /// Any method, with a binary body.
+    ClientResponse request(string method, string url, const(HeaderPair)[] headers, const(ubyte)[] body_,
+        Duration timeout = Duration.zero) @trusted
+        => request(method, url, headers, cast(const(char)[]) body_, timeout);
+
+    /// Any method, with no body.
+    ClientResponse request(string method, string url, const(HeaderPair)[] headers, typeof(null),
+        Duration timeout = Duration.zero) @trusted
+        => request(method, url, headers, cast(const(char)[]) null, timeout);
+
+    /// Any method, with a text body.
+    ClientResponse request(string method, string url, const(HeaderPair)[] headers, const(char)[] body_,
+        Duration timeout = Duration.zero) @trusted
     {
         auto u = parseUrl(url);
-        immutable deadline = MonoTime.currTime + cfg.timeout;
+        immutable deadline = MonoTime.currTime + (timeout > Duration.zero ? timeout : cfg.timeout);
         immutable idempotent = method == "GET" || method == "HEAD" || method == "PUT" || method == "DELETE"
             || method == "OPTIONS";
 

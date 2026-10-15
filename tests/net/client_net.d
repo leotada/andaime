@@ -63,6 +63,38 @@ string post()
     return r.body;
 }
 
+/// Binary bodies (bytes that are not text, a NUL included) and a null body, through POST, PUT and request.
+string binary()
+{
+    immutable(ubyte)[] bytes = [0, 1, 0x80, 0xff, '\r', '\n', 0];
+    auto oct = [HeaderPair("Content-Type", "application/octet-stream")];
+    auto expected = "echo:application/octet-stream:" ~ cast(string) bytes;
+    if (cli().post(plainBase_ ~ "/echo", bytes, oct).body != expected)
+        return "post failed";
+    if (cli().put(plainBase_ ~ "/echo", bytes, oct).body != expected)
+        return "put failed";
+    if (cli().request("POST", plainBase_ ~ "/echo", oct, bytes).body != expected)
+        return "request failed";
+    if (cli().post(plainBase_ ~ "/echo", null).body != "echo:-:")
+        return "null body failed";
+    return "bytes ok";
+}
+
+/// A per-request timeout overrides the configured 2 s, both ways.
+string perRequestTimeout()
+{
+    string r;
+    try
+        r ~= "short:" ~ cli().get(plainBase_ ~ "/slow/1500", null, 300.msecs).body;
+    catch (HttpClientTimeout)
+        r ~= "short:timeout";
+    try
+        r ~= " long:" ~ cli().get(plainBase_ ~ "/slow/2500", null, 5.seconds).body;
+    catch (HttpClientTimeout)
+        r ~= " long:timeout";
+    return r;
+}
+
 string slow(int ms)
 {
     try
@@ -111,6 +143,8 @@ App buildApp()
     app.get!("/slow/{ms}", slow);
     app.get!("/big", big);
     app.get!("/refused", refused);
+    app.get!("/binary", binary);
+    app.get!("/per-request-timeout", perRequestTimeout);
     return app;
 }
 
@@ -319,6 +353,19 @@ void testDeadlineAndLimit()
     ok("outgoing request deadline: HttpClientTimeout in ~2 s (the upstream took 5 s)");
 }
 
+void testBinaryAndPerRequestTimeout()
+{
+    auto s = start();
+    scope (exit) stop(s);
+    assert(fetch(s.port, "/binary").body == "bytes ok", fetch(s.port, "/binary").body);
+    immutable t0 = MonoTime.currTime;
+    auto r = fetch(s.port, "/per-request-timeout");
+    immutable ms = (MonoTime.currTime - t0).total!"msecs";
+    assert(r.body == "short:timeout long:slow-done", r.body);
+    assert(ms < 3500, "the short timeout fired at ~300 ms, then the long call took ~2.5 s");
+    ok("binary bodies (post, put, request, null) and a per-request timeout shorter and longer than the configured one");
+}
+
 void testCancellation()
 {
     auto s = start();
@@ -361,6 +408,7 @@ void main()
     testKeepAliveAndStale();
     testNonBlocking();
     testDeadlineAndLimit();
+    testBinaryAndPerRequestTimeout();
     testCancellation();
     printf("all HTTP client tests passed\n");
 }

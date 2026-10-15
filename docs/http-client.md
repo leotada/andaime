@@ -28,7 +28,19 @@ r = c.postJson(url, `{"name":"Ana"}`);              // Content-Type: application
 r = c.put(url, body_);
 r = c.del(url);
 r = c.request("PATCH", url, headers, body_);
+
+// binary bodies: any const(ubyte)[] (an image, a protobuf, an encrypted Web Push message)
+r = c.post(endpoint, encrypted, [HeaderPair("Content-Encoding", "aes128gcm"), HeaderPair("TTL", "60")]);
+r = c.put(url, imageBytes, [HeaderPair("Content-Type", "image/png")]);
+
+// a timeout for this call only, shorter or longer than HttpClientConfig.timeout
+r = c.get(url, null, 500.msecs);
+r = c.post(url, body_, headers, 2.minutes);
 ```
+
+Every method takes an optional last `timeout`: the deadline of that whole request (connect, send, response). Zero, the
+default, means `HttpClientConfig.timeout`. Bodies are text (`const(char)[]`) or bytes (`const(ubyte)[]`); `null` is no
+body.
 
 `ClientResponse` has `status`, `headers` (`HeaderPair[]`), `body` (the whole body as a `string`), `ok` (2xx) and
 `header("Name")`.

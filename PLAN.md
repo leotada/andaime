@@ -1493,6 +1493,7 @@ timeouts, any HTTP/2 or TLS feature (D3).
 | F27 | 11.8 | Formats `text` (default), `kv`, `json`; in `text` vela's own lines are byte-identical to before and user lines are `msg k=v`; level and format by `configureLog` and `VELA_LOG_LEVEL`/`VELA_LOG_FORMAT`, the environment winning; atomics instead of `__gshared` (no `@trusted` accessor needed). | Making `kv` the default; code winning over the environment. | Defaults stay backward compatible; an operator can turn on `debug` without a rebuild. |
 | F28 | 11.8 | The generic call is `logAt(level, ...)`, not `log`; misuse of fields is a one-line compile error in each `log*` function. | `log(level, ...)`. | `import vela;` would export `log`, which hides an app's own `log` helper (the `get`/`put` pitfall). |
 | F29 | 11.9 | The cookie jar is a flag on `TestClient` (`cookies = true`, off by default), RFC 6265 path matching and default path, replacement by name+path, deletion by `Max-Age<=0` or a past `Expires` (IMF-fixdate), no domains; a caller's `Cookie` header is merged. Multipart and JSON helpers are methods; `json!T` uses `fromJson`. Overloads instead of a default argument before the variadic headers. | A separate `TestSession` type. | One client type to learn; the default stays stateless, as before. DMD 2.109 crashes on a default argument before a variadic parameter. |
+| F30 | 11.10 | `const(ubyte)[]` overloads of `post`/`put`/`request`, plus `typeof(null)` overloads so an existing `post(url, null)` is not ambiguous; an optional trailing `Duration timeout` on every method (zero: the configured one), which may be shorter or longer than `HttpClientConfig.timeout`. | A `RequestOptions` struct; a template on the body type. | Additive and source compatible; a struct is worth it only when there are more per-request options. |
 | F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
 
 ### [x] 11.1 Custom validation error responses: `onValidationError` — M
@@ -1581,7 +1582,11 @@ timeouts, any HTTP/2 or TLS feature (D3).
 > the jar off by default, paths, merging, replacement, deletion by `Expires` and by `Max-Age`). Docs: `testing.md` (a
 > `// check` example), the index.
 
-### [ ] 11.10 `httpClient` additions — S
+### [x] 11.10 `httpClient` additions — S
+
+> **Done.** `HttpClient.post`/`put`/`request` for bytes and for `null`, `timeout` on every method. Tests
+> (`tests/net/client_net.d`): bytes with NUL and non-UTF-8 through POST, PUT and `request`, a null body, a 300 ms timeout
+> under the configured 2 s and a 5 s one over it; `tests/net/upstream.py` answers PUT. Docs: `http-client.md`.
 
 ## Open owner decisions (not blocking)
 

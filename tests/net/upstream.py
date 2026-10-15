@@ -3,7 +3,7 @@
 
 Uso: upstream.py <cert.pem> <key.pem>
 Prints "PLAIN <port> TLS <port>" on standard output when ready.
-Rotas: /hello, /chunked, /close, /stale, /slow/<ms>, /echo (POST), /big, /stats
+Routes: /hello, /chunked, /close, /stale, /slow/<ms>, /echo (POST and PUT), /big, /stats
 """
 import ssl, sys, threading, time
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -78,6 +78,9 @@ class H(BaseHTTPRequestHandler):
         data = self.rfile.read(n)
         ct = self.headers.get("Content-Type", "-")
         self.send_body(b"echo:" + ct.encode() + b":" + data)
+
+    def do_PUT(self):
+        self.do_POST()
 
 class S(ThreadingHTTPServer):
     daemon_threads = True

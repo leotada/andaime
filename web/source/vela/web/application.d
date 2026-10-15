@@ -167,6 +167,8 @@ final class Group
     private Group parent;
     private Middleware[] mws;
     private ValidationHook validation;
+    private bool slashSet;
+    private TrailingSlash slash;
 
     private this(App app, string prefix, Group parent)
     {
@@ -203,6 +205,27 @@ final class Group
         use((Context c, Next n) @trusted => mw(c, n));
     }
 
+    /// The trailing-slash policy of this group's routes (and its subgroups', unless they set their own): `strict` or
+    /// `matchBoth`. Unset, the group follows `App.trailingSlash`. `redirect` is app-wide only (it throws here).
+    void trailingSlash(TrailingSlash policy)
+    {
+        app.mustBeOpen();
+        if (policy == TrailingSlash.redirect)
+            throw new RouteError("vela: a group's trailingSlash is strict or matchBoth; redirect is app-wide "
+                ~ "(App.trailingSlash)");
+        slash = policy;
+        slashSet = true;
+    }
+
+    /// The nearest policy: this group's, a parent's, or the app's.
+    private TrailingSlash slashPolicy()
+    {
+        for (auto g = this; g !is null; g = g.parent)
+            if (g.slashSet)
+                return g.slash;
+        return app.trailingSlash;
+    }
+
     /// Subgroup: its prefix extends this one's, and this group's middleware runs before its own.
     Group group(string sub)
     {
@@ -222,6 +245,39 @@ final class Group
             parent.collect(outer);
         outer ~= mws;
     }
+}
+
+/// What a request whose path differs from a route only by a trailing slash (`/tasks/` for `/tasks`, or the reverse) gets.
+enum TrailingSlash
+{
+    strict,    /// a 404: the slash is part of the path
+    redirect,  /// a 308 to the route's form (app-wide only: it is decided before routing)
+    matchBoth, /// the route itself, with no redirect; OpenAPI shows the registered form
+}
+
+/// The route pattern with its trailing slash added or removed, or "" when it has no other form (`/`, or a `{*rest}`
+/// pattern, which already takes any tail).
+private string otherSlashForm(string pattern) pure nothrow
+{
+    if (pattern.length <= 1)
+        return null;
+    if (pattern[$ - 1] == '/')
+        return pattern[0 .. $ - 1];
+    size_t s = pattern.length;
+    while (s > 0 && pattern[s - 1] != '/')
+        s--;
+    if (pattern.length - s >= 2 && pattern[s] == '{' && pattern[s + 1] == '*')
+        return null;
+    return pattern ~ "/";
+}
+
+unittest
+{
+    assert(otherSlashForm("/") is null);
+    assert(otherSlashForm("/api/tasks") == "/api/tasks/");
+    assert(otherSlashForm("/api/tasks/") == "/api/tasks");
+    assert(otherSlashForm("/users/{id}") == "/users/{id}/");
+    assert(otherSlashForm("/files/{*path}") is null);
 }
 
 private string checkPrefix(string prefix) pure
@@ -255,8 +311,13 @@ final class App
     private OpenApiInfo openApiInfo;
     private string openApiJson;
 
-    /// If the route does not exist but exists with/without the trailing slash, answers 308 to it.
+    /// If the route does not exist but exists with/without the trailing slash, answers 308 to it. Same as
+    /// `trailingSlash = TrailingSlash.redirect`.
     bool redirectTrailingSlash;
+
+    /// What a path that differs from a route only by a trailing slash gets (see `TrailingSlash`). A `Group` may
+    /// choose `strict` or `matchBoth` for its own routes.
+    TrailingSlash trailingSlash = TrailingSlash.strict;
 
     /// Log the stack trace of unexpected exceptions (not `HttpError`), at most `maxTracesPerSecond` per second.
     bool logStackTraces = true;
@@ -382,6 +443,23 @@ final class App
             c.mws = all;
             c.handler = handlers[i];
             handlers[i] = &c.entry;
+        }
+        // `matchBoth`: the other form of each route goes to the same handler. Added after every explicit route, so an
+        // explicit route with that form keeps it (the router refuses the duplicate). Not an OpenAPI operation.
+        immutable registered = ops.length;
+        foreach (i; 0 .. registered)
+        {
+            auto g = owners[i];
+            if ((g is null ? trailingSlash : g.slashPolicy()) != TrailingSlash.matchBoth)
+                continue;
+            immutable alt = otherSlashForm(ops[i].pattern);
+            if (alt.length == 0)
+                continue;
+            try
+                router.add(ops[i].method, alt, cast(int) i);
+            catch (RouteError)
+            {
+            }
         }
         if (openApiWanted)
             openApiJson = buildOpenApi(ops, openApiInfo);
@@ -530,7 +608,8 @@ final class App
                 break;
             case MatchStatus.notFound:
                 // (not for an HTTP/2 WebSocket: a client does not follow a redirect of its extended CONNECT)
-                if (redirectTrailingSlash && ctx.request.connectProtocol.length == 0 && tryTrailingSlash(ctx))
+                if ((redirectTrailingSlash || trailingSlash == TrailingSlash.redirect)
+                    && ctx.request.connectProtocol.length == 0 && tryTrailingSlash(ctx))
                     break;
                 if (notFoundHandler !is null)
                 {

@@ -106,8 +106,14 @@ the paths are full paths (`mount` is on `App`, not on a group).
 
 - No route for the path: **404** `{"detail":"not found"}`. Replace it with `app.onNotFound((Context ctx) { ... })`.
 - The path exists for other methods: **405** with an `Allow` header.
-- `app.redirectTrailingSlash = true`: `/users/` answers **308** to `/users` (and the reverse) when only the other form exists.
-  308 keeps the method and body.
+- A trailing slash is significant by default (`TrailingSlash.strict`): `/users/` is not `/users`. `app.trailingSlash` changes it:
+  - `TrailingSlash.redirect` (or `app.redirectTrailingSlash = true`): `/users/` answers **308** to `/users` (and the
+    reverse) when only the other form exists. 308 keeps the method and body.
+  - `TrailingSlash.matchBoth`: both forms reach the route, with no redirect (a client that does not follow a 308 on a POST
+    still works). An explicit route for the other form keeps it; `{*rest}` routes already take any tail; OpenAPI shows the
+    registered form only.
+  - A group can choose for its own routes and subgroups: `g.trailingSlash = TrailingSlash.matchBoth` (or `strict`, under a
+    `matchBoth` app). `redirect` is app-wide.
 
 App-level middleware runs before routing, so it also sees 404 and 405 responses (an access log, CORS preflights).
 

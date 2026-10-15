@@ -25,6 +25,9 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 - Every invalid handler signature must produce a **one-line `static assert` message** that says exactly what to fix
   (see `handlerError` in `web/source/vela/web/handler_traits.d`). Add a case to `tests/compile_fail/` when you add a rule.
 - Error messages from the library start with `vela:` (`vela.db:`, `vela.http:`, `vela.jobs:` for the drivers, the client and jobs).
+- Code also type-checks under language edition 2025 (the `edition` section of `check.sh`: a scratch copy with `module x 2025;`;
+  the repository stays on the baseline edition because DMD 2.109 / LDC 1.40 cannot read it; CI runs it on DMD 2.112.0, the
+  oldest compiler with editions, and older compilers skip it).
 - Code type-checks with `-preview=dip1000` (the `dip1000` section of `check.sh`, on DMD and LDC). A parameter that is only
   read is `scope`; one whose result points into it is `return scope`; one the callee stores views of (the parser's buffer,
   the multipart body) is a plain slice. Where the compiler cannot see that a view never outlives its source, a small named

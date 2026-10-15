@@ -44,6 +44,11 @@ the flag, or a test runner that turns it on (`unit-threaded` does), can use vela
 parameters that keep views into the caller's memory are not `scope` for that reason: the request parser's buffer and header
 store, the multipart body (the parts point into it) and `Request.queryValues(name)`.
 
+The code is also checked under language edition 2025 (`module x 2025;`, DMD 2.112 and later), which includes DIP1000. An
+application written in a newer edition can import vela: a template follows the rules of the edition of the module that
+defines it, not of the one that instantiates it. vela itself stays on the baseline edition, because the older compilers it
+supports do not read the syntax.
+
 ## What you may keep from a request
 
 | Value | Lifetime |

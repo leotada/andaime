@@ -179,7 +179,7 @@ string schemaOf(T)(ref Components comps) @safe
         return `{"type":"array","items":` ~ schemaOf!U(comps) ~ `}`;
     else static if (is(T == struct))
     {
-        immutable name = comps.nameFor(schemaBaseName!T, T.mangleof, schemaFallbackName!T);
+        string name = comps.nameFor(schemaBaseName!T, T.mangleof, schemaFallbackName!T); // (not `immutable`: `remove` below)
         if (name !in comps.schemas && name !in comps.building)
         {
             comps.building[name] = true;

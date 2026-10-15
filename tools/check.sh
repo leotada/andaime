@@ -74,11 +74,10 @@ s_unittests() {
     $DC -unittest -main $I -i -run drivers/pg/source/vela/db/package.d
 }
 
-# -preview=dip1000 (scope/return scope checking, soon the default): the library, its unittests, the tests and the examples
-# must type-check with it, so users who build with the flag are not blocked. Only type-checks (-o-): the other sections
-# run everything.
-s_dip1000() {
-    local flags="-preview=dip1000 -o- -Isource -Ihttp/source -Iweb/source -Iengine/source -Idrivers/pg/source -Ijobs/source -Icrypto/source -Idrivers/pgjobs/source -Itests/web -Itests/fuzz"
+# typecheck_tree <extra flags...>: type-checks (-o-) the library, its unittests, the tests and the examples that live under
+# the current directory. Shared by the dip1000 and edition sections.
+typecheck_tree() {
+    local flags="-o- -Isource -Ihttp/source -Iweb/source -Iengine/source -Idrivers/pg/source -Ijobs/source -Icrypto/source -Idrivers/pgjobs/source -Itests/web -Itests/fuzz $*"
     local lib t rc=0
     lib=$(find source http/source web/source engine/source crypto/source jobs/source drivers/pg/source drivers/pgjobs/source -name '*.d')
     $DC $flags $lib || rc=1
@@ -90,6 +89,37 @@ s_dip1000() {
         $DC $flags -i "$t" || { echo "FAILED: $t"; rc=1; }
     done
     return $rc
+}
+
+# -preview=dip1000 (scope/return scope checking, soon the default): the library, its unittests, the tests and the examples
+# must type-check with it, so users who build with the flag are not blocked. Only type-checks (-o-): the other sections
+# run everything.
+s_dip1000() {
+    typecheck_tree -preview=dip1000
+}
+
+# The newest language edition (DMD 2.112+ and a matching LDC; editions are set per module, `module x 2025;`, and the code
+# must still build on older compilers, so the sources are copied into a scratch tree and their module declarations
+# rewritten there). Edition 2024 and later include dip1000. A compiler that does not know editions skips the section.
+s_edition() {
+    local year=2025 probe="$work/edition_probe.d"
+    printf 'module edition_probe %s;\nvoid main() {}\n' "$year" > "$probe"
+    if ! $DC -o- "$probe" > /dev/null 2>&1; then
+        echo "skip: $DC does not know language editions (DMD 2.112 or newer, or an LDC built on it)" >&2
+        return 77
+    fi
+    local tree="$work/edition_tree" f
+    mkdir -p "$tree"
+    find source http web engine crypto jobs drivers tests examples -name '*.d' -not -path 'tests/compile_fail/*' -print0 \
+        | tar --null -T - -cf - | tar -xf - -C "$tree"
+    while IFS= read -r -d '' f; do
+        if grep -q '^module [A-Za-z0-9_.]*;' "$f"; then
+            sed -i -E "s/^module ([A-Za-z0-9_.]+);/module \1 $year;/" "$f"
+        else
+            sed -i "1i module $(basename "$f" .d) $year;" "$f" # (a program without a declaration is named after its file)
+        fi
+    done < <(find "$tree" -name '*.d' -print0)
+    ( cd "$tree" && typecheck_tree )
 }
 
 s_web() {
@@ -444,6 +474,7 @@ s_budget() {
 
 section "module unittests" s_unittests
 section "-preview=dip1000: the library, tests and examples type-check" s_dip1000
+section "language edition 2025: the library, tests and examples type-check (DMD 2.112+)" s_edition
 section "web-layer features (groups, locals, onError, CORS, static files, OpenAPI, middlewares)" s_web
 section "background jobs (memory store, retry, unique window)" s_jobs
 section "documentation examples compile (blocks marked // check)" s_docs

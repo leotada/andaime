@@ -11,6 +11,7 @@ import vela.web.convert : parseInteger, parseFloat, parseErrorType, parseErrorMs
 import vela.web.numtext : itoa;
 import vela.http.utf8 : validUtf8;
 import vela.http.texttype : isTextType, textFromString, textToString;
+import vela.web.jsonvalue : JsonValue, readJsonValue, writeJsonValue;
 
 // =====================================================================
 // Writing
@@ -18,7 +19,9 @@ import vela.http.texttype : isTextType, textFromString, textToString;
 
 void writeJson(T)(ref ByteBuffer o, ref const T v)
 {
-    static if (is(T == bool))
+    static if (is(T == JsonValue))
+        writeJsonValue(o, v);
+    else static if (is(T == bool))
         o.put(v ? "true" : "false");
     else static if (is(T == enum))
         writeEnum(o, v);
@@ -173,8 +176,24 @@ struct JsonReader
     const(char)[] s;
     size_t pos;
     size_t errorPos = size_t.max;
+    string errorWhy; /// what broke, when it was more than a syntax error ("JSON nested deeper than 64 levels")
+
+    /// The error as one line: `invalid JSON at byte 12`, or `<errorWhy> at byte 12`.
+    string errorText() const pure nothrow @safe
+        => (errorWhy.length ? errorWhy : "invalid JSON") ~ " at byte " ~ itoa(errorPos == size_t.max ? pos : errorPos);
 
 nothrow @nogc @safe:
+
+    /// Flags an error that is not plain syntax (a broken limit); aborts the parse like `syntax`.
+    bool fail(string why)
+    {
+        if (errorPos == size_t.max)
+        {
+            errorPos = pos;
+            errorWhy = why;
+        }
+        return false;
+    }
 
     void ws()
     {
@@ -426,7 +445,9 @@ private bool typeMismatch(ref JsonReader r, ref FieldErrors errs, ref const Fiel
 /// type and validation errors go to `errs`.
 bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath path)
 {
-    static if (is(T == bool))
+    static if (is(T == JsonValue))
+        return readJsonValue(r, v, errs, path, 0);
+    else static if (is(T == bool))
     {
         if (r.literal("true"))
             v = true;
@@ -667,7 +688,7 @@ bool decodeJson(T)(const(char)[] text, ref T v, ref FieldErrors errs)
     {
         // a syntax error makes the type errors found before it meaningless (they may come from the cut-off text)
         errs.count = before;
-        errs.add("body", "", "json_invalid", "invalid JSON at byte " ~ itoa(r.errorPos == size_t.max ? r.pos : r.errorPos));
+        errs.add("body", "", "json_invalid", r.errorText());
         return false;
     }
     r.ws();

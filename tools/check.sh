@@ -131,6 +131,10 @@ s_ws_session() {
     $DC $I -Itests/fuzz -i -run tests/fuzz/fuzz_ws.d 300000
 }
 
+s_json_fuzz() {
+    $DC $I -Itests/fuzz -i -run tests/fuzz/fuzz_json.d 300000
+}
+
 s_example_tests() {
     $DC -unittest -main $I -i -run examples/hello/source/app.d > /dev/null
 }
@@ -409,6 +413,7 @@ section "OpenAPI document validity (openapi-spec-validator)" s_openapi
 section "HTTP parser: attack corpus and mutation fuzz" s_parser
 section "HTTP/2: session (frames, streams, flow control, errors, limits) and mutation fuzz" s_h2_session
 section "WebSocket: message layer mutation fuzz (frames, fragments, control frames, close codes, limits)" s_ws_session
+section "JSON reader: mutation fuzz (JsonValue round trip, depth limit, typed decode)" s_json_fuzz
 section "example tests (TestClient, no network)" s_example_tests
 section "hot path without GC allocation (HTTP/1.1, HTTP/2, WebSocket messages)" s_hot_path
 section "network tests (EpollLoop + fibers: cancellation, ceiling, deadlines, pools, background fibers)" s_net

@@ -88,7 +88,7 @@ core to any driver.
 tools/check.sh                 # full verification (DMD); DC=ldmd2 for LDC
 VELA_STRICT=1 tools/check.sh   # a skipped section fails the run (CI does this)
 VELA_ONLY="memory" tools/check.sh   # only the sections whose name contains the text
-tools/fuzz.sh [seconds] [parse|h2|ws]  # libFuzzer + ASan on the HTTP/1 parser, the HTTP/2 session or WebSockets (needs LDC)
+tools/fuzz.sh [seconds] [parse|h2|ws|json]  # libFuzzer + ASan on the HTTP/1 parser, the HTTP/2 session, WebSockets or the JSON reader (needs LDC)
 tools/ws_interop.sh            # WebSockets against python's `websockets` (server and client, permessage-deflate); also run by check.sh
 tools/bench.sh [seconds]       # throughput (req/s) of one worker, with and without pipelining; for before/after, not a gate
 tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SPEC=/path); also run by check.sh
@@ -99,7 +99,9 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 - **Skips**: a test or helper that cannot run prints `skip: <reason>` to stderr and exits **77**; `check.sh` lists the skips in its
   summary. `dmd -run` turns every non-zero code into 1, so tests that can skip are built first and run afterwards.
 - Timing checks are noisy: the compile budget fails above 440 ms (target 400), the HTTPS memory ceiling is 80 MB (OpenSSL 3.5).
-- Parser changes: add corpus files and run `tools/fuzz.sh 300 parse`. HTTP/2 and WebSocket changes: see below.
+- Parser changes: add corpus files and run `tools/fuzz.sh 300 parse`. JSON reader changes (`json.d`, `jsonvalue.d`): run
+  `tools/fuzz.sh 300 json` (`JsonValue` recursion is bounded by `JsonLimits.maxDepth`; keep it so). HTTP/2 and WebSocket
+  changes: see below.
 
 ## Concurrency model (read before touching `engine/` or `drivers/`)
 

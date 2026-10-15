@@ -26,6 +26,7 @@ import vela.web.handler_traits : parseRoute, indexOfName;
 import vela.web.stream : Stream, EventStream, produces;
 import vela.web.models : isQueryModel, isFormModel, formHasFiles, modelFieldOptional, UploadedFile;
 import vela.http.texttype : isTextType, textTypeFormat;
+import vela.web.jsonvalue : JsonValue;
 
 /// One-line operation text: `@summary("Fetch a user") UserResponse getUser(long id)`.
 struct summary { string text; }
@@ -121,7 +122,9 @@ string q(scope const(char)[] s) pure @safe
 /// JSON schema (inline or `$ref`) of type T.
 string schemaOf(T)(ref Components comps) @safe
 {
-    static if (is(T == bool))
+    static if (is(T == JsonValue))
+        return `{}`; // any JSON value
+    else static if (is(T == bool))
         return `{"type":"boolean"}`;
     else static if (is(T == enum))
     {

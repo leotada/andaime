@@ -33,6 +33,47 @@ r = c.request("PATCH", url, headers, body_);
 `ClientResponse` has `status`, `headers` (`HeaderPair[]`), `body` (the whole body as a `string`), `ok` (2xx) and
 `header("Name")`.
 
+## Reading JSON
+
+`fromJson!T` decodes a body into a type with the same rules as a request body (unknown fields ignored, required fields
+checked, validation attributes applied), and `parseJson` gives a [`JsonValue`](requests.md#any-json-value-jsonvalue) when the
+shape varies. Both throw `JsonError` on bad JSON, with the byte or the field:
+
+```d
+// check
+import vela;
+
+struct Rate { string currency; double rate; }
+
+double usdRate()
+{
+    auto r = httpClient().get("https://api.example.com/v1/rates?base=BRL");
+    if (!r.ok)
+        throw new HttpError(502, "the rates service failed");
+    try
+    {
+        foreach (rate; fromJson!(Rate[])(r.body))   // [{"currency":"USD","rate":0.19}, ...]
+            if (rate.currency == "USD")
+                return rate.rate;
+        auto meta = parseJson(r.header("X-Meta").length ? r.header("X-Meta") : "{}");
+        throw new HttpError(502, "no USD rate (" ~ meta.toString ~ ")");
+    }
+    catch (JsonError e)
+        throw new HttpError(502, "the rates service sent bad JSON: " ~ e.msg);
+}
+
+void main()
+{
+    serve(() {
+        auto app = new App;
+        app.get!("/usd", usdRate);
+        return app;
+    });
+}
+```
+
+`toJson(value)` turns a struct (or any JSON-serializable value) into the text for `postJson`.
+
 ## Behavior
 
 - HTTP and HTTPS. Certificates and host names are verified against the system CAs (OpenSSL 3, loaded at run time).

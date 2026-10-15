@@ -207,6 +207,64 @@ void main()
 - JSON bodies only: a form or a query string has no `null`, so `PatchField` in a `Form!T` or `Query!T`, or as a handler
   parameter, is a compile error (use `Optional!T` there).
 
+## Any JSON value: `JsonValue`
+
+When the shape is only known at run time (keys checked against a schema at run time, a different type per key),
+`JsonValue` holds any JSON value: null, a boolean, an integer, a floating number, a string, an array, or an object whose
+members keep their order. Use it as the body (`JsonBody!JsonValue`), as a DTO field, or as a map's value:
+
+```d
+// check
+import vela;
+
+immutable string[] known = ["dark_mode", "language"];
+
+struct Settings { bool darkMode; string language; }
+Settings current;
+
+Settings update(JsonBody!(JsonValue[string]) body_)
+{
+    foreach (key, ref v; body_.value)
+    {
+        if (key == "dark_mode" && v.isBool)
+            current.darkMode = v.asBool;
+        else if (key == "language" && (v.isString || v.isNull))
+            current.language = v.isNull ? null : v.asString;
+        else
+            throw new HttpError(400, "invalid setting: " ~ key);
+    }
+    return current;
+}
+
+void main()
+{
+    serve(() {
+        auto app = new App;
+        app.patch!("/settings", update);
+        return app;
+    });
+}
+```
+
+- Kinds: `type`, `isNull`, `isBool`, `isInteger`, `isFloat`, `isNumber`, `isString`, `isArray`, `isObject`.
+- Values: `asBool`, `asInteger`, `asFloat` (an integer converts), `asString`, `array`, `members` (key and value, in order),
+  `length`. Used on the wrong kind they throw `JsonError` (a 500 unless you catch it), so check the kind first.
+- Lookups: `v.get("key")` is a pointer, null when missing; `v["key"]` and `v[0]` throw `JsonError` when missing.
+- Building: `JsonValue(null)`, `JsonValue(true)`, `JsonValue(42)`, `JsonValue(1.5)`, `JsonValue("s")`,
+  `JsonValue([JsonValue(1), JsonValue("a")])`, `JsonValue.emptyObject`, `JsonValue.emptyArray`, `obj["key"] = value`,
+  `arr.append(value)`. A handler may return one; `toString` gives its JSON text.
+- A number is an `integer` when it has no fraction or exponent and fits a `long`, a `floating` otherwise. A floating number
+  with an integral value is written with `.0`, so it reads back as floating. A repeated key keeps its first position and its
+  last value.
+- Limits: arrays and objects nested deeper than 64 levels are a 422 (`json_invalid`, "JSON nested deeper than 64 levels at
+  byte N"); a number that overflows a `double`, or is longer than 63 characters, is a 422 too. The body itself is bounded by
+  `limits.maxBodyBytes`. OpenAPI documents a `JsonValue` as any value (`{}`).
+
+Outside a request (an upstream API's response, a file): `parseJson(text)` returns a `JsonValue` or throws `JsonError`;
+`parseJson(text, value, error, limits)` returns false and an error line instead; `JsonLimits` sets `maxDepth` (64) and
+`maxBytes` (16 MiB). `fromJson!T(text)` decodes into a DTO with the rules of a request body, and `toJson(value)` writes
+any value as JSON text. See [http-client.md](http-client.md#reading-json).
+
 ## The client's address
 
 ```d

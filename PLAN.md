@@ -1474,6 +1474,11 @@ timeouts, any HTTP/2 or TLS feature (D3).
 | F8 | 11.2 | The tri-state type is `PatchField!T` (owner's pick), in `vela:http` next to `Optional`. | `Patch!T` (clashes with the `@Patch` route UDA under `import vela;`); `Nullable!T` (clashes with `std.typecons`); `Tristate!T`. | Names the use (PATCH bodies) and clashes with nothing. In `vela:http` so the database driver can share it later. |
 | F9 | 11.2 | `writeJson` omits an absent `PatchField` from its object; `null` for a null one; outside an object absent is `null`. | Writing `null` for absent everywhere. | Round-trips the three states through a struct; an array has no way to leave an element out. |
 | F10 | 11.2 | JSON bodies only: `PatchField` in `Form!T`, `Query!T` or as a handler parameter is a one-line compile error pointing to `Optional!T`. | Mapping an empty form value to `null`. | Forms and query strings have no `null`; guessing from an empty string would make `""` impossible to send. |
+| F11 | 11.3 | `JsonValue` is a plain struct with one field per kind (no union); objects are a member array in input order; a repeated key keeps its first position and last value, with a hash index past 8 members. | A tagged union (pointer overlap is `@system`); an AA for objects (loses order); linear duplicate search (quadratic on hostile input). | `@safe` without `@trusted`; order is part of the requirement; the index keeps a 1 MiB body of repeated keys linear. |
+| F12 | 11.3 | Strict JSON number grammar for `JsonValue`; integer when it fits `long`, floating otherwise; a number that overflows `double` or is longer than 63 characters is an error; an integral floating number is written with `.0`. | Accepting what `strtod` accepts; writing `1.0` as `1`. | Untrusted input should not get more lenient than JSON; `.0` keeps the kind across a round trip, which the fuzz invariant checks. |
+| F13 | 11.3 | Depth limit 64 (the same as `skipValue`), counted inside the `JsonValue`; `parseJson` also has `maxBytes` (16 MiB). Limit errors are `json_invalid` with their own message (`JsonReader.fail`). | One shared depth counter for typed and dynamic decoding. | Typed nesting is bounded by the type; only `JsonValue` recursion depends on the input. |
+| F14 | 11.3 | Public `parseJson`, `fromJson!T`, `toJson`, `writeJson` for JSON outside a request. | Only `parseJson`. | Reading an upstream response into a DTO is the common case and reuses the body decoder's rules and errors. |
+| F15 | 11.3 | Fuzzing: `tests/fuzz/json_invariants.d` (round trip, depth, a typed decode), `fuzz_json.d` in `check.sh`, `tools/fuzz.sh … json`. `fuzz.sh` now sets `detect_stack_use_after_return=0` for every target. | Leaving ASan's default. | ASan's fake stack hides locals from the conservative GC: after ~700k runs a collection freed live objects and the round trip "changed" a value. With it off: 6M runs clean. |
 | F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
 
 ### [x] 11.1 Custom validation error responses: `onValidationError` — M
@@ -1498,7 +1503,15 @@ timeouts, any HTTP/2 or TLS feature (D3).
 > route, 422 `loc`s, a response that omits absent fields, OpenAPI), `tests/compile_fail/form_patchfield.d`,
 > `param_patchfield.d`. Docs: `requests.md` (a `// check` example), `validation.md`, the index.
 
-### [ ] 11.3 Dynamic JSON value: `JsonValue` — M
+### [x] 11.3 Dynamic JSON value: `JsonValue` — M
+
+> **Done.** `vela.web.jsonvalue`: `JsonValue` (kinds, accessors, `get`, `opIndex`, building, `opEquals`, `toString`),
+> `JsonMember`, `JsonType`, `JsonError`, `JsonLimits`, `parseJson` (throwing and not), `fromJson!T`, `toJson`,
+> `readJsonValue`/`writeJsonValue`; `JsonReader.fail`/`errorText`. Wired into `readJson`/`writeJson` (body, DTO field, maps,
+> arrays, return value) and OpenAPI (`{}`). Tests: module unittests (kinds, order, repeated keys past the index, errors,
+> numbers, depth, size, UTF-8, building, `fromJson`), `tests/web/json_value.d` (routes, 422s with `loc`, OpenAPI),
+> `fuzz_json.d` (300k inputs in `check.sh`), `tools/fuzz.sh 400 json`: 5.98M runs clean. Docs: `requests.md` and
+> `http-client.md` (`// check` examples), the index.
 
 ### [ ] 11.4 `vela:crypto` — L
 

@@ -9,7 +9,7 @@ things up.
 |------|----------------|
 | [Getting started](getting-started.md) | Install, the first route, a CRUD with JSON, a first test |
 | [Routing](routing.md) | Methods, path parameters, groups, controllers, 404/405, trailing slashes |
-| [Reading the request](requests.md) | Path, query, JSON body, query/form models, file uploads, headers, cookies, `Optional`, partial updates (`PatchField`), client IP, your own types |
+| [Reading the request](requests.md) | Path, query, JSON body, query/form models, file uploads, headers, cookies, `Optional`, partial updates (`PatchField`), any JSON value (`JsonValue`), client IP, your own types |
 | [Validation and errors](validation.md) | Validation attributes, the 422 format and its error codes, your own validation response (`onValidationError`), other error statuses |
 | [Responses](responses.md) | Return types, status codes, JSON, `Response`, headers, cookies |
 | [Middleware and error handling](middleware.md) | Writing middleware, order, `Local!T`, access log, request id, CORS, `onError` |
@@ -19,7 +19,7 @@ things up.
 | [Concurrency](concurrency.md) | Workers, fibers, state between workers, waiting without blocking, `offload`, cancellation |
 | [Database](database.md) | The PostgreSQL driver (`vela-pg`) |
 | [Jobs and cron](jobs-and-cron.md) | Background jobs (`vela:jobs`), retries, uniqueness, cron, process roles, Postgres queue |
-| [HTTP client](http-client.md) | Calling other APIs from a handler |
+| [HTTP client](http-client.md) | Calling other APIs from a handler, reading their JSON (`fromJson`, `parseJson`) |
 | [Testing](testing.md) | `TestClient`: requests and responses in memory |
 | [Memory safety](safety.md) | `@safe` handlers, strict mode, what you may keep from a request |
 

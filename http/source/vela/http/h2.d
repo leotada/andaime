@@ -1709,8 +1709,9 @@ private uint readU32(scope const(ubyte)[] b) pure nothrow @nogc
 }
 
 /// Strips padding (PADDED flag). False when the pad length does not fit (PROTOCOL_ERROR).
-private bool unpad(ubyte flags, scope const(ubyte)[] payload, out const(ubyte)[] data) pure nothrow @nogc
+private bool unpad(ubyte flags, scope const(ubyte)[] payload, out const(ubyte)[] data) pure nothrow @nogc @trusted
 {
+    // @trusted: `data` is a sub-slice of `payload` that the caller keeps no longer than `payload` (a frame handler's local)
     if (!(flags & flagPadded))
     {
         data = payload;

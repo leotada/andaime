@@ -1123,7 +1123,7 @@ unittest // frame rules
 
 unittest // handshake
 {
-    HeaderField[5] hs = [
+    HeaderField[] hs = [ // (a heap array: `r` keeps a view into it)
         HeaderField("Host", "x"), HeaderField("Upgrade", "WebSocket"), HeaderField("Connection", "keep-alive, Upgrade"),
         HeaderField("Sec-WebSocket-Version", "13"), HeaderField("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ=="),
     ];
@@ -1146,8 +1146,8 @@ unittest // handshake
     assert(checkUpgradeRequest(r, key) == WsHandshake.notUpgrade, "a plain HTTP/2 GET");
 
     // RFC 8441: an extended CONNECT (presented as a GET) needs only the version
-    HeaderField[2] h2 = [HeaderField("sec-websocket-version", "13"), HeaderField("origin", "https://x")];
-    r.headers = h2[];
+    HeaderField[] h2 = [HeaderField("sec-websocket-version", "13"), HeaderField("origin", "https://x")];
+    r.headers = h2;
     r.connectProtocol = "websocket";
     assert(checkUpgradeRequest(r, key) == WsHandshake.ok && key is null);
     h2[0].value = "8";
@@ -1178,7 +1178,7 @@ unittest // permessage-deflate offers
     assert(negotiateDeflate(r, p) && p.serverMaxWindowBits == 9);
     ByteBuffer o;
     writeDeflateResponse(o, p);
-    assert(o.data == "permessage-deflate; server_max_window_bits=9", o.data);
+    assert(o.data == "permessage-deflate; server_max_window_bits=9", o.data.idup);
     hs[1].value = "foo";
     assert(!negotiateDeflate(r, p));
 }

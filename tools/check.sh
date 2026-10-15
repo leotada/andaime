@@ -74,6 +74,24 @@ s_unittests() {
     $DC -unittest -main $I -i -run drivers/pg/source/vela/db/package.d
 }
 
+# -preview=dip1000 (scope/return scope checking, soon the default): the library, its unittests, the tests and the examples
+# must type-check with it, so users who build with the flag are not blocked. Only type-checks (-o-): the other sections
+# run everything.
+s_dip1000() {
+    local flags="-preview=dip1000 -o- -Isource -Ihttp/source -Iweb/source -Iengine/source -Idrivers/pg/source -Ijobs/source -Icrypto/source -Idrivers/pgjobs/source -Itests/web -Itests/fuzz"
+    local lib t rc=0
+    lib=$(find source http/source web/source engine/source crypto/source jobs/source drivers/pg/source drivers/pgjobs/source -name '*.d')
+    $DC $flags $lib || rc=1
+    $DC $flags -unittest $lib || rc=1
+    for t in tests/web/*.d tests/jobs/*.d; do
+        $DC $flags -unittest -main -i "$t" || { echo "FAILED: $t"; rc=1; }
+    done
+    for t in tests/h2/*.d tests/crypto/*.d tests/fuzz/*.d tests/alloc/*.d tests/net/*.d tests/db/*.d examples/*/source/*.d; do
+        $DC $flags -i "$t" || { echo "FAILED: $t"; rc=1; }
+    done
+    return $rc
+}
+
 s_web() {
     local rc=0 t
     # (helper modules for these tests live in tests/web/support/, which is on the import path)
@@ -425,6 +443,7 @@ s_budget() {
 }
 
 section "module unittests" s_unittests
+section "-preview=dip1000: the library, tests and examples type-check" s_dip1000
 section "web-layer features (groups, locals, onError, CORS, static files, OpenAPI, middlewares)" s_web
 section "background jobs (memory store, retry, unique window)" s_jobs
 section "documentation examples compile (blocks marked // check)" s_docs

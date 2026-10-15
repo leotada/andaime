@@ -21,5 +21,5 @@ unittest
     HeaderField[1] x = [HeaderField("X-Id", "7")];
     writeResponseHead(b, 201, "application/json", 2, x[], false);
     assert(b.data == "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n"
-        ~ "Content-Length: 2\r\nX-Id: 7\r\nConnection: close\r\n\r\n", b.data);
+        ~ "Content-Length: 2\r\nX-Id: 7\r\nConnection: close\r\n\r\n", b.data.idup);
 }

@@ -550,6 +550,14 @@ private bool failAt(ref JsonReader r, size_t pos)
     return r.syntax();
 }
 
+/// `text` without its `scope`, for the JSON readers: they copy every string they produce (`readJsonString` makes a new
+/// one) and keep no slice of the input once the call returns, but their generic helpers take the text as a plain slice.
+private const(char)[] unscoped(scope const(char)[] text) pure nothrow @nogc @trusted
+{
+    // @trusted: the slice is only handed to a reader that lives no longer than the call
+    return *cast(const(char)[]*) &text;
+}
+
 /// Parses a whole JSON document into `v`. On failure returns false and sets `error` to one line
 /// (`invalid JSON at byte 12`, `JSON nested deeper than 64 levels at byte 70`, `invalid UTF-8 at "a",1`).
 bool parseJson(scope const(char)[] text, out JsonValue v, out string error, JsonLimits limits = JsonLimits.init)
@@ -559,7 +567,7 @@ bool parseJson(scope const(char)[] text, out JsonValue v, out string error, Json
         error = "JSON longer than " ~ itoa(limits.maxBytes) ~ " bytes";
         return false;
     }
-    auto r = JsonReader(text);
+    auto r = JsonReader(unscoped(text));
     FieldErrors errs;
     FieldPath path;
     if (!readJsonValue(r, v, errs, path, 0, limits.maxDepth))
@@ -601,7 +609,7 @@ T fromJson(T)(scope const(char)[] text)
 
     T v;
     FieldErrors errs;
-    if (!decodeJson(text, v, errs))
+    if (!decodeJson(unscoped(text), v, errs))
     {
         auto e = errs.list.length ? errs.list[0] : FieldError.init;
         auto where = e.dotted;

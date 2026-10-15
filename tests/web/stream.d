@@ -71,7 +71,10 @@ WithStatus!Stream created() => withStatus(201, Stream("text/plain", (scope Strea
 
 string plain() => "plain";
 
-App build(ref string[] trace)
+// (module-level: the middleware delegates outlive build(), so they cannot capture a local)
+string[] trace;
+
+App build()
 {
     auto app = new App;
     app.use((Context c, Next n) {
@@ -96,8 +99,8 @@ App build(ref string[] trace)
 
 unittest
 {
-    string[] trace;
-    auto c = TestClient(build(trace));
+    trace = null;
+    auto c = TestClient(build());
 
     // chunks arrive in the order they were written, one per write
     auto r = c.get("/csv");
@@ -121,8 +124,8 @@ unittest
 
 unittest
 {
-    string[] trace;
-    auto c = TestClient(build(trace));
+    trace = null;
+    auto c = TestClient(build());
 
     // Server-Sent Events
     auto r = c.get("/events");
@@ -140,8 +143,8 @@ version (unittest) import std.conv : to;
 
 unittest
 {
-    string[] trace;
-    auto c = TestClient(build(trace));
+    trace = null;
+    auto c = TestClient(build());
 
     // an error before the first write is a normal error response (the head was not committed yet)
     auto r = c.get("/fails-first");
@@ -160,8 +163,8 @@ unittest
 
 @system unittest
 {
-    string[] trace;
-    auto c = TestClient(build(trace));
+    trace = null;
+    auto c = TestClient(build());
 
     assert(c.get("/created").status == 201 && c.get("/created").body == "made");
     assert(c.get("/accepted").status == 202);

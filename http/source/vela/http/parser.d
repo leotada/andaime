@@ -43,8 +43,8 @@ private ptrdiff_t findHeadEnd(scope const(char)[] buf) pure nothrow @nogc
 /// Parses the head in `buf`. On `complete`, all slices of `req`
 /// point inside `buf`; `headerStore` is supplied by the caller
 /// (the connection's fixed array), so nothing is allocated.
-HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
-    return scope HeaderField[] headerStore, in Limits limits = Limits.init) pure nothrow @nogc
+HeadResult parseRequestHead(const(char)[] buf, ref Request req,
+    HeaderField[] headerStore, in Limits limits = Limits.init) pure nothrow @nogc
 {
     auto end = findHeadEnd(buf);
     if (end < 0)
@@ -195,7 +195,7 @@ HeadResult parseRequestHead(return scope const(char)[] buf, ref Request req,
 
 unittest
 {
-    HeaderField[32] store;
+    auto store = new HeaderField[32]; // (heap: the parser keeps views into the store in `r`, which a stack array cannot lend)
     Request r;
     string raw = "PUT /users/42?x=1 HTTP/1.1\r\nHost: a\r\nContent-Length: 7\r\n"
         ~ "Authorization:  Bearer t  \r\n\r\n{\"a\":1}";

@@ -33,7 +33,7 @@ void checkJson(scope const(ubyte)[] data) @safe
 
     FieldErrors errs;
     Typed t;
-    decodeJson(text, t, errs);
+    decodeJson(text.idup, t, errs); // (a copy: decodeJson takes a plain slice)
     assert(errs.count <= FieldErrors.capacity);
 }
 

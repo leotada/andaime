@@ -273,7 +273,7 @@ struct TestClient
         => sendMultipart(Method.PUT, target, fields, null, null);
 
     private TestResponse sendMultipart(Method m, string target, const(string[2])[] fields, const(TestFile)[] files,
-        HeaderField[] headers)
+        scope HeaderField[] headers)
     {
         auto b = multipartBody(fields, files);
         return send(m, target, b.body, [hdr("Content-Type", "multipart/form-data; boundary=" ~ b.boundary)] ~ headers);
@@ -333,7 +333,7 @@ struct TestClient
     /// Set by `websocket` for the request it sends; see `Request.connectProtocol`.
     private string connectProtocol;
 
-    TestResponse send(Method m, string target, string body, HeaderField[] headers)
+    TestResponse send(Method m, string target, string body, scope HeaderField[] headers)
     {
         sink.reset(m);
         Request req;
@@ -370,7 +370,7 @@ struct TestClient
     }
 
     /// The request's headers plus the jar's cookies for `path` (merged into the caller's `Cookie` header, if any).
-    private HeaderField[] withJarCookies(const(char)[] path, HeaderField[] headers)
+    private HeaderField[] withJarCookies(const(char)[] path, scope HeaderField[] headers)
     {
         string jarText;
         foreach (ref c; jar)

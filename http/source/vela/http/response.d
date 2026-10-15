@@ -151,7 +151,7 @@ bool statusHasNoBody(int status) pure nothrow @nogc => status < 200 || status ==
 ///   `chunked`: `Transfer-Encoding: chunked` (unknown length on HTTP/1.1);
 ///   otherwise `Content-Length` when the length is known, nothing when it is not (the body then ends when the
 ///   connection closes, so `keepAlive` must be false).
-void writeResponseHead(ref ByteBuffer o, ref const ResponseHead head, bool keepAlive, bool chunked) nothrow @nogc
+void writeResponseHead(ref ByteBuffer o, scope ref const ResponseHead head, bool keepAlive, bool chunked) nothrow @nogc
 {
     o.put("HTTP/1.1 ");
     o.putUint(head.status);
@@ -195,26 +195,26 @@ unittest
     auto head = ResponseHead(201, "application/json", x[], 2);
     writeResponseHead(b, head, false, false);
     assert(b.data == "HTTP/1.1 201 Created\r\nContent-Type: application/json\r\n"
-        ~ "Content-Length: 2\r\nX-Id: 7\r\nConnection: close\r\n\r\n", b.data);
+        ~ "Content-Length: 2\r\nX-Id: 7\r\nConnection: close\r\n\r\n", b.data.idup);
 
     b.clear();
     auto streamed = ResponseHead(200, "text/event-stream", null, -1);
     writeResponseHead(b, streamed, true, true);
-    assert(b.data == "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n", b.data);
+    assert(b.data == "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n", b.data.idup);
 
     b.clear();
     writeResponseHead(b, streamed, false, false); // HTTP/1.0 client: the body ends with the connection
-    assert(b.data == "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n", b.data);
+    assert(b.data == "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n", b.data.idup);
 
     b.clear();
     auto none = ResponseHead(204, null, null, 0);
     writeResponseHead(b, none, true, false);
-    assert(b.data == "HTTP/1.1 204 No Content\r\n\r\n", b.data);
+    assert(b.data == "HTTP/1.1 204 No Content\r\n\r\n", b.data.idup);
 
     b.clear();
     auto switching = ResponseHead(101, null, null, 0);
     writeResponseHead(b, switching, true, false);
-    assert(b.data == "HTTP/1.1 101 Switching Protocols\r\n\r\n", b.data);
+    assert(b.data == "HTTP/1.1 101 Switching Protocols\r\n\r\n", b.data.idup);
 
     assert(isHopByHop("Transfer-Encoding") && isHopByHop("TE") && !isHopByHop("X-Id"));
     assert(statusHasNoBody(204) && statusHasNoBody(304) && statusHasNoBody(100) && !statusHasNoBody(200));

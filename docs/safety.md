@@ -36,6 +36,14 @@ versions "VelaStrictSafe"
 
 A `@system` handler then fails to compile with a one-line message.
 
+### `-preview=dip1000`
+
+The library, its tests and the examples type-check with `-preview=dip1000` (scoped pointers, the checks that
+`scope` and `return scope` parameters do not escape), on DMD and LDC, and CI keeps it so. An application that builds with
+the flag, or a test runner that turns it on (`unit-threaded` does), can use vela and `VelaStrictSafe` together. A few
+parameters that keep views into the caller's memory are not `scope` for that reason: the request parser's buffer and header
+store, the multipart body (the parts point into it) and `Request.queryValues(name)`.
+
 ## What you may keep from a request
 
 | Value | Lifetime |

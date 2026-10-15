@@ -28,7 +28,8 @@ VELA_ONLY="memory" tools/check.sh    # only the sections whose name contains the
 VELA_STRICT=1 tools/check.sh         # a skipped section fails the run (CI does this)
 ```
 
-`check.sh` runs sections: unittests, the web layer, documentation examples, OpenAPI validity, the parser, HTTP/2 session and
+`check.sh` runs sections: unittests, a `-preview=dip1000` type-check of everything (new code must keep it passing: mark
+parameters that are only read `scope`, and `return scope` when the result points into them), the web layer, documentation examples, OpenAPI validity, the parser, HTTP/2 session and
 WebSocket layer with mutation fuzzing, the GC-free hot path, network tests (HTTP/1.1, HTTP/2, HTTPS, WebSockets),
 interoperability (curl, python-h2, h2spec, python websockets, Caddy, Chromium), PostgreSQL, the HTTP client, the API example end to end, memory ceilings, compile-error tests, DUB
 builds and the compile-time budget. A section whose tool is missing exits 77 and is listed as skipped in the summary.

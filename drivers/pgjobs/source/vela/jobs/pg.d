@@ -491,7 +491,7 @@ private string textArray(scope const(char)[] element) pure
     return o ~ `"}`;
 }
 
-private const(char)[] clipUtf8(scope const(char)[] s, size_t max) pure nothrow @nogc
+private const(char)[] clipUtf8(return scope const(char)[] s, size_t max) pure nothrow @nogc
 {
     if (s.length <= max)
         return s;

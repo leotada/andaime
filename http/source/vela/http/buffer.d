@@ -184,7 +184,7 @@ unittest
     b.putInt(long.min);
     b.put(' ');
     b.putFloat(0.5);
-    assert(b.data == "x=-1234 -9223372036854775808 0.5", b.data);
+    assert(b.data == "x=-1234 -9223372036854775808 0.5", b.data.idup);
     b.clear();
     assert(b.length == 0 && b.capacity >= 32);
     b.put("abcdef");

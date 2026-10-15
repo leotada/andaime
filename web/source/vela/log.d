@@ -383,11 +383,11 @@ private void deliver(Args...)(LogSink sink, LogLevel level, scope const(char)[] 
     size_t[2][n] spans;
     if (scoped !is null)
         foreach (i, k; scoped.keys)
-            recFields[i] = mkField(k, scoped.values[i]);
+            setField(i, k, scoped.values[i]);
     static foreach (i; 0 .. n)
     {
         static if (is(Args[2 * i + 1] : const(char)[]))
-            recFields[ns + i] = mkField(fields[2 * i], fields[2 * i + 1]);
+            setField(ns + i, fields[2 * i], fields[2 * i + 1]);
         else
         {
             spans[i][0] = recValues.length;
@@ -399,16 +399,16 @@ private void deliver(Args...)(LogSink sink, LogLevel level, scope const(char)[] 
     static foreach (i; 0 .. n)
     {
         static if (!is(Args[2 * i + 1] : const(char)[]))
-            recFields[ns + i] = mkField(fields[2 * i], recValues.data[spans[i][0] .. spans[i][1]]);
+            setField(ns + i, fields[2 * i], recValues.data[spans[i][0] .. spans[i][1]]);
     }
     const rec = LogRecord(level, msg, rid, recFields[0 .. ns + n], text);
     sink(rec);
 }
 
-private LogField mkField(scope const(char)[] key, scope const(char)[] value) pure nothrow @nogc @trusted
+private void setField(size_t i, scope const(char)[] key, scope const(char)[] value) nothrow @nogc @trusted
 {
     // @trusted: the field is read only during the sink call, which `LogRecord` documents; the next line overwrites it
-    return LogField(key, value);
+    recFields[i] = LogField(key, value);
 }
 
 /// A field value as plain text: numbers and booleans as written, a JSON string without its quotes, anything else as JSON.

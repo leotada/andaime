@@ -315,57 +315,57 @@ final class HttpClient
     // `HttpClientConfig.timeout`). Bodies are text or bytes (`const(ubyte)[]`: an image, a protobuf, an encrypted
     // Web Push message); a `null` body is no body.
 
-    ClientResponse get(string url, const(HeaderPair)[] headers = null, Duration timeout = Duration.zero) @trusted
+    ClientResponse get(string url, scope const(HeaderPair)[] headers = null, Duration timeout = Duration.zero) @trusted
         => request("GET", url, headers, null, timeout);
 
-    ClientResponse post(string url, const(char)[] body_, const(HeaderPair)[] headers = null,
+    ClientResponse post(string url, const(char)[] body_, scope const(HeaderPair)[] headers = null,
         Duration timeout = Duration.zero) @trusted
         => request("POST", url, headers, body_, timeout);
 
     /// ditto, with a binary body.
-    ClientResponse post(string url, const(ubyte)[] body_, const(HeaderPair)[] headers = null,
+    ClientResponse post(string url, const(ubyte)[] body_, scope const(HeaderPair)[] headers = null,
         Duration timeout = Duration.zero) @trusted
         => request("POST", url, headers, cast(const(char)[]) body_, timeout);
 
     /// ditto, with no body (`post(url, null)`; without this overload `null` would match both of the above).
-    ClientResponse post(string url, typeof(null), const(HeaderPair)[] headers = null,
+    ClientResponse post(string url, typeof(null), scope const(HeaderPair)[] headers = null,
         Duration timeout = Duration.zero) @trusted
         => request("POST", url, headers, null, timeout);
 
-    ClientResponse put(string url, const(char)[] body_, const(HeaderPair)[] headers = null,
+    ClientResponse put(string url, const(char)[] body_, scope const(HeaderPair)[] headers = null,
         Duration timeout = Duration.zero) @trusted
         => request("PUT", url, headers, body_, timeout);
 
     /// ditto, with a binary body.
-    ClientResponse put(string url, const(ubyte)[] body_, const(HeaderPair)[] headers = null,
+    ClientResponse put(string url, const(ubyte)[] body_, scope const(HeaderPair)[] headers = null,
         Duration timeout = Duration.zero) @trusted
         => request("PUT", url, headers, cast(const(char)[]) body_, timeout);
 
     /// ditto, with no body.
-    ClientResponse put(string url, typeof(null), const(HeaderPair)[] headers = null,
+    ClientResponse put(string url, typeof(null), scope const(HeaderPair)[] headers = null,
         Duration timeout = Duration.zero) @trusted
         => request("PUT", url, headers, null, timeout);
 
-    ClientResponse del(string url, const(HeaderPair)[] headers = null, Duration timeout = Duration.zero) @trusted
+    ClientResponse del(string url, scope const(HeaderPair)[] headers = null, Duration timeout = Duration.zero) @trusted
         => request("DELETE", url, headers, null, timeout);
 
     /// POST of already-serialized JSON.
-    ClientResponse postJson(string url, const(char)[] json, const(HeaderPair)[] headers = null,
+    ClientResponse postJson(string url, const(char)[] json, scope const(HeaderPair)[] headers = null,
         Duration timeout = Duration.zero) @trusted
         => request("POST", url, headers ~ HeaderPair("Content-Type", "application/json"), json, timeout);
 
     /// Any method, with a binary body.
-    ClientResponse request(string method, string url, const(HeaderPair)[] headers, const(ubyte)[] body_,
+    ClientResponse request(string method, string url, scope const(HeaderPair)[] headers, const(ubyte)[] body_,
         Duration timeout = Duration.zero) @trusted
         => request(method, url, headers, cast(const(char)[]) body_, timeout);
 
     /// Any method, with no body.
-    ClientResponse request(string method, string url, const(HeaderPair)[] headers, typeof(null),
+    ClientResponse request(string method, string url, scope const(HeaderPair)[] headers, typeof(null),
         Duration timeout = Duration.zero) @trusted
         => request(method, url, headers, cast(const(char)[]) null, timeout);
 
     /// Any method, with a text body.
-    ClientResponse request(string method, string url, const(HeaderPair)[] headers, const(char)[] body_,
+    ClientResponse request(string method, string url, scope const(HeaderPair)[] headers, const(char)[] body_,
         Duration timeout = Duration.zero) @trusted
     {
         auto u = parseUrl(url);

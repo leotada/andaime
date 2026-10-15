@@ -127,7 +127,7 @@ void classifyFormContentType(scope const(char)[] header, out FormContentType res
 
 /// Parses `body` as multipart/form-data. Returns null on success. `boundary` is the raw boundary parameter, without
 /// the leading `--`.
-string parseMultipart(scope const(ubyte)[] body, scope const(char)[] boundary, out MultipartPart[] parts)
+string parseMultipart(const(ubyte)[] body, scope const(char)[] boundary, out MultipartPart[] parts)
 {
     parts = null;
     if (!validBoundary(boundary))
@@ -184,8 +184,9 @@ private void skipOws(scope const(char)[] s, ref size_t i) pure nothrow @nogc
         i++;
 }
 
-private bool readToken(scope const(char)[] s, ref size_t i, out const(char)[] tok) pure nothrow @nogc
+private bool readToken(scope const(char)[] s, ref size_t i, out const(char)[] tok) pure nothrow @nogc @trusted
 {
+    // @trusted: `tok` is a sub-slice of `s` that the caller keeps no longer than `s` (a local of the parsing function)
     immutable start = i;
     while (i < s.length && isTchar(s[i]))
         i++;
@@ -307,12 +308,12 @@ private Tail readTail(scope const(ubyte)[] body, ref size_t p) pure nothrow @nog
 }
 
 // sound: a header line is raw request bytes read as text; the result is decoded into owned strings before it escapes
-private const(char)[] asText(scope const(ubyte)[] b) pure nothrow @nogc @trusted
+private const(char)[] asText(return scope const(ubyte)[] b) pure nothrow @nogc @trusted
 {
     return cast(const(char)[]) b;
 }
 
-private bool readPart(scope const(ubyte)[] body, scope const(char)[] boundary, ref size_t p,
+private bool readPart(const(ubyte)[] body, scope const(char)[] boundary, ref size_t p,
     ref MultipartPart[] parts, out string error)
 {
     immutable headerStart = p;
@@ -434,7 +435,7 @@ private bool readPart(scope const(ubyte)[] body, scope const(char)[] boundary, r
     return true;
 }
 
-private const(char)[] trimOws(scope const(char)[] s) pure nothrow @nogc
+private const(char)[] trimOws(return scope const(char)[] s) pure nothrow @nogc
 {
     size_t a, b = s.length;
     while (a < b && (s[a] == ' ' || s[a] == '\t'))

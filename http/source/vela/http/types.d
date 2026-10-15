@@ -136,7 +136,7 @@ struct Request
 
     /// Every raw (still encoded) value of `name` in the query string, in order: `?tag=a&tag=b` gives "a", "b". A key
     /// without `=` has the empty value. Allocation-free; use it like a range (`empty`, `front`, `popFront`).
-    QueryValues queryValues(return scope const(char)[] name) const pure nothrow @nogc
+    QueryValues queryValues(const(char)[] name) const pure nothrow @nogc
     {
         return QueryValues(query, name);
     }

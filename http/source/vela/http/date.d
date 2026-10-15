@@ -60,12 +60,12 @@ unittest
 {
     char[29] b;
     formatHttpDate(0, b);
-    assert(b[] == "Thu, 01 Jan 1970 00:00:00 GMT", b[]);
+    assert(b[] == "Thu, 01 Jan 1970 00:00:00 GMT", b[].idup);
     formatHttpDate(951_782_400, b);
-    assert(b[] == "Tue, 29 Feb 2000 00:00:00 GMT", b[]);
+    assert(b[] == "Tue, 29 Feb 2000 00:00:00 GMT", b[].idup);
     formatHttpDate(1_760_303_400, b);
-    assert(b[] == "Sun, 12 Oct 2025 21:10:00 GMT", b[]);
+    assert(b[] == "Sun, 12 Oct 2025 21:10:00 GMT", b[].idup);
     formatHttpDate(1_709_164_800, b);
-    assert(b[] == "Thu, 29 Feb 2024 00:00:00 GMT", b[]);
+    assert(b[] == "Thu, 29 Feb 2024 00:00:00 GMT", b[].idup);
     assert(httpDate().length == 29 && httpDate()[$ - 4 .. $] == " GMT");
 }

@@ -725,7 +725,7 @@ unittest
     ByteBuffer b;
     writeJson(b, d);
     assert(b.data == `{"name":"Ana é \"x\"","age":30,"role":"admin","email":null,`
-        ~ `"tags_list":["a","b"],"address":{"cep":"01310-100"}}`, b.data);
+        ~ `"tags_list":["a","b"],"address":{"cep":"01310-100"}}`, b.data.idup);
 
     // several errors reported at once, with the field path and a machine-readable type
     errs.clear();
@@ -860,11 +860,11 @@ unittest
 
     ByteBuffer b;
     writeJson(b, u);
-    assert(b.data == `{"nick":null,"age":30,"address":{"city":"Rio","zip":null},"tags":["a"]}`, b.data);
+    assert(b.data == `{"nick":null,"age":30,"address":{"city":"Rio","zip":null},"tags":["a"]}`, b.data.idup);
     b.clear();
     Upd none;
     writeJson(b, none);
-    assert(b.data == `{}`, b.data);
+    assert(b.data == `{}`, b.data.idup);
     b.clear();
     auto arr = [PatchField!int.init, PatchField!int.null_, PatchField!int(1)];
     writeJson(b, arr);

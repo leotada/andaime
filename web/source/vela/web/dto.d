@@ -134,7 +134,7 @@ struct ValidationErrors
     size_t dropped;
 
     /// True when some error came from `source`: `if (errors.has(ErrorSource.path)) ... 404`.
-    bool has(ErrorSource source) const pure nothrow @nogc @safe
+    bool has(ErrorSource source) const pure nothrow @nogc @safe scope
     {
         foreach (ref e; items)
             if (e.source == source)
@@ -176,7 +176,7 @@ struct FieldErrors
     }
 
     /// Error somewhere in a JSON body.
-    void addPath(scope ref const FieldPath path, string type, string message) nothrow @safe
+    void addPath(ref const FieldPath path, string type, string message) nothrow @safe
     {
         if (count >= capacity)
         {
@@ -276,7 +276,7 @@ struct FieldPath
     bool empty() const nothrow @nogc @safe => depth == 0;
 
     /// `"items",1,"code"` ("" for the root).
-    string render() const nothrow @safe
+    string render() const nothrow @safe scope
     {
         string r;
         immutable n = depth < maxDepth ? depth : maxDepth;

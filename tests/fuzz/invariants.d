@@ -87,9 +87,9 @@ void checkChunked(const(char)[] input)
 void check(const(char)[] buf, in Limits lim = Limits.init)
 {
     checkChunked(buf);
-    HeaderField[32] store;
+    auto store = new HeaderField[32]; // (heap: `r` keeps views into the store)
     Request r;
-    auto h = parseRequestHead(buf, r, store[], lim);
+    auto h = parseRequestHead(buf, r, store, lim);
 
     final switch (h.status)
     {
@@ -158,15 +158,15 @@ void check(const(char)[] buf, in Limits lim = Limits.init)
 
             // the head does not "complete" before its end, and bytes after it do not change the result
             Request r2;
-            HeaderField[32] s2;
-            auto h2 = parseRequestHead(buf[0 .. h.headLength], r2, s2[], lim);
+            auto s2 = new HeaderField[32];
+            auto h2 = parseRequestHead(buf[0 .. h.headLength], r2, s2, lim);
             assert(h2.status == ParseStatus.complete && h2.headLength == h.headLength
                 && h2.contentLength == h.contentLength && r2.method == r.method && r2.path == r.path);
             foreach (k; [h.headLength - 1, h.headLength - 2, h.headLength - 4, h.headLength / 2, 0])
             {
                 Request r3;
-                HeaderField[32] s3;
-                assert(parseRequestHead(buf[0 .. k], r3, s3[], lim).status != ParseStatus.complete,
+                auto s3 = new HeaderField[32];
+                assert(parseRequestHead(buf[0 .. k], r3, s3, lim).status != ParseStatus.complete,
                     "a prefix of the head was accepted as complete");
             }
             break;

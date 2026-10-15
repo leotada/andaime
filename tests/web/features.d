@@ -17,7 +17,10 @@ string orphan(Local!User u) => u.name;
 string echo(string x) => x;
 string id(int n) => "id=" ~ (n < 10 ? "0" : "") ~ "x";
 
-App build(ref string[] trace)
+// (module-level: the middleware delegates outlive build(), so they cannot capture a local)
+string[] trace;
+
+App build()
 {
     auto app = new App;
     app.redirectTrailingSlash = true;
@@ -50,8 +53,8 @@ App build(ref string[] trace)
 
 unittest
 {
-    string[] trace;
-    auto c = TestClient(build(trace));
+    trace = null;
+    auto c = TestClient(build());
 
     // group: prefix + middleware only on the group's routes
     auto r = c.get("/hi");
@@ -90,8 +93,8 @@ unittest
 
 unittest
 {
-    string[] trace;
-    auto c = TestClient(build(trace));
+    trace = null;
+    auto c = TestClient(build());
     string ori = "https://app.example.com";
 
     // without Origin: no CORS headers
@@ -151,8 +154,8 @@ unittest
 
 unittest
 {
-    string[] trace;
-    auto app = build(trace);
+    trace = null;
+    auto app = build();
     app.onError((Context ctx, Exception e) {
         if (auto he = cast(HttpError) e)
             ctx.text("http:" ~ he.msg, he.status);

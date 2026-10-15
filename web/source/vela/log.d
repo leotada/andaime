@@ -13,6 +13,9 @@
 ///
 /// A line below the level costs two loads and allocates nothing; an emitted line is built in a reused per-thread buffer
 /// and written with one write(2), so lines from different workers do not interleave.
+///
+/// `setLogSink` sends the lines somewhere else, as a `LogRecord` (level, message, request id, fields, and the rendered
+/// line); `vela.web.testing.captureLog` collects them in tests.
 module vela.log;
 
 @safe:
@@ -40,6 +43,31 @@ enum LogFormat : ubyte
     json,
 }
 
+/// One field of a `LogRecord`: the key and the value as text (a string as it is; a number, `true`/`false` or an enum as
+/// written; any other type as its JSON).
+struct LogField
+{
+    const(char)[] key;
+    const(char)[] value;
+}
+
+/// A log line before it is written, as a `LogSink` gets it. The slices point into per-thread buffers that the next line
+/// reuses: they are valid only during the call, so copy what you keep.
+struct LogRecord
+{
+    LogLevel level;
+    const(char)[] message;
+    /// The request id of the running request (empty outside one).
+    const(char)[] requestId;
+    /// The fields of the line, in order: the layer's (`job`, `job_id`, `attempt` in `perform`), then the call's.
+    const(LogField)[] fields;
+    /// The line exactly as it would be written to stderr (in the current format, newline included).
+    const(char)[] line;
+}
+
+/// Where lines go instead of stderr. See `setLogSink`.
+alias LogSink = void delegate(scope ref const LogRecord) @safe;
+
 private shared ubyte gLevel = LogLevel.info;
 private shared ubyte gFormat = LogFormat.text;
 private shared bool gEnvRead;
@@ -52,6 +80,38 @@ void configureLog(LogLevel level, LogFormat format = LogFormat.text) nothrow
     atomicStore(gFormat, cast(ubyte) format);
     applyEnvironment();
 }
+
+private __gshared LogSink gSink;
+private LogSink threadSink; // per thread: takes precedence over gSink
+private bool inSink; // per thread: a sink that logs would clobber the line it is handed
+
+/// Sends every line to `sink` instead of stderr (to a log shipper, journald, a file...): the sink gets the level, the
+/// message, the request id and the fields, and the rendered line. `null` goes back to stderr. Call it once before
+/// `serve`: the workers read it without a lock. The sink runs on the thread that logged, so it must be thread-safe, and it
+/// must not log (a line logged from inside a sink is dropped). Lines below the level never reach it, and neither do
+/// the few engine messages that are still written straight to stderr (see `docs/logging.md`).
+void setLogSink(LogSink sink) @system nothrow @nogc
+{
+    gSink = sink;
+}
+
+/// Sends the lines logged by the calling thread to `sink` (or back to the process-wide sink and stderr, for `null`) and
+/// returns the previous one, to restore it. For tests: `vela.web.testing.captureLog` uses it.
+LogSink setThreadLogSink(LogSink sink) nothrow @nogc
+{
+    auto prev = threadSink;
+    threadSink = sink;
+    return prev;
+}
+
+private LogSink currentSink() nothrow @nogc @trusted
+{
+    // @trusted: gSink is written by setLogSink before the workers start and only read afterwards
+    return threadSink !is null ? threadSink : gSink;
+}
+
+/// Whether lines go to a sink (so a caller that formats a line itself for stderr must hand it over as text instead).
+package(vela) bool logSinkActive() nothrow @nogc => currentSink() !is null;
 
 /// The current level.
 LogLevel logLevel() nothrow @nogc
@@ -214,6 +274,8 @@ private ByteBuffer line; // per thread, reused: an emitted line allocates nothin
 private void emit(Args...)(LogLevel level, scope const(char)[] legacy, bool hasLegacy, scope const(char)[] msg,
     ref Args fields) nothrow
 {
+    if (inSink)
+        return; // logged from inside a sink: the line the sink holds must stay intact (see setLogSink)
     try
     {
         line.clear();
@@ -289,13 +351,94 @@ private void emit(Args...)(LogLevel level, scope const(char)[] legacy, bool hasL
                 break;
         }
         line.put('\n');
-        writeStderr(line.data);
+        if (auto sink = currentSink())
+            deliver(sink, level, msg, rid, scoped, line.data, fields);
+        else
+            writeStderr(line.data);
         if (line.capacity > 64 << 10)
             line = ByteBuffer.init; // a huge stack trace does not stay pinned to the thread
     }
     catch (Exception)
     {
         // a value that cannot be written loses its line, never the request
+    }
+}
+
+private LogField[] recFields; // per thread, reused by `deliver`
+private ByteBuffer recValues; // per thread: the values of `recFields` that are not strings
+
+/// Hands the line to `sink` with its parts. Allocates only while the per-thread buffers grow.
+private void deliver(Args...)(LogSink sink, LogLevel level, scope const(char)[] msg, scope const(char)[] rid,
+    LogScope scoped, scope const(char)[] text, ref Args fields)
+{
+    inSink = true;
+    scope (exit)
+        inSink = false;
+
+    enum n = Args.length / 2;
+    immutable ns = scoped is null ? 0 : scoped.keys.length;
+    if (recFields.length < ns + n)
+        recFields = new LogField[ns + n];
+    recValues.clear();
+    size_t[2][n] spans;
+    if (scoped !is null)
+        foreach (i, k; scoped.keys)
+            recFields[i] = mkField(k, scoped.values[i]);
+    static foreach (i; 0 .. n)
+    {
+        static if (is(Args[2 * i + 1] : const(char)[]))
+            recFields[ns + i] = mkField(fields[2 * i], fields[2 * i + 1]);
+        else
+        {
+            spans[i][0] = recValues.length;
+            putRaw(recValues, fields[2 * i + 1]);
+            spans[i][1] = recValues.length;
+        }
+    }
+    // the values were written first because the buffer may move while it grows
+    static foreach (i; 0 .. n)
+    {
+        static if (!is(Args[2 * i + 1] : const(char)[]))
+            recFields[ns + i] = mkField(fields[2 * i], recValues.data[spans[i][0] .. spans[i][1]]);
+    }
+    const rec = LogRecord(level, msg, rid, recFields[0 .. ns + n], text);
+    sink(rec);
+}
+
+private LogField mkField(scope const(char)[] key, scope const(char)[] value) pure nothrow @nogc @trusted
+{
+    // @trusted: the field is read only during the sink call, which `LogRecord` documents; the next line overwrites it
+    return LogField(key, value);
+}
+
+/// A field value as plain text: numbers and booleans as written, a JSON string without its quotes, anything else as JSON.
+private void putRaw(T)(ref ByteBuffer o, ref T v)
+{
+    static if (is(T == bool))
+        o.put(v ? "true" : "false");
+    else static if (__traits(isIntegral, T) && !is(T == enum) && !is(T == char) && !is(T == wchar) && !is(T == dchar))
+    {
+        static if (__traits(isUnsigned, T))
+            o.putUint(v);
+        else
+            o.putInt(v);
+    }
+    else static if (__traits(isFloating, T))
+        o.putFloat(v);
+    else
+    {
+        scratchValue.clear();
+        writeJson(scratchValue, v);
+        auto s = scratchValue.data;
+        bool plain = s.length >= 2 && s[0] == '"' && s[$ - 1] == '"';
+        if (plain)
+            foreach (c; s)
+                if (c == '\\')
+                {
+                    plain = false;
+                    break;
+                }
+        o.put(plain ? s[1 .. $ - 1] : s);
     }
 }
 

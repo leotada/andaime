@@ -53,11 +53,21 @@ void main()
     app.get!("/calc/{id}", calc);
     immutable kv = run(app, LogFormat.kv);
     immutable js = run(app, LogFormat.json);
+    // with a sink that keeps nothing: the record and its field values are built in reused buffers
+    size_t seen, bytes;
+    setLogSink((scope ref const LogRecord r) @safe { seen++; bytes += r.line.length + r.fields.length; });
+    immutable kvSink = run(app, LogFormat.kv);
+    immutable jsSink = run(app, LogFormat.json);
+    immutable textSink = run(app, LogFormat.text);
+    setLogSink(null);
+    assert(seen > 0 && bytes > 0, "the sink got no lines");
     configureLog(LogLevel.warn); // everything below warn: filtered
     immutable off = run(app, LogFormat.text);
 
     dup2(saved, 2);
     close(devnull);
-    printf("bytes allocated on the GC in 20k logged requests: kv %llu, json %llu, filtered %llu\n", kv, js, off);
+    printf("bytes allocated on the GC in 20k logged requests: kv %llu, json %llu, filtered %llu; to a sink: kv %llu, json %llu, text %llu\n",
+        kv, js, off, kvSink, jsSink, textSink);
     assert(kv == 0 && js == 0 && off == 0, "logging allocated on the GC");
+    assert(kvSink == 0 && jsSink == 0 && textSink == 0, "logging to a sink allocated on the GC");
 }

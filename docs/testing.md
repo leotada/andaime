@@ -132,6 +132,35 @@ assert(r.status == 101 && r.texts == ["a: hi"] && r.pongs == ["p"] && r.closeCod
 upgrade shows up in `r.status` and `r.response`. With `c.http2 = true` the client sends HTTP/2 requests, and `websocket`
 opens the WebSocket as a browser does on an HTTP/2 connection (RFC 8441): a successful one answers 200 instead of 101.
 
+## Logs
+
+`captureLog` runs a delegate and returns the lines that `vela.log` wrote on this thread instead of writing them to stderr
+(the level and format from `configureLog` apply, so a line below the level is not collected):
+
+```d
+// check
+import vela;
+import vela.web.testing;
+
+string boom() @safe { throw new Exception("kaput"); }
+
+void main()
+{
+    auto app = new App;
+    app.get!("/boom", boom);
+    auto c = TestClient(app);
+
+    auto logs = captureLog({ c.get("/boom"); });
+    assert(logs[0].level == LogLevel.error && logs[0].message == "error in handler");
+    assert(logs[0].field("path") == "/boom" && logs[0].has("error"));
+}
+```
+
+A `CapturedLog` has `level`, `message`, `requestId`, `fields` (key and value pairs, in order), `field(key)`, `has(key)` and the
+rendered `line`. Lines written by the code a [job](jobs.md) runs carry `job`, `job_id` and `attempt`, so a job test can
+use `captureLog` around `drainJobs`. A real server's workers log on their own threads: use
+[`setLogSink`](logging.md#sending-lines-somewhere-else-setlogsink) there.
+
 ## Tips
 
 - Build a fresh app per test (`TestClient(buildApp())`) so tests do not share state.

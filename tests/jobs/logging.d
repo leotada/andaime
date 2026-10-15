@@ -68,3 +68,18 @@ unittest
     lines = captureStderr(() { logInfo("after"); });
     assert(lines.length == 1 && lines[0].indexOf("job") < 0, lines[0]);
 }
+
+unittest
+{
+    // through the sink: the job scope arrives as fields, in order, before the call's own
+    import vela.web.testing : captureLog;
+
+    auto store = new TestJobStore;
+    enqueue(store, Greet("Dan"));
+    configureLog(LogLevel.info, LogFormat.text);
+    auto logs = captureLog(() { store.drainJobs!Greet(); });
+    assert(logs.length == 1 && logs[0].message == "greeting");
+    assert(logs[0].field("job") == "job_logging.Greet" && logs[0].field("job_id").length && logs[0].field("attempt") == "1");
+    assert(logs[0].field("who") == "Dan");
+    assert(logs[0].fields[0][0] == "job" && logs[0].fields[$ - 1][0] == "who");
+}

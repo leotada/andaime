@@ -126,3 +126,125 @@ unittest
     auto lines = captureStderr({ logWarn("startup", "port", 8080); });
     assert(lines == ["startup port=8080"], lines.length ? lines[0] : "nothing");
 }
+
+// ------------------------------------------------------------ the sink
+
+enum Plan { free, pro }
+struct Extra { int a; string b; }
+
+void fields(Context ctx) @safe
+{
+    logWarn("shaped", "n", 7, "f", 1.5, "ok", true, "plan", Plan.pro, "name", "Ana Maria", "extra", Extra(1, "x"), "u", 3UL);
+}
+
+unittest
+{
+    // captureLog: level, message, request id and fields, without touching stderr
+    configureLog(LogLevel.info, LogFormat.text);
+    auto app = new App;
+    app.use(requestId());
+    app.get!("/fields", fields);
+    app.get!("/hello", hello);
+    auto c = TestClient(app);
+    string[] onStderr;
+    CapturedLog[] logs;
+    onStderr = captureStderr({
+        logs = captureLog({ c.get("/fields", hdr("X-Request-Id", "r-9")); c.get("/hello"); });
+    });
+    assert(onStderr.length == 0, onStderr[0]);
+    assert(logs.length == 2, "two lines expected");
+    assert(logs[0].level == LogLevel.warn && logs[0].message == "shaped" && logs[0].requestId == "r-9");
+    assert(logs[0].field("n") == "7" && logs[0].field("f") == "1.5" && logs[0].field("ok") == "true");
+    assert(logs[0].field("plan") == "pro", logs[0].field("plan"));
+    assert(logs[0].field("name") == "Ana Maria" && logs[0].field("u") == "3");
+    assert(logs[0].field("extra") == `{"a":1,"b":"x"}`, logs[0].field("extra"));
+    assert(logs[0].has("n") && !logs[0].has("nope") && logs[0].field("nope") is null);
+    // fields keep their order, and the rendered line is what stderr would have got
+    assert(logs[0].fields[0][0] == "n" && logs[0].fields[$ - 1][0] == "u");
+    assert(logs[0].line == `shaped request_id=r-9 n=7 f=1.5 ok=true plan="pro" name="Ana Maria" extra="{\"a\":1,\"b\":\"x\"}" u=3` ~ "\n",
+        logs[0].line);
+    assert(logs[1].message == "saying hello" && logs[1].requestId.length > 0 && logs[1].field("who") == "Ana");
+}
+
+unittest
+{
+    // the format only changes `line`; a filtered line never reaches the sink
+    configureLog(LogLevel.info, LogFormat.json);
+    scope (exit)
+        configureLog(LogLevel.info, LogFormat.text);
+    auto c = TestClient(build());
+    auto logs = captureLog({ c.get("/hello", hdr("X-Request-Id", "j1")); });
+    assert(logs.length == 2); // the user's line, then the access log
+    auto parsed = parseJSON(logs[0].line);
+    assert(parsed["msg"].str == logs[0].message && parsed["who"].str == "Ana" && parsed["level"].str == "info");
+    assert(logs[1].message == "request" && logs[1].field("status") == "200" && logs[1].field("method") == "GET");
+    assert(logs[1].has("duration_us") && logs[1].requestId == "j1");
+
+    configureLog(LogLevel.error, LogFormat.json);
+    assert(captureLog({ c.get("/hello"); }).length == 0);
+}
+
+unittest
+{
+    // vela's own lines in the text format reach the sink as the legacy text, with fields: the access log and a 500
+    configureLog(LogLevel.info, LogFormat.text);
+    auto c = TestClient(build());
+    auto logs = captureLog({ c.get("/boom", hdr("X-Request-Id", "e1")); });
+    assert(logs.length == 2, "the 500 line and the access line");
+    assert(logs[0].level == LogLevel.error && logs[0].message == "error in handler" && logs[0].field("path") == "/boom");
+    assert(logs[0].line.startsWith("vela: error in GET /boom: "), logs[0].line);
+    assert(logs[1].message == "request" && logs[1].field("status") == "500");
+    assert(logs[1].line.startsWith("GET /boom 500 ") && logs[1].line.indexOf("rid=e1") > 0, logs[1].line);
+}
+
+unittest
+{
+    // an invalid response header is logged as a warning that names the header, never its value
+    configureLog(LogLevel.info, LogFormat.text);
+    auto app = new App;
+    app.get!("/bad", (Context ctx) @safe { ctx.setHeader("X-Bad", "a\r\nInjected: 1"); return "x"; });
+    auto c = TestClient(app);
+    TestResponse r;
+    auto logs = captureLog({ r = c.get("/bad"); });
+    assert(r.status == 500);
+    assert(logs.length == 1 && logs[0].level == LogLevel.warn);
+    assert(logs[0].line.indexOf("X-Bad") > 0 && logs[0].line.indexOf("Injected") < 0, logs[0].line);
+}
+
+unittest
+{
+    // setLogSink: the process-wide sink gets the lines; a thread sink wins over it; null goes back to stderr
+    configureLog(LogLevel.info, LogFormat.text);
+    string[] seen;
+    () @trusted { setLogSink((scope ref const LogRecord r) @safe { seen ~= r.message.idup; }); }();
+    scope (exit)
+        () @trusted { setLogSink(null); }();
+    assert(captureStderr({ logInfo("to the sink"); }).length == 0);
+    assert(seen == ["to the sink"]);
+
+    string[] mine;
+    auto prev = setThreadLogSink((scope ref const LogRecord r) @safe { mine ~= r.message.idup; });
+    logInfo("to the thread sink");
+    setThreadLogSink(prev);
+    assert(mine == ["to the thread sink"] && seen.length == 1);
+
+    () @trusted { setLogSink(null); }();
+    assert(captureStderr({ logInfo("back"); }) == ["back"]);
+    assert(seen.length == 1);
+}
+
+unittest
+{
+    // a sink that logs does not recurse and does not corrupt the line it was handed
+    configureLog(LogLevel.info, LogFormat.text);
+    string first;
+    auto prev = setThreadLogSink((scope ref const LogRecord r) @safe {
+        first = r.line.idup;
+        logInfo("from inside the sink"); // dropped
+        assert(r.line == first, "the line was clobbered");
+    });
+    scope (exit)
+        setThreadLogSink(prev);
+    logInfo("outer", "k", 1);
+    assert(first == "outer k=1\n", first);
+}

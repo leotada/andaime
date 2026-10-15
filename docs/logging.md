@@ -88,8 +88,47 @@ The access log (`accessLog()`, `info`), the exceptions behind a 500 (`error`, wi
 level, and in `kv`/`json` they are structured (`msg="error in handler" method=GET path=/x error="..."`). A few startup and
 engine messages (bad configuration, a stalled worker, a crash) are still written straight to stderr.
 
+## Sending lines somewhere else: `setLogSink`
+
+`setLogSink` replaces the write to stderr: every line goes to your delegate as a `LogRecord` (the level, the message, the
+request id, the fields as `LogField(key, value)` and the rendered `line`, newline included). Use it to ship lines to a
+collector, to journald, or to a test.
+
+```d
+// check
+import vela;
+
+void main() // setLogSink is @system: it writes a variable shared by all threads
+{
+    configureLog(LogLevel.info, LogFormat.json);
+    // the sink is @safe; r.line is exactly what stderr would have got, r.fields has the parts as text
+    setLogSink((scope ref const LogRecord r) @safe {
+        if (r.level >= LogLevel.error)
+            ship(r.line.idup);
+    });
+    logError("disk full", "free_mb", 0);
+}
+
+void ship(string line) @safe
+{
+    // ... queue it for a collector, write it to a file...
+}
+```
+
+- Call it once, before `serve` (it is not thread-safe to change it while workers run). `setLogSink(null)` goes back to
+  stderr.
+- The sink runs on the thread that logged, so it must be thread-safe, and it must be quick: it runs inside the request.
+- The slices in the record are reused by the next line. Copy what you keep.
+- A value is text: a string as it is, a number, `true`/`false`, an enum by its name, any other type as JSON.
+- A line logged from inside a sink is dropped, not written.
+- Lines below the level never reach the sink. The access log, the exceptions behind a 500 and a response with an invalid
+  header go through it; the few startup and engine messages (bad configuration, a stalled worker, a crash, a header set
+  after the response started) are still written straight to stderr.
+- `setThreadLogSink` does the same for the calling thread only, and wins over `setLogSink`. [`captureLog`](testing.md#logs)
+  uses it.
+
 ## Cost
 
 A line below the level costs two memory loads and allocates nothing. A written line is built in a buffer reused by the
 thread and goes out with one `write(2)`, so lines of different workers do not interleave; after the first lines it
-allocates nothing either (`tests/alloc/log_hot_path.d` checks both).
+allocates nothing either, with a sink that keeps nothing too (`tests/alloc/log_hot_path.d` checks both).

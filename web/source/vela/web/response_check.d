@@ -7,6 +7,7 @@ module vela.web.response_check;
 
 import vela.http.types;
 import vela.http.date : httpDate;
+import vela.log : LogLevel, logVela;
 import vela.web.context;
 
 /// Headers vela writes itself: whatever the application sets for them is dropped (see `ResponseState`).
@@ -46,18 +47,20 @@ bool checkResponse(Context ctx)
     return false;
 }
 
-private void logBadResponse(Context ctx, scope const(char)[] badName, string problem) nothrow @trusted
+/// Only a header name or a fixed text is logged, never a value.
+private void logBadResponse(Context ctx, scope const(char)[] badName, string problem) nothrow
 {
-    import core.stdc.stdio : fprintf, stderr;
-
-    // @trusted: fprintf with explicit lengths; only a header name or a fixed text is printed, never a value
     immutable m = methodName(ctx.request.method);
-    if (problem.length)
-        fprintf(stderr, "vela: response to %.*s %.*s has %.*s; answering 500\n",
-            cast(int) m.length, m.ptr, cast(int) ctx.request.path.length, ctx.request.path.ptr,
-            cast(int) problem.length, problem.ptr);
-    else
-        fprintf(stderr, "vela: response to %.*s %.*s has an invalid header '%.*s' (CR, LF, NUL or a control character); answering 500\n",
-            cast(int) m.length, m.ptr, cast(int) ctx.request.path.length, ctx.request.path.ptr,
-            cast(int) badName.length, badName.ptr);
+    try
+    {
+        // the text format keeps the line as it always was; kv and json get the same facts as fields
+        const(char)[] what = problem.length ? problem : "an invalid header '" ~ badName
+            ~ "' (CR, LF, NUL or a control character)";
+        logVela(LogLevel.warn, "vela: response to " ~ m ~ " " ~ ctx.request.path ~ " has " ~ what ~ "; answering 500",
+            "response has a bad header", "method", m, "path", ctx.request.path, "problem", what);
+    }
+    catch (Exception)
+    {
+        // the line is lost, never the request
+    }
 }

@@ -6,9 +6,10 @@ module vela.web.middleware;
 import core.stdc.stdio : fprintf, stderr;
 import core.time : MonoTime;
 
+import vela.http.buffer : ByteBuffer;
 import vela.http.types : methodName;
 import vela.web.context;
-import vela.log : LogLevel, LogFormat, logEnabled, logFormat, logVela;
+import vela.log : LogLevel, LogFormat, logEnabled, logFormat, logSinkActive, logVela;
 
 /// Request id (see `requestId`). Read it in handlers with `Local!RequestId`.
 struct RequestId
@@ -30,6 +31,8 @@ Middleware accessLog()
     };
 }
 
+private ByteBuffer legacy; // per thread, reused: the text-format line handed to a sink
+
 private void writeAccessLine(Context ctx, MonoTime t0)
 {
     if (!logEnabled(LogLevel.info))
@@ -38,13 +41,34 @@ private void writeAccessLine(Context ctx, MonoTime t0)
     auto m = methodName(ctx.request.method);
     char[39] ipBuf = void;
     immutable ipLen = ctx.clientIp().format(ipBuf[]);
-    if (logFormat != LogFormat.text)
+    auto rid = ctx.locals.find!RequestId();
+    if (logFormat != LogFormat.text || logSinkActive)
     {
-        logVela(LogLevel.info, null, "request", "method", m, "target", ctx.request.target,
+        // (with a sink in the text format the legacy line is built, so the sink sees exactly what stderr would have)
+        legacy.clear();
+        if (logFormat == LogFormat.text)
+        {
+            legacy.put(m);
+            legacy.put(' ');
+            legacy.put(ctx.request.target);
+            legacy.put(' ');
+            legacy.putInt(ctx.response.status);
+            legacy.put(' ');
+            legacy.putInt(us / 1000);
+            legacy.put('.');
+            legacy.putInt((us % 1000) / 100);
+            legacy.put("ms ip=");
+            legacy.put(ipBuf[0 .. ipLen]);
+            if (rid !is null)
+            {
+                legacy.put(" rid=");
+                legacy.put(rid.value);
+            }
+        }
+        logVela(LogLevel.info, legacy.data, "request", "method", m, "target", ctx.request.target,
             "status", ctx.response.status, "duration_us", us, "ip", ipBuf[0 .. ipLen]);
         return;
     }
-    auto rid = ctx.locals.find!RequestId();
     // sound: every pointer/length pair below comes from a live slice
     () @trusted {
         fprintf(stderr, "%.*s %.*s %d %ld.%ldms ip=%.*s%s%.*s\n", cast(int) m.length, m.ptr,

@@ -8,10 +8,66 @@ import vela.http.response;
 import vela.http.buffer : ByteBuffer;
 import vela.http.websocket;
 import vela.http.ip : IpAddress, parseIp;
+import vela.log : LogLevel, LogRecord, setThreadLogSink;
 import vela.web.context;
 import vela.web.application;
 import vela.web.stream : sendResponse;
 import vela.web.jsonvalue : JsonValue;
+
+/// One log line collected by `captureLog`: the parts of a `LogRecord`, copied.
+struct CapturedLog
+{
+    LogLevel level;
+    string message;
+    string requestId; /// empty outside a request
+    string line;      /// as it would have been written, newline included
+    string[2][] fields; /// (key, value) pairs in order; see `LogField` for how values are written
+
+    /// The value of the field `key`, or null when the line has none.
+    string field(string key) const
+    {
+        foreach (ref f; fields)
+            if (f[0] == key)
+                return f[1];
+        return null;
+    }
+
+    /// Whether the line has a field `key`.
+    bool has(string key) const
+    {
+        foreach (ref f; fields)
+            if (f[0] == key)
+                return true;
+        return false;
+    }
+}
+
+/// Runs `dg` and returns the lines it logged (with `vela.log`) on this thread instead of writing them to stderr, in
+/// order. The level and format in force apply (`configureLog`): a line below the level is not collected.
+///
+///     auto logs = captureLog({ c.get("/boom"); });
+///     assert(logs[0].level == LogLevel.error && logs[0].field("path") == "/boom");
+///
+/// Only the calling thread is captured, which is every `TestClient` request; a real server's workers have their own
+/// threads (use `setLogSink` there).
+CapturedLog[] captureLog(scope void delegate() @safe dg)
+{
+    CapturedLog[] got;
+    auto prev = setThreadLogSink((scope ref const LogRecord r) @safe {
+        CapturedLog c;
+        c.level = r.level;
+        c.message = r.message.idup;
+        c.requestId = r.requestId.idup;
+        c.line = r.line.idup;
+        foreach (ref f; r.fields)
+            c.fields ~= [f.key.idup, f.value.idup];
+        got ~= c;
+    });
+    scope (exit)
+        setThreadLogSink(prev);
+    dg();
+    return got;
+}
 
 struct TestResponse
 {

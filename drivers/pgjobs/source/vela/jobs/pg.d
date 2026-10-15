@@ -25,6 +25,7 @@ import core.time : Duration, MonoTime, minutes, msecs, seconds;
 import vela.db : Optional, PgConfig, PgConn, PgPool, PgResult, pgPool;
 import vela.engine.fiberio : awaitFd, IoEvent, RequestCancelled, sleep, spawn, stopping;
 import vela.http.buffer : ByteBuffer;
+import vela.http.naming : Naming, naming;
 import vela.jobs.backend : EnqueueResult, JobRecord, JobRuntime, JobSpec, JobState, JobStore, JobStoreError,
     assignUnique, jobSpec, logJobFailure, unixNowUs;
 import vela.web.json : writeJsonString;
@@ -307,7 +308,8 @@ EnqueueResult enqueueJob(T)(PgConn tx, PgJobStore store, auto ref const T job, i
 // Rows
 // =====================================================================
 
-/// Column names match `rowsAs`. CamelCase is quoted in the `RETURNING` list.
+/// The `RETURNING` list of `claimSql`, read with `rowsAs` (snake_case columns).
+@naming(Naming.snakeCase)
 private struct JobRow
 {
     long id;
@@ -633,15 +635,15 @@ returning
     payload::text as payload,
     state,
     attempt,
-    max_attempts as "maxAttempts",
+    max_attempts,
     priority,
-    (extract(epoch from run_at) * 1000000)::bigint as "runAtUs",
-    coalesce(unique_key, '') as "uniqueKey",
-    coalesce((extract(epoch from unique_slot) * 1000000)::bigint, 0) as "uniqueSlot",
+    (extract(epoch from run_at) * 1000000)::bigint as run_at_us,
+    coalesce(unique_key, '') as unique_key,
+    coalesce((extract(epoch from unique_slot) * 1000000)::bigint, 0) as unique_slot,
     case
         when jsonb_array_length(errors) = 0 then ''
         else errors ->> (jsonb_array_length(errors) - 1)
-    end as "lastError"
+    end as last_error
 SQL";
 
 private enum completeSql = q"SQL

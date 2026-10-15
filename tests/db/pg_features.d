@@ -133,6 +133,69 @@ void testNestedRows()
     ok("nested rows: @prefix on Optional and required structs, LEFT JOIN with no match, composed prefixes, missing column");
 }
 
+@naming(Naming.kebabCase) enum TaskType { task, taskInstance, workflowInstance }
+enum Photo { none, @wireName("on_issue") onIssue }
+
+@naming(Naming.snakeCase)
+struct Person { int id; string firstName; @column("mail") string email; }
+
+@naming(Naming.snakeCase)
+struct Task
+{
+    int id;
+    TaskType taskType;
+    Optional!Photo photoRule;
+    @prefix("assignee_") Optional!Person assignedTo;
+}
+
+void testNamesAndEnums()
+{
+    auto c = connect();
+    scope (exit) c.shutdown();
+    c.exec("drop table if exists t_task");
+    c.exec("drop type if exists t_task_type");
+    c.exec("create type t_task_type as enum ('task', 'task-instance', 'workflow-instance')");
+    c.exec("create table t_task(id int primary key, task_type t_task_type not null, photo_rule text, assignee_id int)");
+
+    // enum parameters go by wire name, into a Postgres enum and into text
+    c.exec("insert into t_task values (1, $1::t_task_type, $2, null), (2, $3, null, 7)",
+        TaskType.taskInstance, Photo.onIssue, TaskType.workflowInstance);
+    assert(c.query("select task_type::text from t_task where id = 1").get!string(0, 0) == "task-instance");
+    assert(c.query("select photo_rule from t_task where id = 1").get!string(0, 0) == "on_issue");
+    assert(c.query("select count(*)::int from t_task where task_type = any($1::t_task_type[])",
+        [TaskType.task, TaskType.workflowInstance]).get!int(0, 0) == 1, "an array of enums");
+
+    // rows: snake_case columns, @column, @prefix before the nested struct's own names, enums by wire name
+    auto tasks = c.query("select t.id, t.task_type, t.photo_rule, t.assignee_id, p.first_name as assignee_first_name,"
+        ~ " p.mail as assignee_mail from t_task t left join (values (7, 'Ana', 'a@x.com')) as p(id, first_name, mail)"
+        ~ " on p.id = t.assignee_id order by t.id").rowsAs!Task;
+    assert(tasks.length == 2);
+    assert(tasks[0].taskType == TaskType.taskInstance && tasks[0].photoRule.get == Photo.onIssue);
+    assert(!tasks[0].assignedTo.has);
+    assert(tasks[1].taskType == TaskType.workflowInstance && !tasks[1].photoRule.has);
+    assert(tasks[1].assignedTo.get.id == 7 && tasks[1].assignedTo.get.firstName == "Ana"
+        && tasks[1].assignedTo.get.email == "a@x.com");
+    assert(c.query("select 'on_issue'").get!Photo(0, 0) == Photo.onIssue);
+
+    // a label that is no wire name, and a missing column named by its snake_case spelling
+    bool threw;
+    try
+        c.query("select 'onIssue'").get!Photo(0, 0);
+    catch (PgError e)
+        threw = e.msg == "vela.db: column '?column?' has the value 'onIssue', which is not Photo";
+    assert(threw);
+    threw = false;
+    try
+        c.query("select 1 as id, 'x' as mail").rowsAs!Person;
+    catch (PgError e)
+        threw = e.msg == "vela.db: the query did not return the column 'first_name' expected by Person";
+    assert(threw);
+
+    c.exec("drop table t_task");
+    c.exec("drop type t_task_type");
+    ok("names and enums: @naming and @column in rowsAs, enums by wire name as parameters (enum, text, array) and cells");
+}
+
 int count(PgConn c) => c.query("select count(*)::int from t_sp").get!int(0, 0);
 
 void testSavepoints()
@@ -229,6 +292,7 @@ void main()
     conninfo = cast(string) env[0 .. strlen(env)].idup;
     testArrays();
     testNestedRows();
+    testNamesAndEnums();
     testSavepoints();
     testRollbackHarness();
     printf("all Postgres feature tests passed\n");

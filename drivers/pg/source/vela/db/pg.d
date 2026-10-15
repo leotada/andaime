@@ -31,6 +31,7 @@ import core.sys.linux.sys.eventfd : eventfd;
 import core.sys.posix.unistd : close, write;
 
 import vela.http.texttype : isTextType, textFromString, textToString;
+import vela.http.naming : applyNaming, namingOf, parseEnumWire, enumToWire;
 import vela.engine.fiberio : awaitFd, currentScheduler, IoEvent, RequestCancelled;
 import vela.engine.offload : offload, offloadPool;
 import vela.db.libpq;
@@ -151,9 +152,11 @@ final class PgResult
         }
     }
 
-    /// Maps all rows to a struct, matching fields and columns by name. A struct field marked `@prefix("author_")` (or an
-    /// `Optional` of a struct) takes its fields from the columns with that prefix (`author_id`, `author_email`...); an
-    /// `Optional` one is empty when all of its columns are NULL (a LEFT JOIN that found nothing). A missing column throws.
+    /// Maps all rows to a struct, matching fields and columns by name. A field's column is its `@column("name")`, else
+    /// its name spelled with the struct's `@naming` (`@naming(Naming.snakeCase)`: `firstName` reads `first_name`). A
+    /// struct field marked `@prefix("author_")` (or an `Optional` of a struct) takes its fields from the columns with that
+    /// prefix (`author_id`, `author_first_name`...: the prefix goes before the nested struct's own names); an `Optional`
+    /// one is empty when all of its columns are NULL (a LEFT JOIN that found nothing). A missing column throws.
     T[] rowsAs(T)() const if (is(T == struct))
     {
         int[rowColumnCount!T] idx;
@@ -179,7 +182,7 @@ final class PgResult
                 resolveColumns!(NestedRow!F)(idx, k, pre ~ p);
             else
             {
-                immutable name = pre ~ __traits(identifier, f);
+                immutable name = pre ~ columnNameOf!(T, i);
                 idx[k] = column(name);
                 if (idx[k] < 0)
                     throw new PgError("vela.db: the query did not return the column '" ~ name ~ "' expected by "
@@ -242,6 +245,25 @@ final class PgResult
 struct prefix
 {
     string value;
+}
+
+/// The column of a row field when it differs from the field's name: `@column("created_at") SysTime created;`
+/// (see `PgResult.rowsAs`; `@naming` on the struct names all of its fields at once).
+struct column
+{
+    string name;
+}
+
+/// The column name of field `i` of `T` (without the `@prefix` of an enclosing field).
+private template columnNameOf(T, size_t i)
+{
+    enum string columnNameOf = () {
+        string r = applyNaming(__traits(identifier, T.tupleof[i]), namingOf!T);
+        static foreach (a; __traits(getAttributes, T.tupleof[i]))
+            static if (is(typeof(a) == column))
+                r = a.name;
+        return r;
+    }();
 }
 
 /// The `@prefix` of field `i` of `T`, or "".
@@ -318,6 +340,14 @@ private T parseCell(T)(const(char)[] s, const(char)[] col)
         if (s == "f") return false;
         throw badCell(col, "bool", s);
     }
+    else static if (is(T == enum))
+    {
+        // by wire name (`@naming`, `@wireName`): the label of a Postgres enum, or text
+        T v;
+        if (!parseEnumWire(s, v))
+            throw badCell(col, T.stringof, s);
+        return v;
+    }
     else static if (isIntegral!T)
     {
         size_t i;
@@ -371,7 +401,7 @@ private T parseCell(T)(const(char)[] s, const(char)[] col)
     }
     else
         static assert(0, "vela.db: unsupported field type in rowsAs/get: " ~ T.stringof
-                ~ " (use integers, bool, double, string, a text type with fromString/toString, or Optional!X)");
+                ~ " (use integers, bool, double, string, an enum, a text type with fromString/toString, or Optional!X)");
 }
 
 private PgError badCell(const(char)[] col, string type, const(char)[] val)
@@ -407,6 +437,14 @@ private struct Encoded(size_t N)
             return a.has ? put(a.get) : -1;
         else static if (is(U == bool))
             return append(a ? "t" : "f");
+        else static if (is(U == enum))
+        {
+            // by wire name, for a Postgres enum (`$1::task_type`) or a text column
+            auto w = enumToWire(a);
+            if (w is null)
+                throw new PgError("vela.db: " ~ U.stringof ~ " parameter holds a value that is no member of the enum");
+            return append(w);
+        }
         else static if (isIntegral!U)
         {
             char[24] tmp;
@@ -460,7 +498,7 @@ private struct Encoded(size_t N)
         }
         else
             static assert(0, "vela.db: unsupported parameter type: " ~ A.stringof
-                    ~ " (use integers, bool, double, string, a text type with fromString/toString, an array of those, "
+                    ~ " (use integers, bool, double, string, an enum, a text type with fromString/toString, an array of those, "
                     ~ "null or Optional!X)");
     }
 

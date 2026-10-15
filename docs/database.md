@@ -44,14 +44,20 @@ void touch(int id) { db.exec("update users set seen_at = now() where id = $1", i
 ```
 
 - Parameters are `$1..$n` and are sent separately from the SQL: **never build SQL from user input**.
-- Parameter types: integers, `bool`, floating point, strings, `Optional!T` (empty = `NULL`) and your
+- Parameter types: integers, `bool`, floating point, strings, enums, `Optional!T` (empty = `NULL`) and your
   [text types](requests.md#your-own-types-uuids-dates-money) (a `Uuid` goes to a `uuid` column as text: `$1::uuid`).
+- An enum travels as its [wire name](requests.md#wire-names-naming-and-wirename), the same text as in JSON: it fits a
+  Postgres enum (`$1::task_type`, whose labels are the wire names) or a `text` column, and a column reads back the same way
+  (a label that is no wire name throws).
 - Arrays of those are Postgres arrays: `db.query("select * from users where id = any($1::uuid[])", ids)`. Every element is
   quoted and escaped, an empty `Optional` element is `NULL`, and an empty array is `{}` (it matches nothing). Cast the
   parameter (`$1::int[]`, `$1::text[]`) so the server knows the element type. `ubyte[]` is refused at compile time (bytea
   or an array of numbers?), and so are nested arrays.
 - `rowsAs!T` maps every row to a struct, matching fields to columns by name (a missing column throws). `one!T` returns the
   first row and throws when there is none.
+- Column names: `@naming(Naming.snakeCase)` on the struct reads `first_name` into `firstName` (the same policy names the
+  struct's JSON, see [wire names](requests.md#wire-names-naming-and-wirename)); `@column("mail") string email;` names one
+  field. A `@prefix` goes before the nested struct's own names (`author_first_name`).
 - A column that may be NULL is an `Optional!T`; the same type is `null` in JSON, so rows serialize with no conversion.
 - A joined row goes into a nested struct with `@prefix`: its fields come from the columns with that prefix. On an
   `Optional` struct, all of its columns NULL (a LEFT JOIN that found nothing) gives an empty `Optional`:

@@ -4,6 +4,7 @@ module vela.web.convert;
 import vela.web.params : isCharType;
 import vela.web.numtext : ctNum, itoa;
 import vela.http.texttype : isTextType, textTypeInvalidMessage, textFromString;
+import vela.http.naming : enumWireNames, parseEnumWire;
 
 @safe:
 
@@ -123,15 +124,7 @@ bool parseScalarText(T)(const(char)[] s, out T v)
     static if (is(T == bool))
         return parseBool(s, v);
     else static if (is(T == enum))
-    {
-        static foreach (m; __traits(allMembers, T))
-            if (s == m)
-            {
-                v = __traits(getMember, T, m);
-                return true;
-            }
-        return false;
-    }
+        return parseEnumWire(s, v);
     else static if (__traits(isIntegral, T) && !isCharType!T)
         return parseInteger(s, v);
     else static if (__traits(isFloating, T))
@@ -176,8 +169,8 @@ template parseErrorMsg(T)
     {
         enum parseErrorMsg = () {
             string r = "expected one of: ";
-            static foreach (k, m; __traits(allMembers, T))
-                r ~= (k ? ", " : "") ~ m;
+            foreach (k, w; enumWireNames!T)
+                r ~= (k ? ", " : "") ~ w;
             return r;
         }();
     }

@@ -11,7 +11,7 @@
 ///  - `Header!"X"` -> header; `JsonBody!T` -> requestBody with T's schema;
 ///  - `Context` and `Local!T` do not appear (they do not come from the client);
 ///  - structs become `components/schemas`; `@minLength`, `@maxLength`, `@inRange`,
-///    `@jsonKey`, `@optional` and `@jsonIgnore` are honored;
+///    `@jsonKey`, `@naming`, `@optional` and `@jsonIgnore` are honored; enums list their wire names;
 ///  - `@summary("text")` on the handler fills in the operation summary.
 module vela.web.openapi;
 
@@ -20,7 +20,8 @@ module vela.web.openapi;
 import vela.http.types : Method, methodName, statusText;
 import vela.web.params;
 import vela.web.context : Context;
-import vela.web.dto : schemaName, jsonKey, optional, jsonIgnore, minLength, maxLength, inRange, hasUda;
+import vela.web.dto : schemaName, jsonKeyOf, optional, jsonIgnore, minLength, maxLength, inRange, hasUda;
+import vela.http.naming : enumWireNames;
 import vela.web.numtext : itoa, numText, ctNum;
 import vela.web.handler_traits : parseRoute, indexOfName;
 import vela.web.stream : Stream, EventStream, produces;
@@ -129,8 +130,8 @@ string schemaOf(T)(ref Components comps) @safe
     else static if (is(T == enum))
     {
         string vals;
-        static foreach (m; __traits(allMembers, T))
-            vals ~= (vals.length ? "," : "") ~ q(m);
+        static foreach (w; enumWireNames!T)
+            vals ~= (vals.length ? "," : "") ~ q(w);
         return `{"type":"string","enum":[` ~ vals ~ `]}`;
     }
     else static if (__traits(isIntegral, T) && !isCharType!T)
@@ -261,7 +262,7 @@ private string structSchema(T)(ref Components comps) @safe
                 alias F = P; // the attributes describe the value
             else
                 alias F = F0;
-            enum key = jsonKeyOfField!(T, i);
+            enum key = jsonKeyOf!(T, i);
             string sch = schemaOf!F(comps);
             string extra;
             static foreach (attr; __traits(getAttributes, T.tupleof[i]))
@@ -301,17 +302,6 @@ private string structSchema(T)(ref Components comps) @safe
     return `{"type":"object","properties":{` ~ props ~ `}` ~ (req.length ? `,"required":[` ~ req ~ `]` : "") ~ `}`;
 }
 
-private template jsonKeyOfField(T, size_t i)
-{
-    enum jsonKeyOfField = () {
-        string r = __traits(identifier, T.tupleof[i]);
-        static foreach (attr; __traits(getAttributes, T.tupleof[i]))
-            static if (is(typeof(attr) == jsonKey))
-                r = attr.name;
-        return r;
-    }();
-}
-
 // ------------------------------------------------------------ description of an operation
 
 /// Generates the OpenAPI operation object for handler `fn` registered at `method path`.
@@ -349,7 +339,7 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
                 {
                     static if (!hasUda!(M, k, jsonIgnore))
                     {
-                        params ~= (params.length ? "," : "") ~ `{"name":` ~ q(jsonKeyOfField!(M, k)) ~ `,"in":"query","required":`
+                        params ~= (params.length ? "," : "") ~ `{"name":` ~ q(jsonKeyOf!(M, k)) ~ `,"in":"query","required":`
                             ~ (modelFieldOptional!(M, k) ? "false" : "true")
                             ~ (isScalarList!(typeof(M.tupleof[k])) ? `,"style":"form","explode":true` : "")
                             ~ `,"schema":` ~ schemaOf!(typeof(M.tupleof[k]))(comps) ~ `}`;

@@ -20,7 +20,8 @@ fails, the client gets a **422** listing every problem and the handler does not 
 | `Local!T` | a value a middleware stored for this request ([middleware.md](middleware.md)) |
 | `Context ctx` | everything: the raw request and the response |
 
-Scalars are `bool`, integers, floating point, `enum` (by member name), `string`, and your own
+Scalars are `bool`, integers, floating point, `enum` (by member name, or its [wire name](#wire-names-naming-and-wirename)),
+`string`, and your own
 [text types](#your-own-types-uuids-dates-money). Parameter order does not matter.
 
 ## Path and query
@@ -56,7 +57,8 @@ Order create(JsonBody!NewOrder body_)
   An empty body is a 422 (`missing`). `GET` and `HEAD` routes cannot take a body (compile error); one body per handler.
 - Unknown fields are ignored. A field without a default and not `Optional` (or `PatchField`, see
   [partial updates](#partial-updates-patchfield)) is required.
-- `@jsonKey("page_size")` sets the external name, `@jsonIgnore` skips a field. Validation attributes are in
+- `@jsonKey("page_size")` sets the external name (`@naming` on the struct sets all of them, see
+  [wire names](#wire-names-naming-and-wirename)), `@jsonIgnore` skips a field. Validation attributes are in
   [validation.md](validation.md).
 - An `enum` is its member name as a JSON string. A map keeps the last value of a repeated key; its output order is unspecified.
 - Bodies are buffered whole, up to `limits.maxBodyBytes` (1 MiB by default; 413 above). HTTP/1.1 chunked uploads are accepted.
@@ -81,6 +83,50 @@ string login(Form!Login f) { ... }        // POST, urlencoded or multipart text 
 A field is a scalar, a text type, an `Optional` of those or a list of them. It is optional when it is an `Optional`, a list,
 marked `@optional`, or has an initializer other than the type's default. OpenAPI lists each query field as its own parameter.
 `Query!T` cannot hold a file.
+
+## Wire names: `@naming` and `@wireName`
+
+An API in `snake_case` does not need a `@jsonKey` on every field. Put a policy on the struct:
+
+```d
+// check
+import vela;
+
+@naming(Naming.snakeCase)
+struct TaskIn
+{
+    string firstName;                 // "first_name"
+    long companyId;                   // "company_id"
+    @jsonKey("assignee") long userId; // a field's @jsonKey wins
+    TaskType type_;                   // "type": a trailing `_` (D's keyword escape) is dropped
+}
+
+@naming(Naming.kebabCase)
+enum TaskType { task, taskInstance }  // "task", "task-instance"
+
+enum Photo { none, @wireName("on_issue") onIssue } // one member renamed
+
+string create(JsonBody!TaskIn t) => t.firstName;
+string byType(TaskType kind, Photo photo = Photo.none) => "ok"; // GET /tasks/task-instance?photo=on_issue
+
+void main()
+{
+    auto app = new App;
+    app.post!("/tasks", create);
+    app.get!("/tasks/{kind}", byType);
+}
+```
+
+- The policies are `Naming.snakeCase`, `kebabCase`, `camelCase` (`first_name` -> `firstName`), `upperSnakeCase` and
+  `asIs` (the default). Words split at `_` and at case changes; a run of capitals is one word (`userID` -> `user_id`,
+  `HTTPServer` -> `http_server`).
+- On a struct, the policy names its fields in JSON (both ways), `Query!T`, `Form!T` (the part names), the `loc` of a 422 and
+  the OpenAPI document. It is not inherited: a nested struct declares its own. On a field it is a compile error; use
+  `@jsonKey`.
+- On an enum, the policy (or a member's `@wireName`) names its values everywhere a value goes in or out: JSON, path, query,
+  form, headers, the 422 message (`expected one of: task, task-instance`), OpenAPI's `enum` list, logs and the Postgres
+  driver ([database.md](database.md)). The D member name is no longer accepted. Two members with the same wire name are a
+  compile error.
 
 ## File uploads
 

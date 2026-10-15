@@ -11,6 +11,7 @@ import vela.web.convert : parseInteger, parseFloat, parseErrorType, parseErrorMs
 import vela.web.numtext : itoa;
 import vela.http.utf8 : validUtf8;
 import vela.http.texttype : isTextType, textFromString, textToString;
+import vela.http.naming : enumWireNames, parseEnumWire;
 import vela.web.jsonvalue : JsonValue, readJsonValue, writeJsonValue;
 
 // =====================================================================
@@ -124,10 +125,12 @@ private bool isPresentField(F)(ref const F f)
 
 private void writeEnum(E)(ref ByteBuffer o, E v)
 {
-    static foreach (m; __traits(allMembers, E))
+    // (a wire name never needs escaping: `enumWireNames` refuses quotes, backslashes and control characters)
+    enum names = enumWireNames!E;
+    static foreach (k, m; __traits(allMembers, E))
         if (v == __traits(getMember, E, m))
         {
-            o.put("\"" ~ m ~ "\"");
+            o.put("\"" ~ names[k] ~ "\"");
             return;
         }
     o.put("null");
@@ -464,14 +467,7 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
         bool esc;
         if (!r.rawString(raw, esc))
             return false;
-        bool ok = false;
-        static foreach (m; __traits(allMembers, T))
-            if (!ok && raw == m)
-            {
-                v = __traits(getMember, T, m);
-                ok = true;
-            }
-        if (!ok)
+        if (!parseEnumWire(raw, v))
             errs.addPath(path, parseErrorType!T, parseErrorMsg!T);
     }
     else static if (__traits(isIntegral, T) && !isCharType!T)

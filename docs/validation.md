@@ -10,6 +10,7 @@ Put them on the fields of a DTO (JSON body, `Query!T`, `Form!T`):
 | `@inRange(min, max)` | numbers | inclusive bounds |
 | `@optional` | any field | may be absent (the field keeps its initial value) |
 | `@jsonKey("name")` | any field | the external name in JSON, query and form |
+| `@naming(Naming.snakeCase)` | a struct or an enum | the external names of all its fields or members ([wire names](requests.md#wire-names-naming-and-wirename)) |
 | `@jsonIgnore` | any field | not read from nor written to JSON |
 | `@schemaName("Name")` | a struct | its name in the OpenAPI document |
 

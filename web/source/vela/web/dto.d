@@ -5,6 +5,7 @@ module vela.web.dto;
 
 import vela.http.utf8 : codePoints;
 import vela.http.patchfield : isPatchField;
+import vela.http.naming : applyNaming, namingOf, naming, Naming;
 public import vela.web.numtext : ctNum, numText;
 
 /// Field name in the JSON when it differs from the D name: `@jsonKey("user_name") string userName;`
@@ -303,14 +304,39 @@ template hasUda(T, size_t i, alias A)
     }();
 }
 
-/// JSON key of field `i` of T.
+/// JSON key of field `i` of T: its `@jsonKey`, else its name spelled with T's `@naming` (`vela.http.naming`). Also
+/// the name of the field in `Query!T`, `Form!T` and the OpenAPI document.
 template jsonKeyOf(T, size_t i)
 {
-    enum jsonKeyOf = () {
-        string r = __traits(identifier, T.tupleof[i]);
+    // (the common case, no attribute and no policy, costs no CTFE: this runs for every field of every DTO)
+    static if (__traits(getAttributes, T.tupleof[i]).length == 0)
+    {
+        static if (namingOf!T == Naming.asIs)
+            enum jsonKeyOf = __traits(identifier, T.tupleof[i]);
+        else
+            enum jsonKeyOf = applyNaming(__traits(identifier, T.tupleof[i]), namingOf!T);
+    }
+    else
+    {
+        enum jsonKeyOf = () {
+            string r = applyNaming(__traits(identifier, T.tupleof[i]), namingOf!T);
+            static foreach (attr; __traits(getAttributes, T.tupleof[i]))
+                static if (is(typeof(attr) == jsonKey))
+                    r = attr.name;
+            return r;
+        }();
+        static assert(!fieldHasNaming!(T, i), "vela: @naming goes on the struct, not on field '"
+            ~ __traits(identifier, T.tupleof[i]) ~ "' of " ~ T.stringof ~ " (use @jsonKey for one field)");
+    }
+}
+
+private template fieldHasNaming(T, size_t i)
+{
+    enum fieldHasNaming = () {
+        bool r;
         static foreach (attr; __traits(getAttributes, T.tupleof[i]))
-            static if (is(typeof(attr) == jsonKey))
-                r = attr.name;
+            static if (is(typeof(attr) == naming))
+                r = true;
         return r;
     }();
 }
@@ -368,6 +394,16 @@ void validateField(T, size_t i, V)(ref const V value, ref FieldErrors errs, ref 
                 errs.addPath(path, "less_than_equal", leMsg!(attr.max));
         }
     }
+}
+
+unittest
+{
+    @naming(Naming.snakeCase) struct S { string firstName; @jsonKey("ID") long userId; string body_; }
+    static assert(jsonKeyOf!(S, 0) == "first_name" && jsonKeyOf!(S, 1) == "ID" && jsonKeyOf!(S, 2) == "body");
+    struct Plain { string firstName; }
+    static assert(jsonKeyOf!(Plain, 0) == "firstName");
+    struct Misplaced { @naming(Naming.snakeCase) string firstName; }
+    static assert(fieldHasNaming!(Misplaced, 0) && !__traits(compiles, jsonKeyOf!(Misplaced, 0)));
 }
 
 unittest

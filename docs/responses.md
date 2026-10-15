@@ -32,8 +32,9 @@ User createUser(JsonBody!NewUser body_) { ... }       // answers 201
 
 Structs, arrays and maps are written as JSON:
 
-- Field names are the D names; `@jsonKey("name")` renames, `@jsonIgnore` skips.
-- An empty `Optional!T` is `null`. An `enum` is its member name. A [text type](requests.md#your-own-types-uuids-dates-money)
+- Field names are the D names; `@jsonKey("name")` renames, `@naming(Naming.snakeCase)` on the struct renames all of them
+  ([wire names](requests.md#wire-names-naming-and-wirename)), `@jsonIgnore` skips.
+- An empty `Optional!T` is `null`. An `enum` is its member name (or its wire name). A [text type](requests.md#your-own-types-uuids-dates-money)
   is a JSON string.
 - Floating point is written with 17 significant digits (it reads back exactly); NaN and infinities are written as `null`.
 

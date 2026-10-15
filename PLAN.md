@@ -1479,6 +1479,12 @@ timeouts, any HTTP/2 or TLS feature (D3).
 | F13 | 11.3 | Depth limit 64 (the same as `skipValue`), counted inside the `JsonValue`; `parseJson` also has `maxBytes` (16 MiB). Limit errors are `json_invalid` with their own message (`JsonReader.fail`). | One shared depth counter for typed and dynamic decoding. | Typed nesting is bounded by the type; only `JsonValue` recursion depends on the input. |
 | F14 | 11.3 | Public `parseJson`, `fromJson!T`, `toJson`, `writeJson` for JSON outside a request. | Only `parseJson`. | Reading an upstream response into a DTO is the common case and reuses the body decoder's rules and errors. |
 | F15 | 11.3 | Fuzzing: `tests/fuzz/json_invariants.d` (round trip, depth, a typed decode), `fuzz_json.d` in `check.sh`, `tools/fuzz.sh … json`. `fuzz.sh` now sets `detect_stack_use_after_return=0` for every target. | Leaving ASan's default. | ASan's fake stack hides locals from the conservative GC: after ~700k runs a collection freed live objects and the round trip "changed" a value. With it off: 6M runs clean. |
+| F16 | 11.4 | `vela:crypto` is a subpackage (`crypto/`) depending on `vela:http` and `vela:engine`; its own libcrypto table (`CryptoApi`, OpenSSL 3 API only, `RTLD_LOCAL`), loading `libcrypto.so.3` first and rejecting a library without `EVP_PKEY_fromdata`. | Extending `tls.d`'s table; a separate package under `drivers/`. | `tls.d` is frozen (D3) and loads libssl too; a separate table keeps both independent. On this machine `libcrypto.so` is LibreSSL, so the version check matters. |
+| F17 | 11.4 | `randomBytes` moved from `wsclient.d` to `vela.engine.random` (public, getrandom); base64url to `vela.http.base64url` (`decodeBase64Url` for HTTP2-Settings kept lenient, `base64UrlDecode` strict); `h2.d` re-exports the old name. | Copies in `vela:crypto`. | One implementation each, as the task asked; `h2.d` change is a pure move (session tests and `fuzz_h2` in `check.sh` cover it). |
+| F18 | 11.4 | SHA-256, HMAC, AES-GCM, P-256 through libcrypto; HKDF written over HMAC (20 lines, RFC 5869); constant-time compare and randomness in D (no library needed). | `EVP_KDF` for HKDF; pure-D SHA-256. | Fewer symbols to load; the D parts work even without OpenSSL. |
+| F19 | 11.4 | `EcKeyP256` is a class owning its `EVP_PKEY` (freed in the destructor); public keys are 65-byte uncompressed points checked with `EVP_PKEY_public_check`; a private key must be 1 <= d < n; ES256 signatures are raw `r||s` (DER only inside). | A struct with a pointer (copies would double-free). | Raw pointers never leave the module; an off-curve peer point is rejected before ECDH (invalid-curve attacks). |
+| F20 | 11.4 | bcrypt via libxcrypt `crypt_rn`/`crypt_gensalt_rn` (32 KiB scratch, zeroed after), `$2b$`, cost 4..31 (default 12), NUL in a password is an error (verify: false), 72-byte truncation documented; `bcryptHashOffload`/`bcryptVerifyOffload` wrap `offload`. | glibc `crypt_r` only; our own bcrypt. | libxcrypt is the system's bcrypt everywhere glibc dropped its own; `crypt_rn` returns null instead of a magic string. |
+| F21 | 11.4 | Web Push: `webPushEncrypt` (fresh key and salt; an overload takes them for known-answer tests), one 4096-byte record, payload <= 3993 bytes; `webPushDecrypt` for the receiver. The VAPID JWT is left to the app (`es256Sign` + `base64UrlEncode`, shown in the guide). | A full Web Push client (HTTP POST, VAPID header building). | The task asked for the primitives; sending is a few lines with `httpClient`, and VAPID claims are app policy. |
 | F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
 
 ### [x] 11.1 Custom validation error responses: `onValidationError` — M
@@ -1513,7 +1519,18 @@ timeouts, any HTTP/2 or TLS feature (D3).
 > `fuzz_json.d` (300k inputs in `check.sh`), `tools/fuzz.sh 400 json`: 5.98M runs clean. Docs: `requests.md` and
 > `http-client.md` (`// check` examples), the index.
 
-### [ ] 11.4 `vela:crypto` — L
+### [x] 11.4 `vela:crypto` — L
+
+> **Done.** Spike first: RFC 8291 Appendix A end to end matched byte for byte on the first run, with every intermediate value
+> (ECDH secret, PRK_key, key_info, IKM, PRK, CEK, nonce) checked (the RFC's example says `Content-Length: 145`; its body is
+> 144 bytes). Then: `crypto/` with `libcrypto.d`, `common.d` (`CryptoError`, `randomBytes`, `constantTimeEquals`), `hash.d`,
+> `aead.d`, `ec.d`, `webpush.d`, `bcrypt.d`; `vela.engine.random`; `vela.http.base64url`. Tests (`check.sh` section
+> "vela:crypto", exit 77 without the libraries): `tests/crypto/vectors.d` (FIPS 180-2 SHA-256, RFC 4231 cases 1-7, RFC 5869
+> cases 1-3, GCM cases 1-4 cross-checked with python `cryptography`, P-256 key import/export and rejection of bad keys, ES256
+> verified by `openssl dgst` and `openssl`'s signatures verified by us, ECDH), `webpush_rfc8291.d`, `bcrypt_vectors.d` (6
+> hashes from python bcrypt 4.3 incl. `$2a$`, 72-byte limit, malformed hashes, offload helpers). `check.sh` builds `:crypto`
+> and fails if the core imports it. Docs: `docs/crypto.md` (a `// check` example: signup/login with bcrypt, a VAPID JWT, a
+> push body), the index; `AGENTS.md` layout, dependencies, FFI list, "Adding things".
 
 ### [ ] 11.5 Array parameters in `vela-pg` — S
 

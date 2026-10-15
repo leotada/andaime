@@ -212,6 +212,17 @@ s_client() {
     tools/with_upstream.sh "$(build_test tests/net/client_net.d)"
 }
 
+# vela:crypto: built first, run afterwards, so a missing library is a skip (77), not a failure
+s_crypto() {
+    local ci="$I -Icrypto/source" t rc=0
+    $DC -unittest -main $ci -i -run crypto/source/vela/crypto/package.d
+    for t in tests/crypto/*.d; do
+        local bin; bin=$(I="$ci" build_test "$t")
+        "$bin" || { rc=$?; (( rc == 77 )) || return $rc; }
+    done
+    return $rc
+}
+
 s_api_e2e() {
     tools/with_postgres.sh tools/with_upstream.sh tools/api_e2e.sh
 }
@@ -363,13 +374,18 @@ s_dub() {
     dub build $dubc -q :web || rc=1
     dub build $dubc -q :engine || rc=1
     dub build $dubc -q :jobs || rc=1
+    dub build $dubc -q :crypto || rc=1
     (cd drivers/pg && dub build $dubc -q) || rc=1
     dub build $dubc -q --root=drivers/pgjobs || rc=1
     (cd examples/hello && dub build $dubc -q) || rc=1
     (cd examples/api && dub build $dubc -q) || rc=1
     # the core must never import a driver; jobs depends on web and engine, not on vela-pg
-    if grep -rn "import vela\.db" http web engine source jobs --include=*.d; then
-        echo "FAILED: the core or vela:jobs imports a driver (vela.db)"; rc=1
+    if grep -rn "import vela\.db" http web engine source jobs crypto --include=*.d; then
+        echo "FAILED: the core, vela:jobs or vela:crypto imports a driver (vela.db)"; rc=1
+    fi
+    # vela:crypto is opt-in: nothing in the core may need it
+    if grep -rn "import vela\.crypto" http web engine source jobs --include=*.d; then
+        echo "FAILED: the core or vela:jobs imports vela:crypto"; rc=1
     fi
     return $rc
 }
@@ -428,6 +444,7 @@ section "behind a reverse proxy over h2c (Caddy: requests, upload, concurrency, 
 section "real browser (Chromium via Playwright: HTTPS, h2, redirect port, HTTP/1.1 fallback)" s_browser
 section "PostgreSQL (async libpq, job queue)" s_postgres
 section "HTTP/HTTPS client and thread pool" s_client
+section "vela:crypto (RFC 4231, RFC 5869, GCM, ES256 vs openssl, ECDH, RFC 8291 Appendix A, bcrypt vs python)" s_crypto
 section "real API example end to end (Postgres + external API + auth + CORS + static files + OpenAPI)" s_api_e2e
 section "memory: 1,000 in-flight requests over HTTP/1.1 and HTTP/2, 1,000 open WebSockets on each (peak RSS < 30 MB)" s_memory
 section "memory: 1,000 in-flight requests over HTTPS (peak RSS < 80 MB, depends on the OpenSSL version)" s_memory_tls

@@ -1867,26 +1867,4 @@ private struct TokenRange
 }
 
 /// base64url without padding (the HTTP2-Settings header). False on invalid input.
-bool decodeBase64Url(scope const(char)[] s, ref ByteBuffer o) nothrow @nogc
-{
-    uint acc = 0, bits = 0;
-    foreach (c; s)
-    {
-        uint v;
-        if (c >= 'A' && c <= 'Z') v = c - 'A';
-        else if (c >= 'a' && c <= 'z') v = c - 'a' + 26;
-        else if (c >= '0' && c <= '9') v = c - '0' + 52;
-        else if (c == '-') v = 62;
-        else if (c == '_') v = 63;
-        else if (c == '=') break;
-        else return false;
-        acc = (acc << 6) | v;
-        bits += 6;
-        if (bits >= 8)
-        {
-            bits -= 8;
-            o.put(cast(char)((acc >> bits) & 0xff));
-        }
-    }
-    return true;
-}
+public import vela.http.base64url : decodeBase64Url;

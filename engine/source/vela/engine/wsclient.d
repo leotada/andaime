@@ -161,24 +161,15 @@ private string statusString(int s) pure nothrow
     return d.idup;
 }
 
-private extern (C) ptrdiff_t getrandom(void* buf, size_t len, uint flags) nothrow @nogc @system;
-
-/// Bytes from the kernel's random source (masking keys and handshake nonces).
-private void randomBytes(ubyte[] b) @trusted
+/// Bytes from the kernel's random source (masking keys and handshake nonces), as an `HttpClientError` on failure.
+private void randomBytes(ubyte[] b)
 {
-    // @trusted: getrandom writes at most b.length bytes into b
-    size_t got;
-    while (got < b.length)
-    {
-        immutable n = getrandom(b.ptr + got, b.length - got, 0);
-        if (n < 0)
-        {
-            if (errno == EINTR)
-                continue;
-            throw new HttpClientError("vela.http: getrandom failed");
-        }
-        got += n;
-    }
+    import random = vela.engine.random;
+
+    try
+        random.randomBytes(b);
+    catch (Exception e)
+        throw new HttpClientError("vela.http: getrandom failed");
 }
 
 /// The client side of a WebSocket's connection. The owner (the fiber that connected) waits on the socket; another fiber

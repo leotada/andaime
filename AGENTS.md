@@ -45,7 +45,8 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 - Every module starts with `@safe:` except the raw-syscall ones: `engine/.../epoll.d` and `devserver.d` stay `@system`;
   `EventLoop.run` is `@system` and `vela.server.serve` is the single `@trusted` entry point into them. Their overrides of
   `@safe` interfaces (`stop`, `awaitFd`, `sleepMs`, the `ResponseSink` methods) are small `@trusted` bodies.
-- FFI modules (`drivers/pg`, `engine/.../httpclient.d`, `wsclient.d`, `tls.d`, `tlsserver.d`, `zlib.d`, `libpq.d`) expose `@trusted` facades; raw
+- FFI modules (`drivers/pg`, `engine/.../httpclient.d`, `wsclient.d`, `tls.d`, `tlsserver.d`, `zlib.d`, `random.d`, `libpq.d`,
+  `crypto/.../libcrypto.d`, `ec.d`, `aead.d`, `hash.d`, `bcrypt.d`) expose `@trusted` facades; raw
   pointers never leave them (`tlsserver.d`'s per-connection functions take an `SSL*` and are `@system`; only `epoll.d` calls
   them). Tests that need raw OpenSSL (`tests/net/tls_net.d`, `tls_loadgen.d`) declare a `vela.engine.*` module name to reach the
   package-protected table. Anything that hands out a raw view (`PgResult.text`) is `@system`.
@@ -64,9 +65,10 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 
 | Path | Role |
 |------|------|
-| `http/` (`vela:http`) | HTTP types, `Optional`, `PatchField`, text types, IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64. No I/O. |
+| `http/` (`vela:http`) | HTTP types, `Optional`, `PatchField`, text types, IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64, base64url (`base64url.d`). No I/O. |
 | `web/` (`vela:web`) | `App`, `Group`, router, handler introspection, JSON, OpenAPI, CORS, cookies, streaming, WebSocket routes, models, middleware, `TestClient`. No sockets. |
-| `engine/` (`vela:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload`, HTTP/HTTPS client, WebSocket client (`wsclient.d`), OpenSSL (dlopen, `tls.d`), zlib (dlopen, `zlib.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
+| `engine/` (`vela:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload`, `randomBytes` (getrandom, `random.d`), HTTP/HTTPS client, WebSocket client (`wsclient.d`), OpenSSL (dlopen, `tls.d`), zlib (dlopen, `zlib.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
+| `crypto/` (`vela:crypto`) | Cryptographic primitives over OpenSSL 3's libcrypto and libxcrypt (both dlopen, own `__gshared` tables): SHA-256, HMAC, HKDF, AES-128-GCM, P-256 ECDSA (ES256) and ECDH, Web Push encryption (RFC 8291), bcrypt. Depends on `vela:http` and `vela:engine` (`random.d`, `offload`). Nothing else depends on it. |
 | `jobs/` (`vela:jobs`) | Background jobs: `@Job` / `perform`, in-memory and test queues, cron, `--role` and `--queues`. Depends on `vela:web` and `vela:engine`. The root package does not depend on it. |
 | `drivers/pg/` (`vela-pg`) | PostgreSQL driver over async libpq (dlopen). **Independent package; the core must never depend on it.** |
 | `drivers/pgjobs/` (`vela-pg-jobs`) | Postgres `JobStore` (`PgJobStore`): `SKIP LOCKED` claims, `LISTEN`/`NOTIFY`, a lease reaper, one cron slot across processes. Depends on `vela:jobs` and `vela-pg`. |
@@ -78,7 +80,8 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 | `.github/workflows/check.yml` | CI: DMD and LDC at the minimum and latest versions, strict mode; browser test and nightly fuzzing in their own jobs. |
 
 Dependency direction: `http` <- `web`, `http` <- `engine` <- `drivers/pg`. `jobs` depends on `web` and `engine`, not on `pg`.
-`drivers/pgjobs` depends on `jobs` and `vela-pg`. The root `vela` package does not depend on `jobs`. `web` does not depend on
+`drivers/pgjobs` depends on `jobs` and `vela-pg`. `crypto` depends on `http` and `engine`; nothing in the core or `jobs`
+imports it (`check.sh` greps for it). The root `vela` package does not depend on `jobs`. `web` does not depend on
 `engine`. `source/vela/server.d` is the only module that knows both `web` and `engine`. Do not introduce a dependency from the
 core to any driver.
 
@@ -269,6 +272,9 @@ Everything below still applies to those.
   `tests/compile_fail/job_*.d` (`// FLAGS: -Ijobs/source`).
 - **A new driver** (MySQL, Redis...): a new package under `drivers/`, depending only on `vela:engine`, using `awaitFd`/`offload`;
   load native libraries at run time (dlopen) so the framework still builds without them.
+- **A new crypto primitive**: in `crypto/`, through `CryptoApi` in `libcrypto.d` (add the symbol to the table; OpenSSL 3
+  non-deprecated API), a small `@trusted` body with a soundness comment, no raw pointer in the signature, an official
+  test vector in `tests/crypto/` (which exits 77 when the library is missing), and a line in `docs/crypto.md`.
 - **A new event-loop backend** (kqueue, io_uring): implement the `EventLoop` interface in `engine/source/vela/engine/loop.d`.
 - **A new `Request` field**: every producer must set it -- the HTTP/1 parser (`parseRequestHead`), the HTTP/2 session
   (`finishRequest`), and for fields that do not come from the bytes (`peer`) the engine at both entry points -- because the

@@ -1471,6 +1471,9 @@ timeouts, any HTTP/2 or TLS feature (D3).
 | F4 | 11.1 | 415 (wrong form content type) and 400 (malformed multipart) stay `HttpError`s for `onError`. | Turning them into validation errors. | They are about the framing, not a field; routing them through validation would change which hook sees them for existing apps. Documented, with the statuses unchanged. |
 | F5 | 11.1 | OpenAPI: the default documents the 422 as before; `onValidationError!Body(status, h, description)` documents `status` with `Body`'s schema; a handler without a declaration documents a generic `4XX` without a schema. | Keeping the 422 entry; an OpenAPI-only attribute per route. | A 422 that the app never sends would lie. `4XX` says only what is known. Other statuses the handler picks (a 404 for a path) go on routes with `@responds`. |
 | F6 | 11.1 | The user handler is called through a new `callUser` overload (the existing call site name); `dispatch` reaches it through `Context.onValidation`, a framework `@safe` delegate. | A new call-site function in `handler_traits.d`. | Keeps the list of places that call user code the same. |
+| F8 | 11.2 | The tri-state type is `PatchField!T` (owner's pick), in `vela:http` next to `Optional`. | `Patch!T` (clashes with the `@Patch` route UDA under `import vela;`); `Nullable!T` (clashes with `std.typecons`); `Tristate!T`. | Names the use (PATCH bodies) and clashes with nothing. In `vela:http` so the database driver can share it later. |
+| F9 | 11.2 | `writeJson` omits an absent `PatchField` from its object; `null` for a null one; outside an object absent is `null`. | Writing `null` for absent everywhere. | Round-trips the three states through a struct; an array has no way to leave an element out. |
+| F10 | 11.2 | JSON bodies only: `PatchField` in `Form!T`, `Query!T` or as a handler parameter is a one-line compile error pointing to `Optional!T`. | Mapping an empty form value to `null`. | Forms and query strings have no `null`; guessing from an empty string would make `""` impossible to send. |
 | F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
 
 ### [x] 11.1 Custom validation error responses: `onValidationError` — M
@@ -1485,7 +1488,15 @@ timeouts, any HTTP/2 or TLS feature (D3).
 > unittest, `tests/compile_fail/validation_handler_signature.d`, `validation_handler_body.d`. Docs: `validation.md` (a
 > `// check` example), `static-files-and-openapi.md`, the index; `AGENTS.md` call sites.
 
-### [ ] 11.2 Tri-state JSON fields: `PatchField!T` — M
+### [x] 11.2 Tri-state JSON fields: `PatchField!T` — M
+
+> **Done.** `vela.http.patchfield`: `PatchField!T` (`isAbsent`, `isNull`, `hasValue`, `isPresent`, `value`, `valueOr`,
+> `null_`, `absent`), `isPatchField`; re-exported by `vela.web.params`. `json.d`: read (`null` -> null, a value -> decoded
+> with the usual errors, never `missing`), written (absent left out of its object). `validateField` checks the value only.
+> OpenAPI: `nullable`, not required, constraints on the value. `modelError` and `handlerError` reject it outside a JSON body.
+> Tests: `json.d` unittest (three states, nested, arrays of structs, validation, writing), `tests/web/patchfield.d` (a PATCH
+> route, 422 `loc`s, a response that omits absent fields, OpenAPI), `tests/compile_fail/form_patchfield.d`,
+> `param_patchfield.d`. Docs: `requests.md` (a `// check` example), `validation.md`, the index.
 
 ### [ ] 11.3 Dynamic JSON value: `JsonValue` — M
 

@@ -25,8 +25,9 @@ struct SignUp
 }
 ```
 
-Required or optional: a field is required unless it is an `Optional!T`, is marked `@optional`, or (in `Query!T`/`Form!T`) is a
-list or has an initializer other than the type's default. Text must be valid UTF-8.
+Required or optional: a field is required unless it is an `Optional!T` or a `PatchField!T`, is marked `@optional`, or (in
+`Query!T`/`Form!T`) is a list or has an initializer other than the type's default. Text must be valid UTF-8. On a
+[`PatchField!T`](requests.md#partial-updates-patchfield) the attributes check the value only; absent and `null` pass.
 
 Rules the attributes cannot express go in the handler: throw `HttpError(422, "...")`, or a 409 for a conflict, and so on.
 

@@ -147,6 +147,8 @@ string schemaOf(T)(ref Components comps) @safe
         return `{"type":"string"}`;
     else static if (is(T == Optional!U, U))
         return schemaOf!U(comps);
+    else static if (is(T == PatchField!U, U))
+        return schemaOf!U(comps);
     else static if (is(T == JsonBody!U, U))
         return schemaOf!U(comps);
     else static if (is(T == WithStatus!U, U))
@@ -251,7 +253,11 @@ private string structSchema(T)(ref Components comps) @safe
     {
         static if (!hasUda!(T, i, jsonIgnore))
         {{
-            alias F = typeof(T.tupleof[i]);
+            alias F0 = typeof(T.tupleof[i]);
+            static if (is(F0 == PatchField!P, P))
+                alias F = P; // the attributes describe the value
+            else
+                alias F = F0;
             enum key = jsonKeyOfField!(T, i);
             string sch = schemaOf!F(comps);
             string extra;
@@ -274,7 +280,7 @@ private string structSchema(T)(ref Components comps) @safe
                 else static if (is(typeof(attr) == inRange))
                     extra ~= `,"minimum":` ~ numText(attr.min) ~ `,"maximum":` ~ numText(attr.max);
             }
-            static if (is(F == Optional!U, U))
+            static if (is(F == Optional!U, U) || isPatchField!F0)
                 extra ~= `,"nullable":true`;
             if (extra.length)
             {
@@ -285,7 +291,7 @@ private string structSchema(T)(ref Components comps) @safe
                     sch = sch[0 .. $ - 1] ~ extra ~ `}`;
             }
             props ~= (props.length ? "," : "") ~ q(key) ~ ":" ~ sch;
-            static if (!hasUda!(T, i, optional) && !isOptional!F && !is(F == UploadedFile[]))
+            static if (!hasUda!(T, i, optional) && !isOptional!F && !isPatchField!F0 && !is(F == UploadedFile[]))
                 req ~= (req.length ? "," : "") ~ q(key);
         }}
     }

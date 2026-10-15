@@ -186,6 +186,9 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
                             return head ~ bad ~ "is JsonBody, but " ~ methodName(method)
                                 ~ " has no body; use POST, PUT or PATCH";
                     }
+                    else static if (isPatchField!T)
+                        return head ~ bad ~ "is " ~ T.stringof ~ "; PatchField is for fields of a JSON body DTO. "
+                            ~ "For an optional parameter use Optional!T";
                     else static if (is(T == Optional!U, U))
                     {
                         static if (!(isScalar!U || isHeader!U || isCookie!U))

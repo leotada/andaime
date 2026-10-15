@@ -4,6 +4,7 @@ module vela.http;
 
 public import vela.http.types;
 public import vela.http.optional;
+public import vela.http.patchfield;
 public import vela.http.ip;
 public import vela.http.texttype;
 public import vela.http.utf8;

@@ -4,6 +4,7 @@ module vela.web.dto;
 @safe:
 
 import vela.http.utf8 : codePoints;
+import vela.http.patchfield : isPatchField;
 public import vela.web.numtext : ctNum, numText;
 
 /// Field name in the JSON when it differs from the D name: `@jsonKey("user_name") string userName;`
@@ -325,7 +326,13 @@ private enum string leMsg(double v) = "must be <= " ~ numText(v);
 /// JSON Schema's minLength/maxLength mean and what the OpenAPI document promises), arrays in elements.
 void validateField(T, size_t i, V)(ref const V value, ref FieldErrors errs, ref const FieldPath path)
 {
-    static foreach (attr; __traits(getAttributes, T.tupleof[i]))
+    // a PatchField is checked only when it carries a value (absent and null pass)
+    static if (isPatchField!V)
+    {
+        if (value.hasValue)
+            validateField!(T, i)(value.value, errs, path);
+    }
+    else static foreach (attr; __traits(getAttributes, T.tupleof[i]))
     {
         static if (is(typeof(attr) == minLength))
         {

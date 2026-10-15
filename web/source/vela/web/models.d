@@ -24,7 +24,7 @@ import vela.http.utf8 : validUtf8;
 import vela.web.context : Context;
 import vela.web.convert : percentDecode, parseScalarText, parseErrorType, parseErrorMsg;
 import vela.web.dto;
-import vela.web.params : Optional, HttpError, isScalar, isScalarList;
+import vela.web.params : Optional, HttpError, isScalar, isScalarList, isPatchField;
 
 /// A struct bound from the query string.
 struct Query(T)
@@ -90,7 +90,13 @@ string modelError(T, bool asForm = false)()
             {{
                 alias F = typeof(T.tupleof[i]);
                 enum fname = __traits(identifier, T.tupleof[i]);
-                static if (isFileField!F)
+                static if (isPatchField!F)
+                {
+                    if (e.length == 0)
+                        e = "field '" ~ fname ~ "' of " ~ T.stringof ~ " is " ~ F.stringof ~ "; PatchField is for JSON "
+                            ~ "bodies (a " ~ (asForm ? "form" : "query string") ~ " has no null): use Optional!T";
+                }
+                else static if (isFileField!F)
                 {
                     static if (!asForm)
                     {

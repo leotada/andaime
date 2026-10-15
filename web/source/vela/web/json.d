@@ -6,7 +6,7 @@ module vela.web.json;
 
 import vela.http.buffer;
 import vela.web.dto;
-import vela.web.params : Optional, isOptional, isCharType;
+import vela.web.params : Optional, isOptional, isCharType, PatchField, isPatchField;
 import vela.web.convert : parseInteger, parseFloat, parseErrorType, parseErrorMsg;
 import vela.web.numtext : itoa;
 import vela.http.utf8 : validUtf8;
@@ -37,6 +37,14 @@ void writeJson(T)(ref ByteBuffer o, ref const T v)
     {
         if (v.has)
             writeJson(o, v.get);
+        else
+            o.put("null");
+    }
+    else static if (is(T == PatchField!U, U))
+    {
+        // a struct member that is absent is left out of its object (below); anywhere else absent is written as null
+        if (v.hasValue)
+            writeJson(o, v.value);
         else
             o.put("null");
     }
@@ -82,21 +90,34 @@ void writeJson(T)(ref ByteBuffer o, ref const T v)
         {
             static if (!hasUda!(T, i, jsonIgnore))
             {
-                if (!first)
-                    o.put(',');
-                first = false;
-                o.put(quotedKey!(T, i)); // "\"name\":" ready at compile time
-                writeJson(o, v.tupleof[i]);
+                // an absent PatchField is not written at all
+                if (!isPatchField!(typeof(T.tupleof[i])) || isPresentField(v.tupleof[i]))
+                {
+                    if (!first)
+                        o.put(',');
+                    first = false;
+                    o.put(quotedKey!(T, i)); // "\"name\":" ready at compile time
+                    writeJson(o, v.tupleof[i]);
+                }
             }
         }
         o.put('}');
     }
     else
         static assert(0, "vela: type '" ~ T.stringof ~ "' is not serializable to JSON. "
-            ~ "Use bool, numbers, string, enum, arrays, string-keyed maps, structs or Optional!T.");
+            ~ "Use bool, numbers, string, enum, arrays, string-keyed maps, structs, Optional!T or PatchField!T.");
 }
 
 private enum string quotedKey(T, size_t i) = "\"" ~ jsonKeyOf!(T, i) ~ "\":";
+
+/// Whether a struct member is written: always, except an absent `PatchField`.
+private bool isPresentField(F)(ref const F f)
+{
+    static if (isPatchField!F)
+        return f.isPresent;
+    else
+        return true;
+}
 
 private void writeEnum(E)(ref ByteBuffer o, E v)
 {
@@ -501,6 +522,19 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
             v = T(tmp);
         }
     }
+    else static if (is(T == PatchField!U, U))
+    {
+        // present: null or a value (absent is the initial state, kept when the key never shows up)
+        if (r.literal("null"))
+            v = T.null_;
+        else
+        {
+            U tmp;
+            if (!readJson(r, tmp, errs, path))
+                return false;
+            v = T(tmp);
+        }
+    }
     else static if (is(T == V[K], V, K) && is(K == string))
     {
         // {"a": 1, "b": 2} -> int[string]; a repeated key keeps its last value
@@ -605,7 +639,8 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
             static if (!hasUda!(T, i, jsonIgnore))
             {{
                 immutable mark = path.pushKey(jsonKeyOf!(T, i));
-                static if (!hasUda!(T, i, optional) && !isOptional!(typeof(T.tupleof[i])))
+                static if (!hasUda!(T, i, optional) && !isOptional!(typeof(T.tupleof[i]))
+                    && !isPatchField!(typeof(T.tupleof[i])))
                 {
                     if (!seen[i])
                         errs.addPath(path, "missing", "Field required");
@@ -618,7 +653,7 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
     }
     else
         static assert(0, "vela: type '" ~ T.stringof ~ "' cannot be read from JSON. "
-            ~ "Use bool, numbers, string, enum, arrays, string-keyed maps, structs or Optional!T.");
+            ~ "Use bool, numbers, string, enum, arrays, string-keyed maps, structs, Optional!T or PatchField!T.");
     return true;
 }
 
@@ -780,4 +815,56 @@ unittest
     js ~= `]}`;
     assert(!decodeJson(js, m, errs));
     assert(errs.count == FieldErrors.capacity && errs.dropped == 4);
+}
+
+unittest
+{
+    // PatchField: absent, null and a value are three different things; never required; validated only with a value
+    struct Address { string city; PatchField!string zip; }
+    struct Upd
+    {
+        @minLength(3) PatchField!string nick;
+        @inRange(0, 150) PatchField!int age;
+        PatchField!Address address;
+        PatchField!(string[]) tags;
+    }
+
+    FieldErrors errs;
+    Upd u;
+    assert(decodeJson(`{}`, u, errs));
+    assert(u.nick.isAbsent && u.age.isAbsent && u.address.isAbsent && u.tags.isAbsent);
+    assert(decodeJson(`{"nick":null,"age":30,"address":{"city":"Rio","zip":null},"tags":["a"]}`, u, errs));
+    assert(u.nick.isNull && u.age.value == 30 && u.address.value.city == "Rio" && u.address.value.zip.isNull);
+    assert(u.tags.value == ["a"]);
+
+    ByteBuffer b;
+    writeJson(b, u);
+    assert(b.data == `{"nick":null,"age":30,"address":{"city":"Rio","zip":null},"tags":["a"]}`, b.data);
+    b.clear();
+    Upd none;
+    writeJson(b, none);
+    assert(b.data == `{}`, b.data);
+    b.clear();
+    auto arr = [PatchField!int.init, PatchField!int.null_, PatchField!int(1)];
+    writeJson(b, arr);
+    assert(b.data == `[null,null,1]`, "outside an object, absent is null");
+
+    // wrong values report the field's path; null skips validation
+    errs.clear();
+    Upd e;
+    assert(!decodeJson(`{"nick":"ab","age":"x","address":{"zip":5}}`, e, errs));
+    assert(errorSummary(errs) == [`int_parsing body,"age"`, `string_type body,"address","zip"`,
+        `missing body,"address","city"`, `string_too_short body,"nick"`], errorSummary(errs).to!string);
+    errs.clear();
+    assert(decodeJson(`{"nick":null,"age":null}`, e, errs));
+    errs.clear();
+    assert(!decodeJson(`{"age":151}`, e, errs) && errs.list[0].type == "less_than_equal");
+
+    // in arrays of structs
+    struct Batch { Upd[] items; }
+    errs.clear();
+    Batch bt;
+    assert(!decodeJson(`{"items":[{},{"nick":null},{"nick":"x"}]}`, bt, errs));
+    assert(errorSummary(errs) == [`string_too_short body,"items",2,"nick"`], errorSummary(errs).to!string);
+    assert(bt.items[0].nick.isAbsent && bt.items[1].nick.isNull && bt.items[2].nick.hasValue);
 }

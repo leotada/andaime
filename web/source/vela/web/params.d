@@ -52,6 +52,9 @@ struct Local(T)
 /// driver shares it (a NULL column is an empty `Optional`).
 public import vela.http.optional : Optional;
 
+/// A JSON field that may be absent, `null`, or a value (PATCH bodies). See `vela.http.patchfield`.
+public import vela.http.patchfield : PatchField, isPatchField;
+
 /// Return with a status other than 200: `return withStatus(201, user);`
 struct WithStatus(T)
 {

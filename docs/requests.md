@@ -54,7 +54,8 @@ Order create(JsonBody!NewOrder body_)
 
 - The `Content-Type` is not checked; the body must be valid JSON for `T` (a struct, an array, a map `V[string]` or a scalar).
   An empty body is a 422 (`missing`). `GET` and `HEAD` routes cannot take a body (compile error); one body per handler.
-- Unknown fields are ignored. A field without a default and not `Optional` is required.
+- Unknown fields are ignored. A field without a default and not `Optional` (or `PatchField`, see
+  [partial updates](#partial-updates-patchfield)) is required.
 - `@jsonKey("page_size")` sets the external name, `@jsonIgnore` skips a field. Validation attributes are in
   [validation.md](validation.md).
 - An `enum` is its member name as a JSON string. A map keeps the last value of a repeated key; its output order is unspecified.
@@ -153,6 +154,58 @@ string sortBy(Optional!string by) => by.getOr("name");
 
 `has`, `get` (asserts it is there: check `has` first), `getOr(fallback)`, `Optional!T.none`. In JSON, an empty one is written
 as `null`. `Optional!(JsonBody!T)` makes the whole body optional.
+
+## Partial updates: `PatchField`
+
+In a PATCH body an absent field usually means "leave it alone" and `null` means "clear it". `Optional!T` cannot tell those
+apart (both are empty); `PatchField!T` can:
+
+```d
+// check
+import vela;
+
+struct Profile { string name; string nickname; int age; }
+
+struct ProfileUpdate
+{
+    @minLength(2) PatchField!string name;   // validated only when it has a value
+    PatchField!string nickname;
+    PatchField!int age;
+}
+
+Profile current = Profile("Ana", "aninha", 30);
+
+Profile update(JsonBody!ProfileUpdate u)
+{
+    if (u.name.hasValue)
+        current.name = u.name.value;
+    if (u.nickname.isNull)
+        current.nickname = null;               // "nickname": null -> clear it
+    else if (u.nickname.hasValue)
+        current.nickname = u.nickname.value;   // "nickname": "x"  -> set it
+    current.age = u.age.valueOr(current.age);  // absent or null    -> keep it
+    return current;
+}
+
+void main()
+{
+    serve(() {
+        auto app = new App;
+        app.patch!("/me", update);
+        return app;
+    });
+}
+```
+
+- `isAbsent`, `isNull`, `hasValue`, `isPresent` (null or a value), `value` (asserts `hasValue`), `valueOr(fallback)`;
+  `PatchField!T(v)`, `PatchField!T.null_`, `PatchField!T.absent` build one.
+- It works in nested structs and arrays of structs. A `PatchField` field is never required, and its validation attributes
+  apply to the value only (absent and `null` pass). A wrong value is a 422 with the field's `loc`, as usual.
+- `writeJson` (a response) leaves an absent field out of its object and writes `null` for a null one. Outside an object
+  (in an array, say) absent is written as `null`.
+- OpenAPI: the field is not in `required` and is `nullable`.
+- JSON bodies only: a form or a query string has no `null`, so `PatchField` in a `Form!T` or `Query!T`, or as a handler
+  parameter, is a compile error (use `Optional!T` there).
 
 ## The client's address
 

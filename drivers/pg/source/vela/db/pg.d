@@ -399,9 +399,89 @@ private T parseCell(T)(const(char)[] s, const(char)[] col)
             throw badCell(col, T.stringof, s);
         return v;
     }
+    else static if (is(T == E[], E))
+    {
+        static assert(!is(immutable E == immutable ubyte) && !is(immutable E == immutable byte),
+            "vela.db: " ~ T.stringof ~ " in rowsAs/get is ambiguous (bytea or an array?); read bytea as string or use int[]");
+        static assert(!is(E == F[], F) || isSomeString!E,
+            "vela.db: nested arrays are not supported in rowsAs/get (" ~ T.stringof ~ "); read the column as string");
+        return parseArray!E(s, col);
+    }
     else
         static assert(0, "vela.db: unsupported field type in rowsAs/get: " ~ T.stringof
                 ~ " (use integers, bool, double, string, an enum, a text type with fromString/toString, or Optional!X)");
+}
+
+/// A one-dimensional Postgres array literal (`{1,2}`, `{"a b","x\"y",NULL}`, `{}`) -> `E[]`. Each element is read like a
+/// cell of type `E`; a `NULL` element needs `E` to be an `Optional`. A multidimensional array, or one with explicit bounds
+/// (`[0:1]={...}`), throws.
+private E[] parseArray(E)(const(char)[] s, const(char)[] col)
+{
+    if (s.length < 2 || s[0] != '{' || s[$ - 1] != '}')
+        throw badCell(col, E.stringof ~ "[] (a one-dimensional array)", s);
+    auto inner = s[1 .. $ - 1];
+    E[] result;
+    if (inner.length == 0)
+        return result;
+    char[] text; // one element, NUL-terminated (`parseCell` of a float calls strtod)
+    size_t i = 0;
+    while (true)
+    {
+        text.length = 0;
+        bool quoted, isNull;
+        if (i < inner.length && inner[i] == '{')
+            throw new PgError("vela.db: column '" ~ col.idup ~ "' is a multidimensional array; read it as string");
+        if (i < inner.length && inner[i] == '"')
+        {
+            quoted = true;
+            i++;
+            while (true)
+            {
+                if (i >= inner.length)
+                    throw badCell(col, E.stringof ~ "[]", s);
+                immutable c = inner[i++];
+                if (c == '"')
+                    break;
+                if (c == '\\')
+                {
+                    if (i >= inner.length)
+                        throw badCell(col, E.stringof ~ "[]", s);
+                    text ~= inner[i++];
+                }
+                else
+                    text ~= c;
+            }
+        }
+        else
+        {
+            while (i < inner.length && inner[i] != ',')
+                text ~= inner[i++];
+            isNull = text == "NULL";
+        }
+        static if (is(E == Optional!X, X))
+        {
+            if (isNull)
+                result ~= E.init;
+            else
+            {
+                text ~= '\0';
+                result ~= E(parseCell!X(text[0 .. $ - 1], col));
+            }
+        }
+        else
+        {
+            if (isNull)
+                throw new PgError("vela.db: column '" ~ col.idup ~ "' has a NULL element; use Optional!(" ~ E.stringof
+                    ~ ")[] in the field");
+            text ~= '\0';
+            result ~= parseCell!E(text[0 .. $ - 1], col);
+        }
+        if (i == inner.length)
+            return result;
+        if (inner[i] != ',')
+            throw badCell(col, E.stringof ~ "[]", s);
+        i++;
+    }
 }
 
 private PgError badCell(const(char)[] col, string type, const(char)[] val)

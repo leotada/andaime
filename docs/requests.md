@@ -311,6 +311,10 @@ Outside a request (an upstream API's response, a file): `parseJson(text)` return
 `maxBytes` (16 MiB). `fromJson!T(text)` decodes into a DTO with the rules of a request body, and `toJson(value)` writes
 any value as JSON text. See [http-client.md](http-client.md#reading-json).
 
+`Json!T` is a `T` that travels as JSON text where values are text: a `json`/`jsonb` column ([database.md](database.md)) or a
+query parameter (`?filter=[...]`; a value that is not JSON for `T` is a 422 `value_error`). In a body or a response it is
+plain `T`, and `alias this` reaches the value.
+
 ## The client's address
 
 ```d

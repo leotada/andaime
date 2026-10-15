@@ -11,7 +11,8 @@ public import vela.web.dto : jsonKey, optional, jsonIgnore, minLength, maxLength
     ValidationErrors, FieldError, ErrorSource, LocPart;
 public import vela.http.naming : Naming, naming, wireName;
 public import vela.web.handler_traits : writeDefaultValidationErrors;
-public import vela.web.jsonvalue : JsonValue, JsonMember, JsonType, JsonError, JsonLimits, parseJson, fromJson, toJson;
+public import vela.web.jsonvalue : JsonValue, JsonMember, JsonType, JsonError, JsonLimits, parseJson, fromJson, toJson,
+    Json;
 public import vela.web.json : writeJson;
 public import vela.log;
 public import vela.web.testing;

@@ -27,7 +27,7 @@ import vela.web.handler_traits : parseRoute, indexOfName;
 import vela.web.stream : Stream, EventStream, produces;
 import vela.web.models : isQueryModel, isFormModel, formHasFiles, modelFieldOptional, UploadedFile;
 import vela.http.texttype : isTextType, textTypeFormat;
-import vela.web.jsonvalue : JsonValue;
+import vela.web.jsonvalue : Json, JsonValue;
 
 /// One-line operation text: `@summary("Fetch a user") UserResponse getUser(long id)`.
 struct summary { string text; }
@@ -157,6 +157,8 @@ string schemaOf(T)(ref Components comps) @safe
         return schemaOf!U(comps);
     else static if (is(T == WithStatus!U, U))
         return schemaOf!U(comps);
+    else static if (is(T == Json!U, U))
+        return schemaOf!U(comps); // (before the text-type branch: JSON, not a string)
     else static if (isTextType!T)
     {
         enum fmt = textTypeFormat!T;
@@ -291,6 +293,8 @@ private string structSchema(T)(ref Components comps) @safe
                 // injects the constraints into the schema object (if it is a $ref, wraps it in allOf)
                 if (sch.length > 8 && sch[0 .. 7] == `{"$ref"`)
                     sch = `{"allOf":[` ~ sch ~ `]` ~ extra ~ `}`;
+                else if (sch == `{}`)
+                    sch = `{` ~ extra[1 .. $] ~ `}`; // any value (JsonValue): no comma before the first member
                 else
                     sch = sch[0 .. $ - 1] ~ extra ~ `}`;
             }

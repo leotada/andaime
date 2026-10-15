@@ -620,6 +620,62 @@ string toJson(T)(auto ref const T value)
     return b.data.idup;
 }
 
+/// A `T` that travels as JSON text where a value is text: a `json`/`jsonb` column (`vela-pg`'s `rowsAs` and parameters),
+/// a query or path parameter. In a JSON body or response it is plain `T` (no extra quoting), and OpenAPI describes `T`.
+///
+///     struct TaskRow { long id; Json!(TagRef[]) tags; Optional!(Json!JsonValue) meta; }
+///     db.query("select t.id, coalesce(json_agg(g) filter (where g.id is not null), '[]') as tags, t.meta ...").rowsAs!TaskRow;
+///
+/// `alias this` reaches the value: `row.tags.length`, `row.tags[0].name`. A column that is not valid JSON for `T` throws
+/// like any other bad cell.
+struct Json(T)
+{
+    T value;
+    alias value this;
+
+    /// The text-type protocol (`vela.http.texttype`): JSON text in, JSON text out.
+    static bool fromString(scope const(char)[] text, out Json v)
+    {
+        try
+            v.value = fromJson!T(text);
+        catch (JsonError)
+            return false;
+        return true;
+    }
+
+    /// ditto
+    void toString(scope void delegate(scope const(char)[]) @safe sink) const
+    {
+        sink(toJson(value));
+    }
+
+    enum invalidMessage = "expected JSON for " ~ T.stringof;
+}
+
+/// True for `Json!T`.
+enum isJsonText(T) = is(T == Json!U, U);
+
+unittest
+{
+    import vela.http.texttype : isTextType, textFromString, textToString;
+
+    struct Tag { long id; string name; }
+    static assert(isTextType!(Json!(Tag[])) && isJsonText!(Json!(Tag[])));
+    Json!(Tag[]) tags;
+    assert(textFromString(`[{"id":1,"name":"a"},{"id":2,"name":"b"}]`, tags));
+    assert(tags.length == 2 && tags[1].name == "b");
+    string back;
+    textToString(tags, (scope const(char)[] s) { back ~= s; });
+    assert(back == `[{"id":1,"name":"a"},{"id":2,"name":"b"}]`);
+    assert(!textFromString(`[{"id":"x"}]`, tags));
+
+    // inside a DTO it is plain JSON both ways
+    struct Row { long id; Json!(Tag[]) tags; Json!JsonValue meta; }
+    auto r = fromJson!Row(`{"id":7,"tags":[{"id":1,"name":"a"}],"meta":{"k":[1,2]}}`);
+    assert(r.tags[0].name == "a" && r.meta["k"][1].asInteger == 2);
+    assert(toJson(r) == `{"id":7,"tags":[{"id":1,"name":"a"}],"meta":{"k":[1,2]}}`);
+}
+
 unittest
 {
     struct Quote { string currency; double rate; }

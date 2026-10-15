@@ -12,7 +12,7 @@ import vela.web.numtext : itoa;
 import vela.http.utf8 : validUtf8;
 import vela.http.texttype : isTextType, textFromString, textToString;
 import vela.http.naming : enumWireNames, parseEnumWire;
-import vela.web.jsonvalue : JsonValue, readJsonValue, writeJsonValue;
+import vela.web.jsonvalue : Json, JsonValue, readJsonValue, writeJsonValue;
 
 // =====================================================================
 // Writing
@@ -22,6 +22,8 @@ void writeJson(T)(ref ByteBuffer o, ref const T v)
 {
     static if (is(T == JsonValue))
         writeJsonValue(o, v);
+    else static if (is(T == Json!U, U))
+        writeJson(o, v.value); // before the text-type branch: the value, not a string holding it
     else static if (is(T == bool))
         o.put(v ? "true" : "false");
     else static if (is(T == enum))
@@ -450,6 +452,8 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
 {
     static if (is(T == JsonValue))
         return readJsonValue(r, v, errs, path, 0);
+    else static if (is(T == Json!U, U))
+        return readJson(r, v.value, errs, path);
     else static if (is(T == bool))
     {
         if (r.literal("true"))

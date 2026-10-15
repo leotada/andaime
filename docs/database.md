@@ -72,6 +72,22 @@ void touch(int id) { db.exec("update users set seen_at = now() where id = $1", i
 
   Prefixes nest (`post_owner_id` for an `owner` inside a `post`). A missing prefixed column throws like any other, and a
   NULL in a non-`Optional` field of a struct that is there is the usual error.
+- Array columns read into `T[]` (`int[]`, `string[]`, `Uuid[]`, an enum...): `uuid[]`, `text[]`, `int[]`, and
+  `array_agg(...)`. A `NULL` element needs `Optional!T[]`; a multidimensional array throws (read it as `string`).
+- A `json`/`jsonb` column reads into `Json!T` (from `vela.web`): `Json!(TagRef[]) tags` decodes the text with the rules of a
+  request body, and `Json!JsonValue` takes anything. In a response it is plain JSON (not a string), OpenAPI shows `T`, and it
+  is also a parameter (`$1::jsonb`). With `array_agg` and `json_agg` a list endpoint loads its relations in one query:
+
+  ```d
+  struct TagRef { int id; string name; }
+  @naming(Naming.snakeCase) struct TaskOut { int id; Uuid[] tagIds; Json!(TagRef[]) tags; }
+
+  auto tasks = db.query("select t.id,"
+      ~ " coalesce(array_agg(g.uid) filter (where g.id is not null), '{}') as tag_ids,"
+      ~ " coalesce(json_agg(json_build_object('id', g.id, 'name', g.name)) filter (where g.id is not null), '[]') as tags"
+      ~ " from tasks t left join task_tags l on l.task_id = t.id left join tags g on g.id = l.tag_id"
+      ~ " group by t.id").rowsAs!TaskOut;
+  ```
 - Lower level: `r.rows`, `r.cols`, `r.get!T(row, col)`, `r.isNull(row, col)`, `r.column("name")`, `r.affected()`.
 
 ## Transactions

@@ -196,6 +196,94 @@ void testNamesAndEnums()
     ok("names and enums: @naming and @column in rowsAs, enums by wire name as parameters (enum, text, array) and cells");
 }
 
+struct TagRef { int id; string name; }
+
+@naming(Naming.snakeCase)
+struct TaskWithTags
+{
+    int id;
+    Uuid[] tagIds;
+    Json!(TagRef[]) tags;
+    Optional!(Json!JsonValue) meta;
+}
+
+void testReadArraysAndJson()
+{
+    auto c = connect();
+    scope (exit) c.shutdown();
+
+    // arrays of every element kind, quoting included
+    assert(c.query("select '{1,-2,3}'::int[]").get!(int[])(0, 0) == [1, -2, 3]);
+    assert(c.query("select '{}'::int[]").get!(int[])(0, 0).length == 0);
+    auto labels = ["b,c", `d"e\f`, "{x}", " sp ", "NULL", "", "çã"];
+    assert(c.query("select $1::text[]", labels).get!(string[])(0, 0) == labels, "a text[] round trip");
+    assert(c.query("select '{t,f}'::bool[]").get!(bool[])(0, 0) == [true, false]);
+    assert(c.query("select '{1.5,-2.25}'::float8[]").get!(double[])(0, 0) == [1.5, -2.25]);
+    auto ids = c.query("select array['00000000-0000-0000-0000-000000000001'::uuid, '00000000-0000-0000-0000-000000000002']")
+        .get!(Uuid[])(0, 0);
+    assert(ids.length == 2 && ids[1].text == "00000000-0000-0000-0000-000000000002");
+    assert(c.query("select '{1,NULL,3}'::int[]").get!(Optional!int[])(0, 0) == [Optional!int(1), Optional!int.init,
+        Optional!int(3)]);
+    assert(c.query("select $1::text[]", [Photo.onIssue, Photo.none]).get!(Photo[])(0, 0) == [Photo.onIssue, Photo.none]);
+    assert(!c.query("select null::int[]").get!(Optional!(int[]))(0, 0).has);
+
+    // what an array of a type cannot hold
+    bool threw;
+    try
+        c.query("select '{1,NULL}'::int[]").get!(int[])(0, 0);
+    catch (PgError e)
+        threw = e.msg == "vela.db: column 'int4' has a NULL element; use Optional!(int)[] in the field";
+    assert(threw);
+    threw = false;
+    try
+        c.query("select '{{1,2},{3,4}}'::int[]").get!(int[])(0, 0);
+    catch (PgError e)
+        threw = e.msg == "vela.db: column 'int4' is a multidimensional array; read it as string";
+    assert(threw);
+    threw = false;
+    try
+        c.query("select '[0:1]={1,2}'::int[]").get!(int[])(0, 0);
+    catch (PgError e)
+        threw = true;
+    assert(threw, "explicit bounds");
+
+    // one query with array_agg and json_agg instead of one query per relation
+    c.exec("drop table if exists t_tag_link");
+    c.exec("drop table if exists t_tag");
+    c.exec("create table t_tag(id int primary key, uid uuid not null, name text not null)");
+    c.exec("create table t_tag_link(task_id int, tag_id int references t_tag)");
+    c.exec("insert into t_tag values (1, '00000000-0000-0000-0000-00000000000a', 'red'), (2, '00000000-0000-0000-0000-00000000000b', 'blue')");
+    c.exec("insert into t_tag_link values (10, 1), (10, 2)");
+    auto rows = c.query("select x.id,"
+        ~ " coalesce(array_agg(g.uid order by g.id) filter (where g.id is not null), '{}') as tag_ids,"
+        ~ " coalesce(json_agg(json_build_object('id', g.id, 'name', g.name) order by g.id) filter (where g.id is not null), '[]') as tags,"
+        ~ " case when x.id = 10 then '{\"pinned\":true}'::jsonb end as meta"
+        ~ " from (values (10), (11)) as x(id) left join t_tag_link l on l.task_id = x.id left join t_tag g on g.id = l.tag_id"
+        ~ " group by x.id order by x.id").rowsAs!TaskWithTags;
+    assert(rows.length == 2);
+    assert(rows[0].tagIds.length == 2 && rows[0].tagIds[0].text == "00000000-0000-0000-0000-00000000000a");
+    assert(rows[0].tags.length == 2 && rows[0].tags[1].name == "blue");
+    assert(rows[0].meta.get["pinned"].asBool);
+    assert(rows[1].tagIds.length == 0 && rows[1].tags.length == 0 && !rows[1].meta.has);
+
+    // a row goes back out as plain JSON, and Json!T is also a parameter
+    assert(toJson(rows[0]) == `{"id":10,"tag_ids":["00000000-0000-0000-0000-00000000000a","00000000-0000-0000-0000-00000000000b"],`
+        ~ `"tags":[{"id":1,"name":"red"},{"id":2,"name":"blue"}],"meta":{"pinned":true}}`, toJson(rows[0]));
+    assert(c.query("select ($1::jsonb) -> 1 ->> 'name'", rows[0].tags).get!string(0, 0) == "blue");
+
+    // a column that is not JSON for T
+    threw = false;
+    try
+        c.query(`select '[{"id":"x"}]'::json`).get!(Json!(TagRef[]))(0, 0);
+    catch (PgError e)
+        threw = true;
+    assert(threw);
+
+    c.exec("drop table t_tag_link");
+    c.exec("drop table t_tag");
+    ok("reading arrays (int, text, bool, float, uuid, enum, NULL elements) and json/jsonb into Json!T; array_agg + json_agg rows");
+}
+
 int count(PgConn c) => c.query("select count(*)::int from t_sp").get!int(0, 0);
 
 void testSavepoints()
@@ -293,6 +381,7 @@ void main()
     testArrays();
     testNestedRows();
     testNamesAndEnums();
+    testReadArraysAndJson();
     testSavepoints();
     testRollbackHarness();
     printf("all Postgres feature tests passed\n");

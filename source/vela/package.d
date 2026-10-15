@@ -13,6 +13,7 @@ public import vela.engine.offload : offload, configureOffload, PoolSaturated;
 version (linux)
 {
     public import vela.engine.httpclient : httpClient, HttpClient, HttpClientConfig, HttpClientError,
-        HttpClientTimeout, ClientResponse, HeaderPair;
+        HttpClientTimeout, ClientResponse, HeaderPair, HttpTransport, setHttpTransport;
+    public import vela.engine.httpfake : FakeHttpClient, Expectation, RecordedRequest;
     public import vela.engine.wsclient : wsConnect, WsClientOptions;
 }

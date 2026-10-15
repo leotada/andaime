@@ -369,6 +369,8 @@ final class HttpClient
         Duration timeout = Duration.zero) @trusted
     {
         auto u = parseUrl(url);
+        if (transportOverride !is null)
+            return transportOverride.send(method, url, headers, cast(const(ubyte)[]) body_, timeout);
         immutable deadline = MonoTime.currTime + (timeout > Duration.zero ? timeout : cfg.timeout);
         immutable idempotent = method == "GET" || method == "HEAD" || method == "PUT" || method == "DELETE"
             || method == "OPTIONS";
@@ -1044,6 +1046,28 @@ private bool containsFold(const(char)[] hay, const(char)[] needle) pure nothrow 
         if (eqFold(hay[i .. i + needle.length], needle))
             return true;
     return false;
+}
+
+// ============================================================ transport override (tests)
+
+/// Answers the requests of every `HttpClient` of this thread instead of the network: `FakeHttpClient`
+/// (`vela.engine.httpfake`) implements it. The URL has been checked (`parseUrl`) before `send` is called.
+interface HttpTransport
+{
+    ClientResponse send(string method, string url, const(HeaderPair)[] headers, const(ubyte)[] body_,
+        Duration timeout) @safe;
+}
+
+private HttpTransport transportOverride; // thread-local, like the worker's client
+
+/// Routes every `HttpClient` request made on this thread to `t` (null: the network again) and returns
+/// the previous one. Meant for tests; in a server, call it from the build function (it runs on each
+/// worker's thread).
+HttpTransport setHttpTransport(HttpTransport t) @safe nothrow @nogc
+{
+    auto prev = transportOverride;
+    transportOverride = t;
+    return prev;
 }
 
 // ============================================================ worker client

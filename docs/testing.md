@@ -136,5 +136,7 @@ opens the WebSocket as a browser does on an HTTP/2 connection (RFC 8441): a succ
 - Build a fresh app per test (`TestClient(buildApp())`) so tests do not share state.
 - To test behind a proxy, call `app.trustProxies(["10.0.0.0/8"])` and send `X-Forwarded-For` from a trusted peer with `from`.
 - Handlers that use `sleep`, `offload` or the HTTP client also work in tests: outside the server those calls simply block.
+  To answer the HTTP client's calls without a network, use a
+  [`FakeHttpClient`](http-client.md#testing-without-a-network-fakehttpclient).
 - `TestClient` is single-threaded and runs one request at a time; for concurrency, timeouts and real sockets, start the server
   in a test (`tryServe` with `workers = 1`) and talk to it over the network.

@@ -133,3 +133,60 @@ App buildApp()
 
 `httpClient(cfg)` replaces the worker's client, so call it once per worker: the build function is the right place.
 `cfg.verifyTls = false` exists for tests only.
+
+## Testing without a network: `FakeHttpClient`
+
+Code that calls `httpClient()` (an S3 upload, a mail API, a payment provider) can be tested without a server. A
+`FakeHttpClient` answers every request of every `HttpClient` on its thread with replies you script, and records the requests:
+
+```d
+// check
+import vela;
+
+bool uploadAvatar(long id, const(ubyte)[] png)
+{
+    import std.conv : to;
+
+    auto r = httpClient().put("https://bucket.s3.example.com/avatars/" ~ id.to!string ~ ".png", png,
+        [HeaderPair("Content-Type", "image/png")]);
+    return r.ok;
+}
+
+unittest
+{
+    auto fake = new FakeHttpClient;
+    fake.expect("PUT", "https://bucket.s3.example.com/avatars/*").respond(200).respond(503); // two calls, in order
+    fake.expect("POST", "https://api.mail.example/send").timeout();
+    fake.install();
+    scope (exit) fake.uninstall();
+
+    immutable ubyte[] png = [0x89, 'P', 'N', 'G'];
+    assert(uploadAvatar(1, png));
+    assert(!uploadAvatar(2, png));
+    assert(fake.requests[0].url == "https://bucket.s3.example.com/avatars/1.png");
+    assert(fake.requests[0].body_ == png && fake.requests[0].header("content-type") == "image/png");
+
+    bool timedOut;
+    try
+        httpClient().post("https://api.mail.example/send", `{"to":"a@x.com"}`);
+    catch (HttpClientTimeout)
+        timedOut = true;
+    assert(timedOut);
+    fake.verify(); // every expected request was made
+}
+
+void main() {}
+```
+
+- `expect(method, url)` matches the method and the whole URL, or a prefix when the URL ends in `*`. Expectations are tried
+  in order. Each answers as many requests as it has replies: `respond(status, body, headers)`, `timeout()`
+  (`HttpClientTimeout`) or `fail(msg)` (`HttpClientError`); one with no reply answers once with a 200. `always()` repeats
+  the last reply forever.
+- A request no expectation matches throws `HttpClientError("vela.http: FakeHttpClient: unexpected request ...")`, so a
+  forgotten call fails the test instead of reaching the network. Every request, expected or not, lands in `requests`
+  (method, URL, headers, the body as bytes, `text`, the per-call timeout). `verify()` throws if an expectation was not used
+  up.
+- `install` routes this thread's clients (the worker's `httpClient()` and any `new HttpClient`) until `uninstall`. In a
+  server started by a test, install the fake from the build function: it runs on each worker's thread. The real client pays
+  one thread-local null check per request.
+- `setHttpTransport(t)` installs any other `HttpTransport` (a recording proxy, say).

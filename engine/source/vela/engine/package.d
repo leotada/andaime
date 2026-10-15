@@ -10,6 +10,7 @@ version (linux)
 version (linux)
 {
     public import vela.engine.httpclient;
+    public import vela.engine.httpfake;
     public import vela.engine.wsclient;
     public import vela.engine.zlib;
 }

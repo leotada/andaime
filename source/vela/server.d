@@ -9,7 +9,20 @@ import vela.web.application : App;
 import vela.web.stream : sendResponse;
 import vela.web.context : Context;
 import vela.engine.loop : ServerConfig, HandlerFactory, RequestCallback, WorkerInit;
-import vela.engine.fiberio : workerIndex;
+import vela.engine.fiberio : workerIndex, currentFiberLocal, setCurrentFiberLocal;
+import vela.log : setLogFiberSource;
+
+/// vela.log's request id inside an engine fiber: the id of the Context the running request fiber carries. True when
+/// running in a request fiber (even without an id), so the logger never falls back to another request's.
+private bool fiberRequestId(out const(char)[] id) nothrow
+{
+    if (auto ctx = cast(Context) currentFiberLocal())
+    {
+        id = ctx.logRequestId();
+        return true;
+    }
+    return false;
+}
 import core.stdc.stdlib : exit;
 import core.sync.mutex : Mutex;
 import vela.engine.devserver : runDevServer;
@@ -107,6 +120,7 @@ bool tryServe(App delegate() @system build, ServerConfig cfg, void delegate() @s
     }
     auto seen = new SeenApps;
     WorkerInit init = () {
+        setLogFiberSource(&fiberRequestId); // this worker's thread: vela.log asks the running fiber for its request
         auto app = callBuild(build);
         if (app is null)
             throw new Exception("vela: the build function returned null; it must return the App to serve");
@@ -198,6 +212,7 @@ HandlerFactory handlerFactory(App app)
             ctx.newDeflate = (int bits, bool noContext) => zlibDeflate(bits, noContext); // WebSocket compression
         RequestCallback cb = (ref Request req, ResponseSink sink) {
             ctx.reset(req, sink);
+            setCurrentFiberLocal(ctx); // the request fiber carries its Context (vela.log reads the request id)
             scope (exit)
             {
                 ctx.response.body.shrinkTo(64 << 10); // a response peak does not stay pinned to the Context

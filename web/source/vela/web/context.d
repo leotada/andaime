@@ -279,6 +279,11 @@ final class Context
     /// Set by `App` for the matched route: answers a request whose parameters failed to bind (`App.onValidationError`).
     /// Null: the default 422.
     package void delegate(Context) @safe onValidation;
+    /// The request id the logger adds to lines written during this request (set by the `requestId` middleware).
+    package(vela) const(char)[] requestIdForLog;
+
+    /// `vela.log`'s view of this request: its id (a method, so the logger takes it as a delegate without allocating).
+    package(vela) const(char)[] logRequestId() nothrow => requestIdForLog;
     package char[64] allowBuf; // value of the 405 Allow header
     private char[512] scratchBuf;
     private size_t scratchUsed;
@@ -303,6 +308,7 @@ final class Context
         this.sink = sink;
         committed = aborted = false;
         onValidation = null;
+        requestIdForLog = null;
         streamLength = -1;
         params.count = 0;
         response.reset();

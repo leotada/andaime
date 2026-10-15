@@ -156,14 +156,15 @@ interface JobRuntime
     void waitIdle(Duration maxWait);
 }
 
-/// One line on stderr. The consumer and the cron fiber log and keep running.
-void logJobFailure(string where, Exception e) @trusted
+/// One line through `vela.log` at the `error` level: `vela.jobs: <where>: <message>` in the `text` format,
+/// `msg="job failure"` with `where` and `error` in `kv`/`json`. The consumer and the cron fiber log and keep running.
+void logJobFailure(string where, Exception e) nothrow
 {
-    // sound: stderr only; both strings are read for this call and not kept
-    import core.stdc.stdio : fprintf, stderr;
+    import vela.log : LogLevel, logEnabled, logVela;
 
-    fprintf(stderr, "vela.jobs: %.*s: %.*s\n", cast(int) where.length, where.ptr,
-        cast(int) e.msg.length, e.msg.ptr);
+    if (!logEnabled(LogLevel.error))
+        return;
+    logVela(LogLevel.error, "vela.jobs: " ~ where ~ ": " ~ e.msg, "job failure", "where", where, "error", e.msg);
 }
 
 // =====================================================================

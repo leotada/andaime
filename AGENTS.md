@@ -66,7 +66,7 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 | Path | Role |
 |------|------|
 | `http/` (`vela:http`) | HTTP types, `Optional`, `PatchField`, text types, IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64, base64url (`base64url.d`). No I/O. |
-| `web/` (`vela:web`) | `App`, `Group`, router, handler introspection, JSON, OpenAPI, CORS, cookies, streaming, WebSocket routes, models, middleware, `TestClient`. No sockets. |
+| `web/` (`vela:web`) | `App`, `Group`, router, handler introspection, JSON and `JsonValue`, OpenAPI, CORS, cookies, streaming, WebSocket routes, models, middleware, `TestClient`, and the logger `vela.log` (`web/source/vela/log.d`: in `vela:web` so `jobs` and the root package use it; it writes to fd 2 and nothing else). No sockets. |
 | `engine/` (`vela:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload`, `randomBytes` (getrandom, `random.d`), HTTP/HTTPS client, WebSocket client (`wsclient.d`), OpenSSL (dlopen, `tls.d`), zlib (dlopen, `zlib.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
 | `crypto/` (`vela:crypto`) | Cryptographic primitives over OpenSSL 3's libcrypto and libxcrypt (both dlopen, own `__gshared` tables): SHA-256, HMAC, HKDF, AES-128-GCM, P-256 ECDSA (ES256) and ECDH, Web Push encryption (RFC 8291), bcrypt. Depends on `vela:http` and `vela:engine` (`random.d`, `offload`). Nothing else depends on it. |
 | `jobs/` (`vela:jobs`) | Background jobs: `@Job` / `perform`, in-memory and test queues, cron, `--role` and `--queues`. Depends on `vela:web` and `vela:engine`. The root package does not depend on it. |
@@ -119,6 +119,10 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
   handler's next wait or write; `scope(exit)` and destructors run normally.
 - Module-level variables in D are **thread-local**. Share across workers only with `__gshared`/`shared` and a reason, behind a lock
   that is never held across an I/O wait. `pgPool(...)` and `httpClient()` are per worker.
+- **Per-request state that the code below a handler needs** (the logger's request id) lives with the request's fiber:
+  `Worker` is a `LocalFiber` (`fiberio.d`) whose `fiberLocal` slot `server.d` sets to the request's `Context`. Never keep
+  such state in a thread-local variable: requests interleave on one thread at every wait. Without fibers (`TestClient`,
+  the devserver) `App.handle` sets `vela.log`'s per-thread source instead.
 - **Errors inside handlers** (D4): an `Exception` becomes a 500 through the app (logged with a stack trace, 5 traces per second per
   App); an `Error` (RangeError, AssertError...) also gets a 500, a full trace in the log (5 per second per worker, the rest
   counted), and the fiber is retired (`LoopStats.fibersPoisoned`): after an `Error`, cleanup may not have run. A fiber stack

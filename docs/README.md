@@ -13,6 +13,7 @@ things up.
 | [Validation and errors](validation.md) | Validation attributes, the 422 format and its error codes, your own validation response (`onValidationError`), other error statuses |
 | [Responses](responses.md) | Return types, status codes, JSON, `Response`, headers, cookies |
 | [Middleware and error handling](middleware.md) | Writing middleware, order, `Local!T`, access log, request id, CORS, `onError` |
+| [Logging](logging.md) | `vela.log`: levels, `text`/`kv`/`json` lines, the request id on every line, `VELA_LOG_LEVEL` |
 | [Streaming](streaming.md) | `Stream` and Server-Sent Events, backpressure, cancellation |
 | [WebSockets](websocket.md) | `WebSocket` routes, `WsConn`, broadcasting, limits, compression, the `wsConnect` client, testing, proxies |
 | [Static files and OpenAPI](static-files-and-openapi.md) | `serveStatic`, `/openapi.json` and Swagger UI, documenting statuses |

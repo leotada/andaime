@@ -1488,6 +1488,10 @@ timeouts, any HTTP/2 or TLS feature (D3).
 | F22 | 11.5 | `T[]` parameters become a text array literal with every element quoted and `"`/`\` escaped, elements encoded exactly as a single parameter of that type would be; an empty `Optional` element is `NULL`; `ubyte[]`/`byte[]` and nested arrays are compile errors. | Binary array format; quoting only when needed. | Text keeps one encoding path for scalars and elements; always quoting makes `NULL`, commas, braces and spaces data with no special cases. `ubyte[]` could mean bytea. |
 | F23 | 11.6 | `@prefix("author_")` (in `vela.db`) on a struct or `Optional!struct` field; prefixes compose when nested; column indexes resolved once per result; an `Optional` is empty only when all its columns are NULL; misuse is a one-line `vela.db:` static assert. | Inferring nesting from `author_` names without an attribute; empty when the first (id) column is NULL. | Explicit is predictable; "all NULL" is what a LEFT JOIN with no match produces, and does not depend on which column is the key. |
 | F24 | 11.7 | `PgConn.savepoint` (`vela_sp_N` by depth; `RELEASE` on success, `ROLLBACK TO` on throw), `PgConn.transaction` that becomes a savepoint inside an open transaction (`PQtransactionStatus`), `PgPool.transaction` delegating to it; tests pin the pool to one connection (`pin`/`unpin`, `rollbackAfter`). | A separate "test mode" flag in `PgConfig`; a fake pool. | Nesting through the transaction status makes app code unchanged under a harness; pinning is two lines in `acquire`/`release` and touches no hot path. |
+| F25 | 11.8 | Module `vela.log` lives in `vela:web` (`web/source/vela/log.d`), not `vela:http` (no I/O there) nor `engine` (web cannot see it); exported by `import vela;`. | A `vela:log` subpackage. | `App`, `accessLog` and `vela:jobs` must use it, and they all depend on `vela:web`. Engine messages (stalls, crashes) stay raw stderr. |
+| F26 | 11.8 | The request id is read from the running fiber: `LocalFiber` (engine) has one `Object` slot, `server.d` stores the `Context`, a per-thread function asks the fiber; `App.handle` sets a per-thread source for the no-fiber case. | A thread-local "current request" (wrong after any fiber switch); a fiber-keyed table (grows with retired fibers); passing `Context` to every log call. | Correct under interleaving (`tests/net/log_net.d` proves it), one pointer store per request, no allocation. |
+| F27 | 11.8 | Formats `text` (default), `kv`, `json`; in `text` vela's own lines are byte-identical to before and user lines are `msg k=v`; level and format by `configureLog` and `VELA_LOG_LEVEL`/`VELA_LOG_FORMAT`, the environment winning; atomics instead of `__gshared` (no `@trusted` accessor needed). | Making `kv` the default; code winning over the environment. | Defaults stay backward compatible; an operator can turn on `debug` without a rebuild. |
+| F28 | 11.8 | The generic call is `logAt(level, ...)`, not `log`; misuse of fields is a one-line compile error in each `log*` function. | `log(level, ...)`. | `import vela;` would export `log`, which hides an app's own `log` helper (the `get`/`put` pitfall). |
 | F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
 
 ### [x] 11.1 Custom validation error responses: `onValidationError` — M
@@ -1557,7 +1561,16 @@ timeouts, any HTTP/2 or TLS feature (D3).
 > `transaction` inside `transaction`, return values, the error outside a transaction, and `rollbackAfter` with the app's
 > own commits and rollbacks inside it. Docs: `database.md`.
 
-### [ ] 11.8 Structured logger `vela.log` — M
+### [x] 11.8 Structured logger `vela.log` — M
+
+> **Done.** `vela.log`: `LogLevel`, `LogFormat`, `configureLog`, `logLevel`, `logFormat`, `logEnabled`, `logAt`,
+> `logDebug/Info/Warn/Error`, `logVela` (vela's own lines), the request-id sources. Engine: `LocalFiber`,
+> `currentFiberLocal`, `setCurrentFiberLocal` (`Worker` extends `LocalFiber`). `Context.requestIdForLog` (set by
+> `requestId()`), `App.handle` and `server.d` wiring; `accessLog`, `App.logError` and `logJobFailure` go through it. Tests:
+> module unittests (three formats, values, request id, levels), `tests/web/logging.d` (text lines unchanged, json/kv fields,
+> filtering, the environment), `tests/net/log_net.d` (interleaved fibers on one worker keep their ids),
+> `tests/alloc/log_hot_path.d` (0 GC bytes filtered, kv and json), `tests/compile_fail/log_odd_fields.d`, `log_key_type.d`.
+> Docs: `docs/logging.md` (a `// check` example), `middleware.md`, `configuration.md`, the index; `AGENTS.md`.
 
 ### [ ] 11.9 `TestClient` ergonomics — S/M
 

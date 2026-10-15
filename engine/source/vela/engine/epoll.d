@@ -49,7 +49,8 @@ import vela.http.h2;
 import vela.http.chunked : ChunkedDecoder, ChunkResult;
 import vela.engine.bufferpool;
 import vela.engine.loop;
-import vela.engine.fiberio : Scheduler, currentScheduler, RequestCancelled, IoEvent, workerIndex, setStopRequested;
+import vela.engine.fiberio : Scheduler, currentScheduler, RequestCancelled, IoEvent, workerIndex, setStopRequested,
+    LocalFiber;
 import vela.engine.tls : SSL;
 import vela.engine.tlsserver;
 
@@ -173,7 +174,7 @@ private struct Timer
     uint gen;
 }
 
-private final class Worker : Fiber, ResponseSink
+private final class Worker : LocalFiber, ResponseSink
 {
     EpollLoop loop;
     RequestCallback cb;

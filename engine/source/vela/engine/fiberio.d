@@ -56,6 +56,44 @@ interface Scheduler
 /// The scheduler of this thread's worker (module variable = thread-local).
 Scheduler currentScheduler;
 
+import core.thread.fiber : Fiber;
+
+/// A fiber with one slot for the layers above the engine: the engine's request fibers are `LocalFiber`s, and the server
+/// keeps the request's `Context` there (the logger reads the request id from it). A slot per fiber, not per thread: many
+/// requests interleave on one thread.
+class LocalFiber : Fiber
+{
+    /// Whatever the layer above wants to keep with this fiber. The engine never reads it.
+    Object fiberLocal;
+
+    this(void delegate() dg, size_t stackSize) nothrow @trusted
+    {
+        // @trusted: Fiber's constructor only stores the delegate and maps the stack
+        super(dg, stackSize);
+    }
+}
+
+/// The slot of the running `LocalFiber`, or null outside one.
+Object currentFiberLocal() nothrow @trusted
+{
+    // @trusted: Fiber.getThis only reads the running fiber of this thread
+    if (auto f = cast(LocalFiber) Fiber.getThis())
+        return f.fiberLocal;
+    return null;
+}
+
+/// Sets the slot of the running `LocalFiber`; false (and nothing set) outside one.
+bool setCurrentFiberLocal(Object o) nothrow @trusted
+{
+    // @trusted: as above; only the running fiber's own field is written
+    if (auto f = cast(LocalFiber) Fiber.getThis())
+    {
+        f.fiberLocal = o;
+        return true;
+    }
+    return false;
+}
+
 /// This thread's worker index, written by the engine before `WorkerInit`. 0 is the first worker, and the
 /// development server's only thread. A D module variable is already thread-local, so this is a plain `int`.
 int workerIndex;

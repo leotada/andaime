@@ -8,6 +8,7 @@ import core.time : MonoTime;
 
 import vela.http.types : methodName;
 import vela.web.context;
+import vela.log : LogLevel, LogFormat, logEnabled, logFormat, logVela;
 
 /// Request id (see `requestId`). Read it in handlers with `Local!RequestId`.
 struct RequestId
@@ -16,30 +17,42 @@ struct RequestId
     alias value this;
 }
 
-/// One line per request on stderr: `GET /users/7 200 1.3ms ip=203.0.113.7`.
-/// Does not allocate; write your own if you need JSON/structured logs.
+/// One line per request on stderr, through `vela.log` at the `info` level. In the `text` format (the default):
+/// `GET /users/7 200 1.3ms ip=203.0.113.7`; in `kv`/`json`: `msg=request method=GET target=/users/7 status=200
+/// duration_us=1300 ip=203.0.113.7` plus time, level and the request id. Does not allocate.
 Middleware accessLog()
 {
     return (Context ctx, Next next) {
         immutable t0 = MonoTime.currTime;
         scope (exit)
-        {
-            immutable us = (MonoTime.currTime - t0).total!"usecs";
-            auto m = methodName(ctx.request.method);
-            auto rid = ctx.locals.find!RequestId();
-            char[39] ipBuf = void;
-            immutable ipLen = ctx.clientIp().format(ipBuf[]);
-            // sound: every pointer/length pair below comes from a live slice
-            () @trusted {
-                fprintf(stderr, "%.*s %.*s %d %ld.%ldms ip=%.*s%s%.*s\n", cast(int) m.length, m.ptr,
-                    cast(int) ctx.request.target.length, ctx.request.target.ptr, ctx.response.status,
-                    cast(long)(us / 1000), cast(long)((us % 1000) / 100), cast(int) ipLen, ipBuf.ptr,
-                    rid is null ? "".ptr : " rid=".ptr, rid is null ? 0 : cast(int) rid.value.length,
-                    rid is null ? "".ptr : rid.value.ptr);
-            }();
-        }
+            writeAccessLine(ctx, t0);
         next();
     };
+}
+
+private void writeAccessLine(Context ctx, MonoTime t0)
+{
+    if (!logEnabled(LogLevel.info))
+        return;
+    immutable us = (MonoTime.currTime - t0).total!"usecs";
+    auto m = methodName(ctx.request.method);
+    char[39] ipBuf = void;
+    immutable ipLen = ctx.clientIp().format(ipBuf[]);
+    if (logFormat != LogFormat.text)
+    {
+        logVela(LogLevel.info, null, "request", "method", m, "target", ctx.request.target,
+            "status", ctx.response.status, "duration_us", us, "ip", ipBuf[0 .. ipLen]);
+        return;
+    }
+    auto rid = ctx.locals.find!RequestId();
+    // sound: every pointer/length pair below comes from a live slice
+    () @trusted {
+        fprintf(stderr, "%.*s %.*s %d %ld.%ldms ip=%.*s%s%.*s\n", cast(int) m.length, m.ptr,
+            cast(int) ctx.request.target.length, ctx.request.target.ptr, ctx.response.status,
+            cast(long)(us / 1000), cast(long)((us % 1000) / 100), cast(int) ipLen, ipBuf.ptr,
+            rid is null ? "".ptr : " rid=".ptr, rid is null ? 0 : cast(int) rid.value.length,
+            rid is null ? "".ptr : rid.value.ptr);
+    }();
 }
 
 /// Ensures one id per request: reuses the received `X-Request-Id` (if short and
@@ -59,6 +72,7 @@ Middleware requestId(string header = "X-Request-Id")
             id = buf;
         }
         ctx.locals.set(RequestId(id));
+        ctx.requestIdForLog = id; // vela.log adds it to the lines written during this request
         ctx.setHeader(header, id);
         next();
     };

@@ -29,7 +29,8 @@
 | `limits` (`maxHeadBytes`, `maxTargetBytes`, `maxBodyBytes`) | 8 KiB, 4 KiB, 1 MiB | request size limits (431, 414, 413) |
 
 Other settings: `StaticConfig` (`serveStatic`), `OpenApiInfo` (`serveOpenApi`), `CorsConfig` (`cors`), `CookieOptions`
-(`setCookie`), `PgConfig` (`vela-pg`), `HttpClientConfig`, `App.logStackTraces`, `App.redirectTrailingSlash`. Process-level
+(`setCookie`), `PgConfig` (`vela-pg`), `HttpClientConfig`, `App.logStackTraces`, `App.redirectTrailingSlash`,
+`configureLog(level, format)` and the `VELA_LOG_LEVEL` / `VELA_LOG_FORMAT` environment variables ([logging.md](logging.md)). Process-level
 variables of the tests and tools (`VELA_STRICT`, `VELA_CI`, `VELA_PG`, `VELA_TLS_RSS_MB`...) are described in `tools/check.sh`.
 
 `LoopStats` (per worker, for metrics and tests): `inFlight`, `peakInFlight`, `connections`, `rejected`, `cancelled`, `timedOut`,

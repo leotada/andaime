@@ -143,6 +143,7 @@ s_hot_path() {
     $DC $I -i -run tests/alloc/hot_path.d
     $DC $I -i -run tests/alloc/h2_hot_path.d
     $DC $I -i -run tests/alloc/ws_hot_path.d
+    $DC $I -i -run tests/alloc/log_hot_path.d
 }
 
 # ---------------------------------------------------------------- network tests
@@ -153,6 +154,7 @@ s_net() {
     $DC $I -i -run tests/net/workers_net.d
     $DC $I -i -run tests/net/stream_net.d
     $DC $I -i -run tests/net/spawn_net.d
+    $DC $I -i -run tests/net/log_net.d
     # jobs_worker_net.d imports vela.jobs; -Ijobs/source stays on this command only
     $DC $I -Ijobs/source -i -run tests/net/jobs_worker_net.d
 }

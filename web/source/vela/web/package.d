@@ -12,6 +12,7 @@ public import vela.web.dto : jsonKey, optional, jsonIgnore, minLength, maxLength
 public import vela.web.handler_traits : writeDefaultValidationErrors;
 public import vela.web.jsonvalue : JsonValue, JsonMember, JsonType, JsonError, JsonLimits, parseJson, fromJson, toJson;
 public import vela.web.json : writeJson;
+public import vela.log;
 public import vela.web.testing;
 public import vela.web.cors;
 public import vela.web.openapi : OpenApiInfo, summary;

@@ -9,6 +9,7 @@ import vela.web.context;
 import vela.web.params : HttpError;
 import vela.web.dto : ValidationErrors;
 import vela.web.numtext : itoa;
+import vela.log : LogLevel, logEnabled, logVela, setLogSyncSource;
 import vela.web.router;
 import vela.web.handler_traits : handlerError, dispatch;
 import vela.web.json : writeJsonString;
@@ -449,6 +450,10 @@ final class App
         if (!frozen)
             freeze();
         ctx.proxies = &proxyTrust;
+        // without fibers (TestClient, the development server) vela.log finds this request's id here
+        auto prevLogSource = setLogSyncSource(&ctx.logRequestId);
+        scope (exit)
+            setLogSyncSource(prevLogSource);
         try
             runFrom(ctx, 0);
         catch (Exception e)
@@ -624,14 +629,18 @@ final class App
     /// Logs the exception behind a 500 (details only in the log, never in the response). With `logStackTraces` the
     /// whole `toString()` goes out -- message, file:line and stack trace (needs debug info: build with `-g`, or DUB's
     /// `release-debug` type, for symbol names) -- at most `maxTracesPerSecond` times per second per App; the rest get
-    /// the one-line form. Each worker has its own App, so the limit is per worker.
-    private void logError(Context ctx, Exception e) nothrow @trusted
+    /// the one-line form. Each worker has its own App, so the limit is per worker. It goes through `vela.log` at the
+    /// `error` level: the same line in the `text` format, `msg="error in handler"` with `method`, `path` and `error` in
+    /// `kv`/`json` (the trace kept in one line).
+    private void logError(Context ctx, Exception e) nothrow
     {
-        import core.stdc.stdio : fprintf, stderr;
         import core.time : MonoTime;
 
-        // @trusted: fprintf with explicit lengths on strings that stay alive during the call
+        if (!logEnabled(LogLevel.error))
+            return;
         immutable m = methodName(ctx.request.method);
+        string text;
+        bool full;
         if (logStackTraces)
         {
             immutable now = MonoTime.currTime.ticks / (MonoTime.ticksPerSecond / 1000); // ms
@@ -643,19 +652,17 @@ final class App
             if (tracesInWindow < maxTracesPerSecond)
             {
                 tracesInWindow++;
-                string text;
+                full = true;
                 try
-                    text = e.toString();
+                    text = (() @trusted => e.toString())(); // sound: formats the message, file:line and trace into a new string
                 catch (Exception)
                     text = e.msg;
-                fprintf(stderr, "vela: error in %.*s %.*s: %.*s\n", cast(int) m.length, m.ptr,
-                    cast(int) ctx.request.path.length, ctx.request.path.ptr, cast(int) text.length, text.ptr);
-                return;
             }
         }
-        fprintf(stderr, "vela: error in %.*s %.*s: %.*s (%.*s:%d)\n", cast(int) m.length, m.ptr,
-            cast(int) ctx.request.path.length, ctx.request.path.ptr,
-            cast(int) e.msg.length, e.msg.ptr, cast(int) e.file.length, e.file.ptr, cast(int) e.line);
+        if (!full)
+            text = e.msg ~ " (" ~ e.file ~ ":" ~ itoa(e.line) ~ ")";
+        auto legacy = "vela: error in " ~ m ~ " " ~ ctx.request.path ~ ": " ~ text;
+        logVela(LogLevel.error, legacy, "error in handler", "method", m, "path", ctx.request.path, "error", text);
     }
 }
 

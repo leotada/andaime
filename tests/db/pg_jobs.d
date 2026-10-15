@@ -139,6 +139,22 @@ void testRollback(PgConn admin)
     assert(threw);
     assert(qint(admin, "select count(*)::int from vela_jobs") == 0);
     assert(store.claimBatch("default", 10).length == 0);
+
+    // the same through the store-neutral JobTransaction: committed with the caller's data, or not at all
+    pgPool(pgConninfo()).transaction((PgConn tx) {
+        JobTransaction jt = store.within(tx);
+        assert(enqueue(jt, Ping(8)).inserted);
+    });
+    assert(qint(admin, "select count(*)::int from vela_jobs") == 1);
+    threw = false;
+    try
+        pgPool(pgConninfo()).transaction((PgConn tx) {
+            enqueue(store.within(tx), Ping(9));
+            throw new Exception("rollback");
+        });
+    catch (Exception e)
+        threw = true;
+    assert(threw && qint(admin, "select count(*)::int from vela_jobs") == 1);
 }
 
 /// Unique window, priority order, a future `run_at`, and attempt accounting for fail / release / discard.

@@ -425,6 +425,28 @@ pgPool("host=db.example.com dbname=app user=app").transaction((PgConn tx) {
 It does not `BEGIN` or `COMMIT`. `COMMIT` publishes both; `ROLLBACK` drops both. `enqueueJob(tx, store, job)` is that
 insert with the typed payload. `store.enqueue(spec)` borrows a pooled connection and commits.
 
+To test that code without a database, write it against `JobTransaction` (in `vela.jobs`), which both stores provide:
+
+```d
+void signUp(JobTransaction jobs, string email)
+{
+    enqueue(jobs, Welcome(email));              // or enqueueAt(jobs, job, runAtUs)
+}
+
+// production: the caller's Postgres transaction
+pool.transaction((PgConn tx) { insertUser(tx, email); signUp(store.within(tx), email); });
+
+// test: published on commit, dropped on rollback
+auto tx = testStore.transaction();
+signUp(tx, "ana@x.com");
+assert(tx.pending.length == 1);
+tx.commit();                                    // or tx.rollback()
+testStore.assertEnqueued!Welcome("ana@x.com");
+```
+
+`TestJobTransaction.enqueue` returns id 0 (the row does not exist yet); `commit` returns the real `EnqueueResult`s, with
+unique windows applied then.
+
 ### Claim, listen and the lease
 
 A claim is one statement; the transaction commits **before** `perform`, so the row lock is not held across the work:

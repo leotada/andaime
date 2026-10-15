@@ -27,7 +27,7 @@ import vela.engine.fiberio : awaitFd, IoEvent, RequestCancelled, sleep, spawn, s
 import vela.http.buffer : ByteBuffer;
 import vela.http.naming : Naming, naming;
 import vela.jobs.backend : EnqueueResult, JobRecord, JobRuntime, JobSpec, JobState, JobStore, JobStoreError,
-    assignUnique, jobSpec, logJobFailure, unixNowUs;
+    JobTransaction, assignUnique, jobSpec, logJobFailure, unixNowUs;
 import vela.web.json : writeJsonString;
 import vela.web.numtext : itoa;
 
@@ -118,6 +118,15 @@ final class PgJobStore : JobStore, JobRuntime
             throw new JobStoreError("vela.jobs: enqueue needs an open connection");
         prepare(spec);
         return insertRow(tx, spec);
+    }
+
+    /// The same insert behind the store-neutral `JobTransaction` (`enqueue(tx, job)`), so code that enqueues inside a
+    /// transaction can take a `TestJobStore.transaction()` in its tests.
+    JobTransaction within(PgConn tx)
+    {
+        if (tx is null)
+            throw new JobStoreError("vela.jobs: within needs a connection");
+        return new PgJobTransaction(this, tx);
     }
 
     /// Marks up to `limit` due rows `running`. `queue` `""` is every queue; one name is a one-element array.
@@ -294,6 +303,21 @@ final class PgJobStore : JobStore, JobRuntime
             throw new JobStoreError("vela.jobs: no job " ~ itoa(id));
         throw new JobStoreError("vela.jobs: job " ~ itoa(id) ~ " is " ~ cur.get!string(0, 0) ~ "; expected running");
     }
+}
+
+/// `PgJobStore.within`: inserts on the caller's connection.
+private final class PgJobTransaction : JobTransaction
+{
+    private PgJobStore store;
+    private PgConn tx;
+
+    this(PgJobStore store, PgConn tx)
+    {
+        this.store = store;
+        this.tx = tx;
+    }
+
+    EnqueueResult enqueue(JobSpec spec) => store.enqueue(tx, spec);
 }
 
 /// Encodes `job` (`jobSpec`) and inserts it on `tx`. Same transaction rules as `PgJobStore.enqueue(PgConn, JobSpec)`.

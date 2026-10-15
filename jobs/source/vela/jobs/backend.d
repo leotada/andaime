@@ -273,6 +273,26 @@ EnqueueResult enqueueAt(T)(JobStore store, auto ref const T job, long runAtUs, i
     return store.enqueue(jobSpec(job, priority, true, runAtUs));
 }
 
+/// Enqueues as part of a unit of work: the jobs exist if and only if it commits. On Postgres they are rows of the caller's
+/// transaction (`PgJobStore.within(tx)`); in tests `TestJobStore.transaction()` keeps them until `commit`. Code that
+/// schedules jobs "after commit" takes this interface and is tested without a database.
+interface JobTransaction
+{
+    EnqueueResult enqueue(JobSpec spec);
+}
+
+/// Encodes `job` and enqueues it in `tx`, due now.
+EnqueueResult enqueue(T)(JobTransaction tx, auto ref const T job, int priority = 100)
+{
+    return tx.enqueue(jobSpec(job, priority));
+}
+
+/// Same, due at `runAtUs` (microseconds since the Unix epoch).
+EnqueueResult enqueueAt(T)(JobTransaction tx, auto ref const T job, long runAtUs, int priority = 100)
+{
+    return tx.enqueue(jobSpec(job, priority, true, runAtUs));
+}
+
 // =====================================================================
 // InMemoryJobStore
 // =====================================================================
@@ -486,6 +506,57 @@ class TestJobStore : InMemoryJobStore
             assert(0, "vela.jobs: expected job '" ~ name ~ "' on queue '" ~ queue
                 ~ "' with payload containing '" ~ payloadSubstring ~ "'");
         }
+    }
+
+    /// A unit of work for code that enqueues inside a database transaction (`PgJobStore.within(tx)` in production): its
+    /// jobs reach this store only on `commit`, and `rollback` drops them.
+    TestJobTransaction transaction() @safe
+    {
+        return new TestJobTransaction(this);
+    }
+}
+
+/// See `TestJobStore.transaction`. `enqueue` returns id 0 (the row does not exist yet); `commit` returns the real results.
+final class TestJobTransaction : JobTransaction
+{
+    private TestJobStore store;
+    private JobSpec[] specs;
+    private bool finished;
+
+    private this(TestJobStore store) @safe
+    {
+        this.store = store;
+    }
+
+    EnqueueResult enqueue(JobSpec spec) @safe
+    {
+        if (finished)
+            throw new JobStoreError("vela.jobs: enqueue on a transaction that was already committed or rolled back");
+        specs ~= spec;
+        return EnqueueResult(0, true);
+    }
+
+    /// The jobs enqueued so far and not yet committed.
+    const(JobSpec)[] pending() const @safe => specs;
+
+    /// Hands the jobs to the store, in order (unique windows apply then), and ends the transaction.
+    EnqueueResult[] commit() @safe
+    {
+        if (finished)
+            throw new JobStoreError("vela.jobs: commit on a transaction that was already committed or rolled back");
+        finished = true;
+        EnqueueResult[] r;
+        foreach (s; specs)
+            r ~= store.enqueue(s);
+        specs = null;
+        return r;
+    }
+
+    /// Drops the jobs and ends the transaction.
+    void rollback() @safe
+    {
+        finished = true;
+        specs = null;
     }
 }
 

@@ -14,6 +14,36 @@ sudo install -D -m 0755 ./myapp /opt/myapp/myapp
 sudo apt install libssl3                  # OpenSSL 3, loaded at run time
 ```
 
+The native libraries (OpenSSL, zlib, libpq) are loaded with `dlopen` the first time something needs them, so a
+container image without `libssl3` builds fine and fails on the first HTTPS call. To fail at build time instead, give the
+binary a `--check-runtime` switch that asks the library and run it in the image build (`RUN ./myapp --check-runtime`).
+`tlsAvailable`, `zlibAvailable` (and `pgAvailable` from `vela.db`) say whether a library loaded; `tlsLoadError`,
+`zlibLoadError` and `pgLoadError` return the reason (an `Optional!string` with the library name and the dynamic loader's
+message). Asking prints nothing and changes no signal handling.
+
+```d
+// check
+import vela;
+import core.stdc.stdio : fprintf, stderr;
+
+int main(string[] args)
+{
+    if (args.length > 1 && args[1] == "--check-runtime")
+    {
+        int missing;
+        foreach (why; [tlsLoadError, zlibLoadError])
+            if (why.has)
+            {
+                fprintf(stderr, "%.*s\n", cast(int) why.get.length, why.get.ptr);
+                missing++;
+            }
+        return missing ? 1 : 0;
+    }
+    // ... build the app and call serve ...
+    return 0;
+}
+```
+
 ## 2. The server configuration
 
 ```d

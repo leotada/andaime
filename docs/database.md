@@ -13,7 +13,9 @@ dependency "vela" path="../dapi"
 dependency "vela-pg" path="../dapi/drivers/pg"
 ```
 
-The machine needs libpq (`libpq5` on Debian/Ubuntu, `libpq5` or `postgresql-libs` elsewhere).
+The machine needs libpq (`libpq5` on Debian/Ubuntu, `libpq5` or `postgresql-libs` elsewhere). `pgAvailable()` says whether
+it loaded and `pgLoadError()` returns the reason (an `Optional!string`), for a startup or image check; neither connects
+to anything. Without libpq, `PgConn.connect` throws `PgError` with the same message.
 
 ## Queries
 

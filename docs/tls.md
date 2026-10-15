@@ -23,6 +23,8 @@ serve(&buildApp, cfg);   // browsers get HTTP/2; clients without ALPN or without
   Prior knowledge and `Upgrade: h2c` are cleartext features: over TLS, HTTP/2 is only chosen through ALPN.
 - Failed handshakes and HTTP/2 connection errors are logged with the client's address, at most one line per second per worker
   (`cfg.logConnectionErrors`); clients that merely disconnect mid-handshake are only counted.
+- `tlsAvailable()` says whether OpenSSL 3 can be loaded and `tlsLoadError()` returns the reason, for a startup check; asking
+  does not set SIGPIPE (see below).
 - OpenSSL 3 is loaded at run time, as for the HTTP client (`libssl3`); without a certificate it is never loaded. Loading it sets
   SIGPIPE to ignored (unless the application installed a handler), because OpenSSL writes to sockets with write(2) and a client
   that resets the connection would otherwise kill the process.

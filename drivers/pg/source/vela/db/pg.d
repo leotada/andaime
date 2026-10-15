@@ -69,6 +69,18 @@ final class PgTimeout : PgError
 /// so a row serializes to JSON `null` with no conversion). Re-exported here for convenience.
 public import vela.http.optional : Optional;
 
+/// Why libpq cannot be used, or none when it loaded (the message names the library and the dynamic loader's reason).
+/// Loads libpq on the first call and prints nothing: for a startup or image check (`if (!pgAvailable) ...`).
+Optional!string pgLoadError()
+{
+    auto err = loadLibpq();
+    return err is null ? Optional!string.none : Optional!string(err);
+}
+
+/// True when libpq (`libpq.so.5`) is installed and has every function the driver uses. `PgConn.connect` throws
+/// `PgError` when it is not.
+bool pgAvailable() => !pgLoadError().has;
+
 // ============================================================ result
 //
 // Safety model: everything below talks to libpq through raw pointers, which never leave

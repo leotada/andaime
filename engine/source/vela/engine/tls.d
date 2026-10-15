@@ -7,7 +7,8 @@ module vela.engine.tls;
 
 version (linux):
 
-import core.sys.posix.dlfcn : dlopen, dlsym, RTLD_NOW, RTLD_GLOBAL;
+import core.sys.posix.dlfcn : dlopen, dlsym, dlerror, RTLD_NOW, RTLD_GLOBAL;
+import vela.http.optional : Optional;
 
 package:
 
@@ -124,41 +125,78 @@ private void ignoreSigpipe() @system nothrow @nogc
     sigaction(SIGPIPE, &ign, null);
 }
 
+/// The text of the last failed `dlopen` (null when there is none), for load error messages.
+string dlDetail() @trusted nothrow
+{
+    import core.stdc.string : strlen;
+
+    // dlerror returns a NUL-terminated string owned by libc; it is copied before the next dl call
+    auto e = dlerror();
+    return e is null ? null : e[0 .. strlen(e)].idup;
+}
+
 /// Loads libssl/libcrypto. Returns null on success, or the error message.
 string loadOpenSsl() @trusted
 {
     synchronized (gLock)
     {
-        if (loaded)
-            return null;
         ignoreSigpipe();
-        if (loadError !is null)
-            return loadError;
-
-        // libcrypto first and GLOBAL: libssl depends on it and ERR_* come from it
-        void* crypto, ssl;
-        foreach (n; ["libcrypto.so.3\0", "libcrypto.so\0"])
-            if ((crypto = dlopen(n.ptr, RTLD_NOW | RTLD_GLOBAL)) !is null)
-                break;
-        foreach (n; ["libssl.so.3\0", "libssl.so\0"])
-            if ((ssl = dlopen(n.ptr, RTLD_NOW | RTLD_GLOBAL)) !is null)
-                break;
-        if (ssl is null || crypto is null)
-            return loadError = "vela.http: OpenSSL 3 not found (install libssl3 / openssl)";
-
-        static foreach (m; __traits(allMembers, Api))
-        {
-            {
-                auto zname = (m ~ "\0").ptr;
-                auto p = dlsym(ssl, zname);
-                if (p is null)
-                    p = dlsym(crypto, zname);
-                if (p is null)
-                    return loadError = "vela.http: missing symbol in OpenSSL: " ~ m;
-                __traits(getMember, tls, m) = cast(typeof(__traits(getMember, tls, m))) p;
-            }
-        }
-        loaded = true;
-        return null;
+        return loadLocked();
     }
+}
+
+/// Why OpenSSL 3 cannot be used, or none when it loaded. Loads the library on the first call, prints nothing and
+/// changes no signal handling: for a startup check (`if (!tlsAvailable) ...`) that must not have side effects.
+public Optional!string tlsLoadError() @trusted
+{
+    synchronized (gLock)
+    {
+        auto err = loadLocked();
+        return err is null ? Optional!string.none : Optional!string(err);
+    }
+}
+
+/// True when OpenSSL 3 (libssl.so.3 and libcrypto.so.3) is installed and has every symbol vela uses. HTTPS calls
+/// (the HTTP client) and `ServerConfig.tls` need it.
+public bool tlsAvailable() => !tlsLoadError().has;
+
+// Called with `gLock` held.
+private string loadLocked() @trusted nothrow
+{
+    if (loaded)
+        return null;
+    if (loadError !is null)
+        return loadError;
+
+    // libcrypto first and GLOBAL: libssl depends on it and ERR_* come from it
+    void* crypto, ssl;
+    string detail;
+    foreach (n; ["libcrypto.so.3\0", "libcrypto.so\0"])
+        if ((crypto = dlopen(n.ptr, RTLD_NOW | RTLD_GLOBAL)) !is null)
+            break;
+        else if (detail is null)
+            detail = dlDetail();
+    foreach (n; ["libssl.so.3\0", "libssl.so\0"])
+        if ((ssl = dlopen(n.ptr, RTLD_NOW | RTLD_GLOBAL)) !is null)
+            break;
+        else if (detail is null)
+            detail = dlDetail();
+    if (ssl is null || crypto is null)
+        return loadError = "vela.http: OpenSSL 3 not found (install libssl3 / openssl)"
+            ~ (detail is null ? "" : ": " ~ detail);
+
+    static foreach (m; __traits(allMembers, Api))
+    {
+        {
+            auto zname = (m ~ "\0").ptr;
+            auto p = dlsym(ssl, zname);
+            if (p is null)
+                p = dlsym(crypto, zname);
+            if (p is null)
+                return loadError = "vela.http: missing symbol in OpenSSL: " ~ m;
+            __traits(getMember, tls, m) = cast(typeof(__traits(getMember, tls, m))) p;
+        }
+    }
+    loaded = true;
+    return null;
 }

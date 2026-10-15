@@ -8,6 +8,7 @@ version (linux):
 
 import core.sys.posix.dlfcn : dlopen, dlsym, RTLD_NOW;
 import vela.http.buffer : ByteBuffer;
+import vela.http.optional : Optional;
 import vela.http.websocket : WsDeflate, InflateResult;
 
 private:
@@ -61,6 +62,7 @@ struct Api
 
 __gshared Api z;
 __gshared bool loaded, failed, warned;
+__gshared string loadError;
 __gshared Object gLock;
 
 shared static this() @trusted
@@ -68,42 +70,69 @@ shared static this() @trusted
     gLock = new Object;
 }
 
-/// Loads libz once; false when it is not installed (or misses a symbol).
+/// Loads libz once; false when it is not installed (or misses a symbol). Warns once on stderr when it fails.
 bool loadZlib() @trusted
 {
     synchronized (gLock)
     {
-        if (loaded || failed)
-            return loaded;
-        void* lib;
-        foreach (n; ["libz.so.1\0", "libz.so\0"])
-            if ((lib = dlopen(n.ptr, RTLD_NOW)) !is null)
-                break;
-        if (lib !is null)
-        {
-            bool all = true;
-            static foreach (m; __traits(allMembers, Api))
-            {
-                {
-                    auto p = dlsym(lib, (m ~ "\0").ptr);
-                    if (p is null)
-                        all = false;
-                    else
-                        __traits(getMember, z, m) = cast(typeof(__traits(getMember, z, m))) p;
-                }
-            }
-            loaded = all;
-        }
-        failed = !loaded;
-        if (failed && !warned)
+        if (loadLocked())
+            return true;
+        if (!warned)
         {
             import core.stdc.stdio : fprintf, stderr;
 
             warned = true;
             fprintf(stderr, "vela: zlib (libz.so.1) not found: WebSockets are not compressed\n");
         }
-        return loaded;
+        return false;
     }
+}
+
+/// Why zlib cannot be used, or none when it loaded. Loads the library on the first call and prints nothing.
+public Optional!string zlibLoadError() @trusted
+{
+    synchronized (gLock)
+        return loadLocked() ? Optional!string.none : Optional!string(loadError);
+}
+
+/// True when libz.so.1 is installed. Without it WebSockets are served uncompressed (permessage-deflate is not offered).
+public bool zlibAvailable() => !zlibLoadError().has;
+
+// Called with `gLock` held.
+private bool loadLocked() @trusted nothrow
+{
+    import vela.engine.tls : dlDetail;
+
+    if (loaded || failed)
+        return loaded;
+    void* lib;
+    string detail;
+    foreach (n; ["libz.so.1\0", "libz.so\0"])
+        if ((lib = dlopen(n.ptr, RTLD_NOW)) !is null)
+            break;
+        else if (detail is null)
+            detail = dlDetail();
+    if (lib is null)
+        loadError = "vela: zlib (libz.so.1) not found" ~ (detail is null ? "" : ": " ~ detail);
+    else
+    {
+        string missing;
+        static foreach (m; __traits(allMembers, Api))
+        {
+            {
+                auto p = dlsym(lib, (m ~ "\0").ptr);
+                if (p is null)
+                    missing = m;
+                else
+                    __traits(getMember, z, m) = cast(typeof(__traits(getMember, z, m))) p;
+            }
+        }
+        if (missing !is null)
+            loadError = "vela: missing symbol in zlib: " ~ missing;
+        loaded = missing is null;
+    }
+    failed = !loaded;
+    return loaded;
 }
 
 /// permessage-deflate state of one connection: a raw-deflate compressor (this side's window) and an inflater (15 bits

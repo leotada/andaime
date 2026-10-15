@@ -13,6 +13,7 @@ version (linux)
     public import vela.engine.httpfake;
     public import vela.engine.wsclient;
     public import vela.engine.zlib;
+    public import vela.engine.tls : tlsAvailable, tlsLoadError;
 }
 public import vela.engine.devserver;
 version (linux)

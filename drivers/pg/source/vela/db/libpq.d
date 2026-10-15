@@ -122,7 +122,17 @@ shared static this() @trusted
     gLock = new Object;
 }
 
-private string loadLocked() @trusted
+/// The text of the last failed `dlopen` (null when there is none), for the load error message.
+private string dlDetail() @trusted nothrow
+{
+    import core.stdc.string : strlen;
+
+    // dlerror returns a NUL-terminated string owned by libc; it is copied before the next dl call
+    auto e = dlerror();
+    return e is null ? null : e[0 .. strlen(e)].idup;
+}
+
+private string loadLocked() @trusted nothrow
 {
     if (loaded)
         return null;
@@ -130,11 +140,15 @@ private string loadLocked() @trusted
         return loadError;
 
     void* h;
+    string detail;
     foreach (name; ["libpq.so.5\0", "libpq.so\0", "libpq.5.dylib\0"])
         if ((h = dlopen(name.ptr, RTLD_NOW)) !is null)
             break;
+        else if (detail is null)
+            detail = dlDetail();
     if (h is null)
-        return loadError = "vela.db: libpq not found (install libpq5 / libpq)";
+        return loadError = "vela.db: libpq not found (install libpq5 / libpq)"
+            ~ (detail is null ? "" : ": " ~ detail);
 
     static foreach (m; __traits(allMembers, Api))
     {

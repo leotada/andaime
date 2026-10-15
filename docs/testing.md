@@ -45,8 +45,64 @@ c.post("/login", "user=ana&password=x", hdr("Content-Type", "application/x-www-f
 c.from("203.0.113.7").get("/whoami");          // the TCP peer address (default 127.0.0.1)
 ```
 
-`TestClient` does not keep cookies between requests: read them with `r.headers("Set-Cookie")` and send them back with
-`hdr("Cookie", "session=...")`.
+### JSON, forms with files, cookies
+
+```d
+// check
+import vela;
+import vela.web.testing;
+
+struct NewUser { string name; int age; }
+struct User { long id; string name; int age; }
+struct Upload { string title; UploadedFile photo; }
+
+@status(201) User create(JsonBody!NewUser u) => User(1, u.name, u.age);
+string upload(Form!Upload f) => f.title ~ ":" ~ f.photo.filename;
+void login(Context ctx) { setCookie(ctx, "session", "s1"); ctx.text("in"); }
+string me(Cookie!"session" s) => s.value;
+
+App buildApp()
+{
+    auto app = new App;
+    app.post!("/users", create);
+    app.post!("/upload", upload);
+    app.post!("/login", login);
+    app.get!("/me", me);
+    return app;
+}
+
+unittest
+{
+    auto c = TestClient(buildApp());
+
+    // JSON: a DTO goes out as JSON, json!T reads the answer back
+    auto r = c.postJson("/users", NewUser("Ana", 31));
+    assert(r.status == 201 && r.json!User == User(1, "Ana", 31));
+    assert(r.json["name"].asString == "Ana");            // or as a JsonValue
+
+    // multipart/form-data with text fields and files
+    ubyte[] jpeg = [0xff, 0xd8, 0xff];
+    r = c.postMultipart("/upload", [["title", "Trip"]], [TestFile("photo", "a.jpg", "image/jpeg", jpeg)]);
+    assert(r.body == "Trip:a.jpg");
+
+    // cookies kept between requests, like a browser
+    c.cookies = true;
+    c.post("/login", "");
+    assert(c.cookie("session") == "s1" && c.get("/me").body == "s1");
+}
+
+version (unittest) {} else void main() { serve(&buildApp); }
+```
+
+- `postJson`, `putJson`, `patchJson(path, value, headers...)` send any JSON-serializable value (or JSON text as is) with
+  `Content-Type: application/json`. `r.json!T` decodes the body like a request body (`JsonError` when it does not fit), and
+  `r.json` gives a [`JsonValue`](requests.md#any-json-value-jsonvalue).
+- `postMultipart`, `putMultipart(path, fields, files, headers...)`: `fields` are `[name, value]` pairs, `files` are
+  `TestFile(field, filename, contentType, bytes)`. The boundary is chosen so it appears in no part.
+- `cookies = true` turns on the jar: `Set-Cookie` values are kept and sent back to matching paths (`Path`), replaced by
+  name and path, and dropped when `Max-Age` is 0 or `Expires` is past (`deleteCookie`). A `Cookie` header you pass is
+  merged with the jar's. `cookie("name")` reads one, `clearCookies()` empties it. It is off by default: then read cookies
+  with `r.headers("Set-Cookie")` and send them back with `hdr("Cookie", "session=...")`.
 
 ## Responses
 

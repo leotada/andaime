@@ -22,7 +22,7 @@ things up.
 | [Jobs and cron](jobs-and-cron.md) | Background jobs (`vela:jobs`), retries, uniqueness, cron, process roles, Postgres queue |
 | [HTTP client](http-client.md) | Calling other APIs from a handler, reading their JSON (`fromJson`, `parseJson`) |
 | [Cryptography](crypto.md) | `vela:crypto`: bcrypt, SHA-256/HMAC/HKDF, AES-GCM, ES256 (JWT), ECDH, Web Push encryption |
-| [Testing](testing.md) | `TestClient`: requests and responses in memory |
+| [Testing](testing.md) | `TestClient`: requests and responses in memory, JSON and multipart helpers, a cookie jar |
 | [Memory safety](safety.md) | `@safe` handlers, strict mode, what you may keep from a request |
 
 ## Running in production

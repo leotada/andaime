@@ -1492,6 +1492,7 @@ timeouts, any HTTP/2 or TLS feature (D3).
 | F26 | 11.8 | The request id is read from the running fiber: `LocalFiber` (engine) has one `Object` slot, `server.d` stores the `Context`, a per-thread function asks the fiber; `App.handle` sets a per-thread source for the no-fiber case. | A thread-local "current request" (wrong after any fiber switch); a fiber-keyed table (grows with retired fibers); passing `Context` to every log call. | Correct under interleaving (`tests/net/log_net.d` proves it), one pointer store per request, no allocation. |
 | F27 | 11.8 | Formats `text` (default), `kv`, `json`; in `text` vela's own lines are byte-identical to before and user lines are `msg k=v`; level and format by `configureLog` and `VELA_LOG_LEVEL`/`VELA_LOG_FORMAT`, the environment winning; atomics instead of `__gshared` (no `@trusted` accessor needed). | Making `kv` the default; code winning over the environment. | Defaults stay backward compatible; an operator can turn on `debug` without a rebuild. |
 | F28 | 11.8 | The generic call is `logAt(level, ...)`, not `log`; misuse of fields is a one-line compile error in each `log*` function. | `log(level, ...)`. | `import vela;` would export `log`, which hides an app's own `log` helper (the `get`/`put` pitfall). |
+| F29 | 11.9 | The cookie jar is a flag on `TestClient` (`cookies = true`, off by default), RFC 6265 path matching and default path, replacement by name+path, deletion by `Max-Age<=0` or a past `Expires` (IMF-fixdate), no domains; a caller's `Cookie` header is merged. Multipart and JSON helpers are methods; `json!T` uses `fromJson`. Overloads instead of a default argument before the variadic headers. | A separate `TestSession` type. | One client type to learn; the default stays stateless, as before. DMD 2.109 crashes on a default argument before a variadic parameter. |
 | F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
 
 ### [x] 11.1 Custom validation error responses: `onValidationError` — M
@@ -1572,7 +1573,13 @@ timeouts, any HTTP/2 or TLS feature (D3).
 > `tests/alloc/log_hot_path.d` (0 GC bytes filtered, kv and json), `tests/compile_fail/log_odd_fields.d`, `log_key_type.d`.
 > Docs: `docs/logging.md` (a `// check` example), `middleware.md`, `configuration.md`, the index; `AGENTS.md`.
 
-### [ ] 11.9 `TestClient` ergonomics — S/M
+### [x] 11.9 `TestClient` ergonomics — S/M
+
+> **Done.** `postJson`/`putJson`/`patchJson`, `postMultipart`/`putMultipart` with `TestFile`, `TestResponse.json!T` and
+> `json`, `cookies`/`cookie`/`clearCookies`. Tests: `tests/web/test_client.d` (binary-safe multipart with a value that
+> contains the default boundary, an optional file, a 422; JSON in and out, a 405, `JsonError` on a body that does not fit;
+> the jar off by default, paths, merging, replacement, deletion by `Expires` and by `Max-Age`). Docs: `testing.md` (a
+> `// check` example), the index.
 
 ### [ ] 11.10 `httpClient` additions — S
 

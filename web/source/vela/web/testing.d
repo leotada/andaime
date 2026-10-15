@@ -11,6 +11,7 @@ import vela.http.ip : IpAddress, parseIp;
 import vela.web.context;
 import vela.web.application;
 import vela.web.stream : sendResponse;
+import vela.web.jsonvalue : JsonValue;
 
 struct TestResponse
 {
@@ -45,6 +46,23 @@ struct TestResponse
             if (equalsIgnoreCase(h.name, name))
                 r ~= h.value.idup;
         return r;
+    }
+
+    /// The body decoded into `T` with the rules of a request body (`fromJson`); throws `JsonError` when it does not fit:
+    /// `auto user = c.get("/users/1").json!User;`.
+    T json(T)() const
+    {
+        import vela.web.jsonvalue : fromJson;
+
+        return fromJson!T(body);
+    }
+
+    /// The body as a `JsonValue`; throws `JsonError` when it is not JSON: `assert(r.json["items"].length == 2);`.
+    JsonValue json()() const
+    {
+        import vela.web.jsonvalue : parseJson;
+
+        return parseJson(body);
     }
 }
 
@@ -158,6 +176,70 @@ struct TestClient
     TestResponse request(Method m, string target, string body = null, HeaderField[] headers...)
         => send(m, target, body, headers);
 
+    /// Sends `value` as JSON (`Content-Type: application/json`): a DTO, an array, a `JsonValue`... or JSON text as is.
+    TestResponse postJson(T)(string target, auto ref T value, HeaderField[] headers...)
+        => sendJson(Method.POST, target, value, headers);
+    /// ditto
+    TestResponse putJson(T)(string target, auto ref T value, HeaderField[] headers...)
+        => sendJson(Method.PUT, target, value, headers);
+    /// ditto
+    TestResponse patchJson(T)(string target, auto ref T value, HeaderField[] headers...)
+        => sendJson(Method.PATCH, target, value, headers);
+
+    private TestResponse sendJson(T)(Method m, string target, ref T value, HeaderField[] headers)
+    {
+        static if (is(T : const(char)[]))
+            string text = value.idup;
+        else
+        {
+            import vela.web.jsonvalue : toJson;
+
+            string text = toJson(value);
+        }
+        return send(m, target, text, [hdr("Content-Type", "application/json")] ~ headers);
+    }
+
+    /// Sends a `multipart/form-data` body built from text `fields` (name, value) and `files`, as a browser form would:
+    /// `c.postMultipart("/upload", [["title", "Trip"]], [TestFile("photo", "a.jpg", "image/jpeg", bytes)])`.
+    TestResponse postMultipart(string target, const(string[2])[] fields, const(TestFile)[] files, HeaderField[] headers...)
+        => sendMultipart(Method.POST, target, fields, files, headers);
+    /// ditto, text fields only. (Overloads, not a default argument: DMD 2.109 crashes on a default before a variadic.)
+    TestResponse postMultipart(string target, const(string[2])[] fields)
+        => sendMultipart(Method.POST, target, fields, null, null);
+    /// ditto
+    TestResponse putMultipart(string target, const(string[2])[] fields, const(TestFile)[] files, HeaderField[] headers...)
+        => sendMultipart(Method.PUT, target, fields, files, headers);
+    /// ditto
+    TestResponse putMultipart(string target, const(string[2])[] fields)
+        => sendMultipart(Method.PUT, target, fields, null, null);
+
+    private TestResponse sendMultipart(Method m, string target, const(string[2])[] fields, const(TestFile)[] files,
+        HeaderField[] headers)
+    {
+        auto b = multipartBody(fields, files);
+        return send(m, target, b.body, [hdr("Content-Type", "multipart/form-data; boundary=" ~ b.boundary)] ~ headers);
+    }
+
+    /// With `cookies = true` the client keeps the cookies responses set (`Set-Cookie`, honoring `Path`, `Max-Age` and
+    /// `Expires`, so a deleted cookie goes away) and sends the matching ones back, like a browser. Off by default.
+    bool cookies;
+    private TestCookie[] jar;
+
+    /// The value of a cookie in the jar, or null.
+    string cookie(string name) const
+    {
+        foreach (ref c; jar)
+            if (c.name == name)
+                return c.value;
+        return null;
+    }
+
+    /// Empties the jar.
+    void clearCookies()
+    {
+        jar = null;
+    }
+
     /// Opens a WebSocket on `target` (the upgrade headers are added for you), plays `script` to the server, and returns
     /// what came back. The handler runs to completion inside the call.
     /// With `http2` set, the extended CONNECT of RFC 8441 instead, answered with 200.
@@ -199,7 +281,7 @@ struct TestClient
         req.method = m;
         req.target = target;
         splitTarget(target, req.path, req.query);
-        req.headers = headers.dup;
+        req.headers = cookies ? withJarCookies(req.path, headers) : headers.dup;
         req.body = cast(const(ubyte)[]) body;
         req.peer = peer;
         req.protocol = http2 ? Protocol.http2 : Protocol.http1;
@@ -222,8 +304,219 @@ struct TestClient
             r.body ~= c;
         r.aborted = sink.aborted;
         r.contentLength = sink.contentLength;
+        if (cookies)
+            foreach (v; r.headers("Set-Cookie"))
+                storeCookie(v, req.path);
         return r;
     }
+
+    /// The request's headers plus the jar's cookies for `path` (merged into the caller's `Cookie` header, if any).
+    private HeaderField[] withJarCookies(const(char)[] path, HeaderField[] headers)
+    {
+        string jarText;
+        foreach (ref c; jar)
+            if (pathMatches(path, c.path))
+                jarText ~= (jarText.length ? "; " : "") ~ c.name ~ "=" ~ c.value;
+        auto all = headers.dup;
+        if (jarText.length == 0)
+            return all;
+        foreach (ref h; all)
+            if (equalsIgnoreCase(h.name, "Cookie"))
+            {
+                h.value = h.value.idup ~ "; " ~ jarText;
+                return all;
+            }
+        return all ~ hdr("Cookie", jarText);
+    }
+
+    /// Takes one `Set-Cookie` into the jar (RFC 6265 §5.2-5.3, without domains: the test client has one host).
+    private void storeCookie(string header, const(char)[] requestPath)
+    {
+        auto parts = splitSemicolons(header);
+        if (parts.length == 0)
+            return;
+        auto eq = indexOfChar(parts[0], '=');
+        if (eq <= 0)
+            return;
+        TestCookie c;
+        c.name = trim(parts[0][0 .. eq]);
+        c.value = trim(parts[0][eq + 1 .. $]);
+        bool expired;
+        bool hasMaxAge;
+        foreach (attr; parts[1 .. $])
+        {
+            auto ae = indexOfChar(attr, '=');
+            auto key = trim(ae < 0 ? attr : attr[0 .. ae]);
+            auto val = ae < 0 ? "" : trim(attr[ae + 1 .. $]);
+            if (equalsIgnoreCase(key, "Path") && val.length && val[0] == '/')
+                c.path = val;
+            else if (equalsIgnoreCase(key, "Max-Age"))
+            {
+                hasMaxAge = true;
+                expired = val.length && (val[0] == '-' || val == "0");
+            }
+            else if (equalsIgnoreCase(key, "Expires") && !hasMaxAge)
+                expired = httpDateInPast(val);
+        }
+        if (c.path is null)
+            c.path = defaultPath(requestPath);
+        foreach (i, ref old; jar)
+            if (old.name == c.name && old.path == c.path)
+            {
+                if (expired)
+                    jar = jar[0 .. i] ~ jar[i + 1 .. $];
+                else
+                    old.value = c.value;
+                return;
+            }
+        if (!expired)
+            jar ~= c;
+    }
+}
+
+/// A file part for `postMultipart`.
+struct TestFile
+{
+    string name;        /// the form field
+    string filename;
+    string contentType = "application/octet-stream";
+    const(ubyte)[] bytes;
+}
+
+private struct TestCookie
+{
+    string name, value, path;
+}
+
+/// RFC 6265 §5.1.4: `path` is `cookiePath` or below it.
+private bool pathMatches(scope const(char)[] path, scope const(char)[] cookiePath) pure nothrow @nogc
+{
+    if (path.length < cookiePath.length || path[0 .. cookiePath.length] != cookiePath)
+        return false;
+    return path.length == cookiePath.length || cookiePath[$ - 1] == '/' || path[cookiePath.length] == '/';
+}
+
+/// RFC 6265 §5.1.4: the directory of the request path (`/a/b` -> `/a`, `/a` -> `/`).
+private string defaultPath(scope const(char)[] path) pure nothrow
+{
+    if (path.length == 0 || path[0] != '/')
+        return "/";
+    size_t last = 0;
+    foreach (i, char ch; path)
+        if (ch == '/')
+            last = i;
+    return last == 0 ? "/" : path[0 .. last].idup;
+}
+
+private string[] splitSemicolons(string s) pure nothrow
+{
+    string[] r;
+    size_t start = 0;
+    foreach (i, char ch; s)
+        if (ch == ';')
+        {
+            r ~= s[start .. i];
+            start = i + 1;
+        }
+    r ~= s[start .. $];
+    return r;
+}
+
+private ptrdiff_t indexOfChar(scope const(char)[] s, char c) pure nothrow @nogc
+{
+    foreach (i, char ch; s)
+        if (ch == c)
+            return i;
+    return -1;
+}
+
+private string trim(string s) pure nothrow @nogc
+{
+    while (s.length && (s[0] == ' ' || s[0] == '\t'))
+        s = s[1 .. $];
+    while (s.length && (s[$ - 1] == ' ' || s[$ - 1] == '\t'))
+        s = s[0 .. $ - 1];
+    return s;
+}
+
+/// Whether an IMF-fixdate (`Thu, 01 Jan 1970 00:00:00 GMT`, what `setCookie` writes) is in the past. An unparsable
+/// date is not (the cookie is kept, as a browser would).
+private bool httpDateInPast(scope const(char)[] d) nothrow @trusted
+{
+    // @trusted: time(null) only reads the clock
+    import core.stdc.time : time;
+
+    if (d.length != 29 || d[3] != ',' || d[$ - 4 .. $] != " GMT")
+        return false;
+    static int num(scope const(char)[] s) pure nothrow @nogc
+    {
+        int v;
+        foreach (char c; s)
+        {
+            if (c < '0' || c > '9')
+                return -1;
+            v = v * 10 + (c - '0');
+        }
+        return v;
+    }
+    static immutable months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    int month = -1;
+    foreach (i, mname; months)
+        if (d[8 .. 11] == mname)
+            month = cast(int) i + 1;
+    immutable day = num(d[5 .. 7]), year = num(d[12 .. 16]);
+    immutable hh = num(d[17 .. 19]), mm = num(d[20 .. 22]), ss = num(d[23 .. 25]);
+    if (month < 0 || day < 0 || year < 0 || hh < 0 || mm < 0 || ss < 0)
+        return false;
+    // days since 1970-01-01 (H. Hinnant's days_from_civil)
+    immutable y = year - (month <= 2 ? 1 : 0);
+    immutable era = (y >= 0 ? y : y - 399) / 400;
+    immutable yoe = y - era * 400;
+    immutable doy = (153 * (month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+    immutable doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    immutable long days = era * 146_097L + doe - 719_468;
+    return days * 86_400 + hh * 3600 + mm * 60 + ss < time(null);
+}
+
+/// A multipart/form-data body and its boundary (one that appears in none of the parts).
+private struct MultipartBody
+{
+    string body;
+    string boundary;
+}
+
+private MultipartBody multipartBody(const(string[2])[] fields, const(TestFile)[] files)
+{
+    string boundary = "vela-test-boundary-7MA4YWxkTrZu0gW";
+    for (uint n = 0;; n++)
+    {
+        bool clash;
+        foreach (ref f; fields)
+            clash |= contains(f[1], boundary);
+        foreach (ref f; files)
+            clash |= contains(cast(const(char)[]) f.bytes, boundary);
+        if (!clash)
+            break;
+        boundary ~= cast(char)('a' + n % 26);
+    }
+    char[] b;
+    foreach (ref f; fields)
+        b ~= "--" ~ boundary ~ "\r\nContent-Disposition: form-data; name=\"" ~ f[0] ~ "\"\r\n\r\n" ~ f[1] ~ "\r\n";
+    foreach (ref f; files)
+        b ~= "--" ~ boundary ~ "\r\nContent-Disposition: form-data; name=\"" ~ f.name ~ "\"; filename=\"" ~ f.filename
+            ~ "\"\r\nContent-Type: " ~ f.contentType ~ "\r\n\r\n" ~ cast(const(char)[]) f.bytes ~ "\r\n";
+    b ~= "--" ~ boundary ~ "--\r\n";
+    return MultipartBody((() @trusted => cast(string) b)(), boundary); // sole owner: safe to make immutable
+}
+
+private bool contains(scope const(char)[] hay, scope const(char)[] needle) pure nothrow @nogc
+{
+    if (needle.length > hay.length)
+        return false;
+    foreach (i; 0 .. hay.length - needle.length + 1)
+        if (hay[i .. i + needle.length] == needle)
+            return true;
+    return false;
 }
 
 /// What a client would see, recorded: status, headers and the body in the pieces it was written in.

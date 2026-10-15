@@ -643,6 +643,13 @@ struct PgConfig
     QueryHook onQuery;
 }
 
+/// The access mode of a `transaction`.
+enum TxMode
+{
+    readWrite, /// `BEGIN`
+    readOnly,  /// `BEGIN READ ONLY`: writes fail (SQLSTATE 25006), and the server can skip some bookkeeping
+}
+
 /// What `PgConfig.onQuery` (or `PgConn.onQuery`) receives.
 struct QueryEvent
 {
@@ -825,12 +832,14 @@ final class PgConn
     }
 
     /// Runs `body` inside a transaction on this connection: BEGIN/COMMIT, ROLLBACK if it throws. When a transaction is
-    /// already open (an outer `transaction`, or a test harness's), it is a `savepoint` instead, so transactions nest.
-    T transaction(T)(T delegate(PgConn) @safe body_)
+    /// already open (an outer `transaction`, or a test harness's), it is a `savepoint` instead, so transactions nest; a
+    /// savepoint keeps the outer transaction's mode. `TxMode.readOnly` begins with `BEGIN READ ONLY`: a write in `body`
+    /// fails with SQLSTATE 25006.
+    T transaction(T)(T delegate(PgConn) @safe body_, TxMode mode = TxMode.readWrite)
     {
         if (inTransaction)
             return savepoint(body_);
-        exec_("BEGIN");
+        exec_(mode == TxMode.readOnly ? "BEGIN READ ONLY" : "BEGIN");
         return finishBlock(body_, "COMMIT", "ROLLBACK");
     }
 
@@ -1269,10 +1278,10 @@ final class PgPool
 
     /// Runs `body` inside BEGIN/COMMIT on the same connection; ROLLBACK if it throws (see `PgConn.transaction`; on a
     /// pinned connection that is already in a transaction, it becomes a savepoint).
-    T transaction(T)(T delegate(PgConn) @safe body_)
+    T transaction(T)(T delegate(PgConn) @safe body_, TxMode mode = TxMode.readWrite)
     {
         auto l = lease();
-        return l.conn.transaction(body_);
+        return l.conn.transaction(body_, mode);
     }
 
     /// For tests: every `acquire` (and so `query`, `exec`, `transaction`, `lease`) hands out `c` until `unpin`, and giving

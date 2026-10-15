@@ -112,6 +112,10 @@ pinned connection, below) becomes a savepoint. `c.savepoint((PgConn c) { ... })`
 insert that may hit a unique constraint, say). Outside a transaction it throws `PgError`. `c.inTransaction` tells whether
 one is open.
 
+`db.transaction(work, TxMode.readOnly)` begins with `BEGIN READ ONLY`: a write inside fails with SQLSTATE `25006` (and the
+transaction rolls back). Nested in another transaction it is a savepoint, which keeps the outer
+mode; so under `rollbackAfter` (a read-write harness) a read-only block does not refuse writes.
+
 ### Tests that roll back
 
 `db.rollbackAfter(() { ... })` runs the delegate with the pool pinned to one connection inside a transaction that is

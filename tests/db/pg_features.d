@@ -371,6 +371,20 @@ void testSavepoints()
 
     // the result of the body comes back
     assert(c.transaction((PgConn x) => x.savepoint((PgConn y) => y.query("select 7").get!int(0, 0))) == 7);
+
+    // read only: reads work, a write fails with 25006 and rolls back; nested, it is a savepoint of the outer mode
+    assert(c.transaction((PgConn x) => x.query("select current_setting('transaction_read_only')").get!string(0, 0),
+        TxMode.readOnly) == "on");
+    threw = false;
+    try
+        c.transaction((PgConn x) { x.exec("insert into t_sp values (99)"); }, TxMode.readOnly);
+    catch (PgError e)
+        threw = e.sqlState == "25006";
+    assert(threw && !c.inTransaction && count(c) == 3);
+    c.transaction((PgConn x) {
+        x.transaction((PgConn y) { y.exec("insert into t_sp values (98)"); }, TxMode.readOnly);
+    });
+    assert(count(c) == 4, "a nested read-only block keeps the outer read-write mode");
     c.exec("delete from t_sp");
     ok("savepoints: SAVEPOINT/RELEASE/ROLLBACK TO, nesting, transaction() inside a transaction, return values");
 }

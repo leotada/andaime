@@ -933,6 +933,54 @@ void testInvalidInput()
     ok("invalid inputs: 501, 505, 400 (smuggling and obs-fold), 431, 413");
 }
 
+void testErrorBodies()
+{
+    import std.algorithm : canFind;
+
+    ServerConfig cfg;
+    cfg.errorBodies = jsonErrorBodies() ~ [ErrorBody(413, "too big", "text/plain")]; // the first entry for a status wins
+    cfg.maxInFlight = 1;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+
+    auto c = dial(s.port);
+    c.tx("GET /x HTTP/1.1\r\nA: b\r\n c\r\n\r\n");
+    auto r = c.rx();
+    assert(r.status == 400 && r.body == `{"detail":"bad request"}` && r.head.canFind("Content-Type: application/json")
+        && r.head.canFind("Content-Length: 24"), r.head);
+    c.hang();
+    c = dial(s.port);
+    c.tx("POST /fast HTTP/1.1\r\nContent-Length: 99999999\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 413 && r.body == `{"detail":"request body too large"}`, r.body);
+    c.hang();
+    c = dial(s.port);
+    c.tx("GET / HTTP/2.0\r\nHost: t\r\n\r\n");
+    assert(c.rx().body == `{"detail":"http version not supported"}`);
+    c.hang();
+
+    // the in-flight ceiling keeps its Retry-After
+    auto slow = dial(s.port);
+    slow.tx("GET /nap/400 HTTP/1.1\r\nHost: t\r\n\r\n");
+    Thread.sleep(50.msecs);
+    c = dial(s.port);
+    c.tx("GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 503 && r.body == `{"detail":"service unavailable"}` && r.head.canFind("Retry-After: 1"), r.head);
+    c.hang();
+    slow.hang();
+
+    // without entries the answers keep no body
+    auto plain = start(ServerConfig.init);
+    scope (exit) stop(plain);
+    c = dial(plain.port);
+    c.tx("GET /x HTTP/1.1\r\nA: b\r\n c\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 400 && r.body.length == 0 && r.head.canFind("Content-Length: 0"), r.head);
+    c.hang();
+    ok("errorBodies: the engine's own 400, 413, 505 and 503 carry the configured body; none by default");
+}
+
 void testConnectionDeadlines()
 {
     ServerConfig cfg;
@@ -1141,6 +1189,7 @@ void main()
     testPartialWrite();
     testPoolShrink();
     testInvalidInput();
+    testErrorBodies();
     testConnectionDeadlines();
     testGracefulStop();
     testTwoWorkers();

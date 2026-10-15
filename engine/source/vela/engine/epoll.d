@@ -1000,8 +1000,7 @@ final class EpollLoop : EventLoop, Scheduler
         {
             rejected++;
             static immutable HeaderField[1] retry = [HeaderField("Retry-After", "1")];
-            errOut.clear();
-            writeResponseHead(errOut, 503, null, 0, retry[], false);
+            putEngineError(503, retry[]);
             sendRaw(c, errOut.data);
             closeAfterSend(c);
             return;
@@ -3335,10 +3334,23 @@ final class EpollLoop : EventLoop, Scheduler
 
     private void sendErrorAndClose(Conn c, int status)
     {
-        errOut.clear();
-        writeResponseHead(errOut, status, null, 0, null, false);
+        putEngineError(status, null);
         sendRaw(c, errOut.data);
         closeAfterSend(c);
+    }
+
+    /// An answer the engine gives by itself, into `errOut`, with its `cfg.errorBodies` body if there is one.
+    private void putEngineError(int status, scope const HeaderField[] extra)
+    {
+        errOut.clear();
+        foreach (ref b; cfg.errorBodies)
+            if (b.status == status)
+            {
+                writeResponseHead(errOut, status, b.contentType, b.body_.length, extra, false);
+                errOut.put(b.body_);
+                return;
+            }
+        writeResponseHead(errOut, status, null, 0, extra, false);
     }
 
     /// Closes `c`, but only once the responses `coalesce` held back are out (`writeTimeoutMs` at most): they answer

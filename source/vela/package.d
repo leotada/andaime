@@ -5,7 +5,7 @@ public import vela.http.types : Method, HeaderField, Request, Protocol;
 public import vela.web;
 public import vela.server : serve, tryServe;
 public import vela.staticfiles : serveStatic, StaticConfig;
-public import vela.engine.loop : ServerConfig, TlsConfig;
+public import vela.engine.loop : ServerConfig, TlsConfig, ErrorBody, jsonErrorBodies;
 // Cooperative I/O for handlers: wait without blocking the worker
 public import vela.engine.fiberio : sleep, awaitFd, IoEvent, RequestCancelled, spawn, stopping, workerIndex;
 // Blocking work (DNS, CPU, C libs) and outgoing HTTP calls, both cooperative

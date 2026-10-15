@@ -104,6 +104,35 @@ struct ServerConfig
     /// at most one line per second per worker (the rest are counted in the next line).
     bool logConnectionErrors = true;
     Limits limits;
+    /// Bodies for the HTTP/1.1 answers the engine gives on its own, before any handler runs: a malformed request (400),
+    /// a head or body too slow (408), a body over the limit (413), a head over the limit (431), an unsupported transfer
+    /// coding (501), the in-flight ceiling (503), an unsupported version (505). A status without an entry has no body.
+    /// `jsonErrorBodies()` gives `{"detail":"..."}` for each, like the app's own 404 and 405.
+    const(ErrorBody)[] errorBodies;
+}
+
+/// One entry of `ServerConfig.errorBodies`: a fixed body for `status`.
+struct ErrorBody
+{
+    int status;
+    string body_;
+    string contentType = "application/json";
+}
+
+/// `{"detail":"<reason>"}` bodies for every status the engine answers by itself (see `ServerConfig.errorBodies`).
+immutable(ErrorBody)[] jsonErrorBodies() pure nothrow @safe
+{
+    static immutable ErrorBody[] all = [
+        ErrorBody(400, `{"detail":"bad request"}`),
+        ErrorBody(408, `{"detail":"request timeout"}`),
+        ErrorBody(413, `{"detail":"request body too large"}`),
+        ErrorBody(414, `{"detail":"uri too long"}`),
+        ErrorBody(431, `{"detail":"request header fields too large"}`),
+        ErrorBody(501, `{"detail":"not implemented"}`),
+        ErrorBody(503, `{"detail":"service unavailable"}`),
+        ErrorBody(505, `{"detail":"http version not supported"}`),
+    ];
+    return all;
 }
 
 /// Counters of one worker (read without a lock: for metrics and tests only).

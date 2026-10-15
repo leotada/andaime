@@ -27,6 +27,7 @@
 | `tls` (`certFile`, `keyFile`, `reloadCheckMs`, `redirectPort`, `acmeWebroot`) | off | see [tls.md](tls.md) |
 | `logConnectionErrors` | true | log failed handshakes and HTTP/2 connection errors (rate-limited) |
 | `limits` (`maxHeadBytes`, `maxTargetBytes`, `maxBodyBytes`) | 8 KiB, 4 KiB, 1 MiB | request size limits (431, 414, 413) |
+| `errorBodies` | none | bodies of the HTTP/1.1 answers the engine gives before any handler runs (400, 408, 413, 414, 431, 501, 503, 505), as `ErrorBody(status, body, contentType)` entries; `cfg.errorBodies = jsonErrorBodies();` sends `{"detail":"..."}` like the app's 404 and 405 |
 
 Other settings: `StaticConfig` (`serveStatic`), `OpenApiInfo` (`serveOpenApi`), `CorsConfig` (`cors`), `CookieOptions`
 (`setCookie`), `PgConfig` (`vela-pg`), `HttpClientConfig`, `App.logStackTraces`, `App.trailingSlash` ([routing.md](routing.md)),

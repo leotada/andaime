@@ -638,7 +638,24 @@ struct PgConfig
     /// connection). Off by default: PgBouncer in transaction mode and some proxies
     /// do not accept named statements. Turn it on when talking straight to Postgres/RDS.
     bool cacheStatements = false;
+    /// Called after every statement a pooled connection runs, successful or not (see `QueryEvent`): count queries in a
+    /// test, log the slow ones. It runs on the request's fiber, so `vela.log` lines carry the request id. Null: nothing.
+    QueryHook onQuery;
 }
+
+/// What `PgConfig.onQuery` (or `PgConn.onQuery`) receives.
+struct QueryEvent
+{
+    const(char)[] sql;  /// the statement, as given (valid during the call: `.idup` to keep it)
+    Duration duration;  /// from sending it to the last result
+    int rows = -1;      /// rows returned (0 for a command without rows), or -1 when it failed
+    string error;       /// the failure's message, or null
+    string sqlState;    /// Postgres' code of the failure (`23505`...), or null
+    bool internal;      /// a statement vela issued itself: `BEGIN`, `COMMIT`, `ROLLBACK`, `SAVEPOINT`...
+}
+
+/// The type of `PgConfig.onQuery`. It may throw; the exception reaches the caller of the query.
+alias QueryHook = void delegate(ref const QueryEvent) @safe;
 
 // ============================================================ connection
 
@@ -652,6 +669,9 @@ final class PgConn
     private enum maxStatements = 128;
     private MonoTime lastUsed;
     package bool broken;
+
+    /// Called after every statement this connection runs (see `QueryEvent`). The pool sets it from `PgConfig.onQuery`.
+    QueryHook onQuery;
 
     private this(PGconn* conn, Duration qt, bool cache)
     {
@@ -756,7 +776,7 @@ final class PgConn
     PgResult query(Args...)(const(char)[] sql, Args args)
     {
         auto enc = Encoded!(Args.length)(args);
-        return run(sql, enc.vals[]);
+        return observed(sql, enc.vals[], false);
     }
 
     private void exec_(const(char)[] sql)
@@ -765,7 +785,28 @@ final class PgConn
         cacheStatements = false; // utilities such as DEALLOCATE do not go through the cache
         scope (exit)
             cacheStatements = old;
-        run(sql, null, true).close();
+        observed(sql, null, true).close();
+    }
+
+    /// `run`, reported to `onQuery`. `internal` statements (vela's own) are also the ones `run` must not repeat.
+    private PgResult observed(const(char)[] sql, const(char)*[] vals, bool internal)
+    {
+        if (onQuery is null)
+            return run(sql, vals, internal);
+        immutable start = MonoTime.currTime;
+        PgResult r;
+        try
+            r = run(sql, vals, internal);
+        catch (Exception e)
+        {
+            auto pe = cast(PgError) e;
+            auto ev = QueryEvent(sql, MonoTime.currTime - start, -1, e.msg, pe is null ? null : pe.sqlState, internal);
+            onQuery(ev);
+            throw e;
+        }
+        auto ev = QueryEvent(sql, MonoTime.currTime - start, r.rows, null, null, internal);
+        onQuery(ev);
+        return r;
     }
 
     /// Runs a command without caring about the result (BEGIN, UPDATE...).
@@ -1123,7 +1164,11 @@ final class PgPool
             {
                 open++;
                 try
-                    return PgConn.connect(cfg.conninfo, cfg.connectTimeout, cfg.queryTimeout, cfg.cacheStatements);
+                {
+                    auto c = PgConn.connect(cfg.conninfo, cfg.connectTimeout, cfg.queryTimeout, cfg.cacheStatements);
+                    c.onQuery = cfg.onQuery;
+                    return c;
+                }
                 catch (Throwable t)
                 {
                     open--;
@@ -1259,6 +1304,10 @@ final class PgPool
         scope (exit)
             if (c.usable)
                 c.exec_("ROLLBACK");
+        // the hook sees the app's statements, not the harness's BEGIN and ROLLBACK
+        c.onQuery = cfg.onQuery;
+        scope (exit)
+            c.onQuery = null;
         body_();
     }
 

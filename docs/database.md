@@ -163,6 +163,29 @@ PgPool db()
 - If the client goes away or the deadline passes during a query, the driver asks the server to cancel and discards the
   connection.
 
+### Watching queries: `onQuery`
+
+`cfg.onQuery` is called after every statement of the pool's connections, with a `QueryEvent`: `sql` (valid during the call),
+`duration`, `rows` (-1 on failure), `error` and `sqlState` of a failure, and `internal` for the `BEGIN`, `COMMIT`,
+`ROLLBACK` and `SAVEPOINT` statements vela sends itself. It runs on the request's fiber, so a log line carries the request id:
+
+```d
+cfg.onQuery = (ref const QueryEvent e) @safe {
+    if (e.duration > 200.msecs)
+        logWarn("slow query", "sql", e.sql, "ms", e.duration.total!"msecs");
+};
+```
+
+In a test, count what an endpoint runs (`rollbackAfter` reports the app's statements, not its own `BEGIN` and `ROLLBACK`):
+
+```d
+size_t queries;
+cfg.onQuery = (ref const QueryEvent e) @safe { if (!e.internal) queries++; };
+```
+
+The hook is `@safe`; an exception it throws reaches the code that ran the query. A plain `PgConn` has its own `onQuery`
+field. A cancelled query (the client went away) is not reported.
+
 ## Outside a request
 
 In `main` (migrations, a schema check before `serve`), the same calls block instead of suspending a fiber:

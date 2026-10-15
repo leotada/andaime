@@ -284,6 +284,47 @@ void testReadArraysAndJson()
     ok("reading arrays (int, text, bool, float, uuid, enum, NULL elements) and json/jsonb into Json!T; array_agg + json_agg rows");
 }
 
+void testQueryHook()
+{
+    QueryEvent[] seen;
+    PgConfig cfg;
+    cfg.conninfo = conninfo;
+    cfg.onQuery = (ref const QueryEvent e) @safe {
+        QueryEvent copy = e;
+        copy.sql = e.sql.idup;
+        seen ~= copy;
+    };
+    auto pool = new PgPool(cfg);
+    scope (exit) pool.closeAll();
+
+    assert(pool.query("select generate_series(1, $1)", 3).rows == 3);
+    assert(seen.length == 1 && seen[0].sql == "select generate_series(1, $1)" && seen[0].rows == 3 && seen[0].error is null
+        && !seen[0].internal && seen[0].duration >= Duration.zero);
+
+    // a failure is reported with its message and SQLSTATE, then thrown as usual
+    seen = null;
+    bool threw;
+    try
+        pool.exec("select 1/0");
+    catch (PgError e)
+        threw = e.sqlState == "22012";
+    assert(threw && seen.length == 1 && seen[0].rows == -1 && seen[0].sqlState == "22012" && seen[0].error.length);
+
+    // transactions: vela's own statements are marked internal
+    seen = null;
+    pool.transaction((PgConn x) { x.exec("select 1"); });
+    string[] kinds;
+    foreach (e; seen)
+        kinds ~= (e.internal ? "internal " : "") ~ e.sql.idup;
+    assert(kinds == ["internal BEGIN", "select 1", "internal COMMIT"], kinds[0]);
+
+    // the test harness: only the app's statements, not its BEGIN and ROLLBACK
+    seen = null;
+    pool.rollbackAfter(() @safe { pool.exec("select 2"); pool.exec("select 3"); });
+    assert(seen.length == 2 && seen[0].sql == "select 2" && seen[1].sql == "select 3");
+    ok("onQuery: SQL, rows, duration, errors with SQLSTATE, internal BEGIN/COMMIT, rollbackAfter counts only the app");
+}
+
 int count(PgConn c) => c.query("select count(*)::int from t_sp").get!int(0, 0);
 
 void testSavepoints()
@@ -382,6 +423,7 @@ void main()
     testNestedRows();
     testNamesAndEnums();
     testReadArraysAndJson();
+    testQueryHook();
     testSavepoints();
     testRollbackHarness();
     printf("all Postgres feature tests passed\n");

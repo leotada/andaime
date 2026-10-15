@@ -1603,7 +1603,11 @@ Started on 2026-10-15 on `main`. The migration plan of the same app listed every
 owner turned them into 13 general items (5 high, 4 medium, 4 low gain), all approved, one commit each. Every default stays
 what it was. Out of scope as in Phase 11.
 
-**Status (2026-10-15):** see the end of this section.
+**Status (2026-10-15): 12.1-12.13 done**, one commit each. `tools/check.sh` run after Phase A, after 12.4-12.9 and at the
+end, each time on DMD 2.109.1 and LDC 1.40.1 with Postgres 16 (podman): 28 sections passed, 0 failed, 3 skipped (h2spec,
+Caddy, Playwright not installed, so `VELA_STRICT=1` cannot pass here). `tools/fuzz.sh 300 json`: 2.7M runs clean. Compile
+budget within noise (interleaved measurement after the naming fast path: median 451 vs 449 ms; `check.sh` runs 399-431 ms,
+the baseline 416 ms on this machine).
 
 ### Decision log
 

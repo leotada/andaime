@@ -1461,6 +1461,14 @@ feature with docs and tests, and every default stays what it was. Out of scope (
 one): per-route body limits, unbuffered request bodies, streaming responses in the HTTP client, per-route request
 timeouts, any HTTP/2 or TLS feature (D3).
 
+**Status (2026-10-14): 11.1-11.10 done**, one commit each. Verified at the end on DMD 2.109.1 and LDC 1.40.1 with Postgres 16
+(podman): `tools/check.sh` 28 sections passed on LDC; on DMD one run failed `testPoolShrink` in the network section (a stats
+snapshot taken as `inFlight` reaches 0) and six reruns of that section passed on both compilers. The `pg_net.d`
+`testNonBlocking` 50 ms check also failed once in three runs under the podman port forward. `tools/fuzz.sh 300 h2`: 14.2M
+runs clean after the base64url move; `tools/fuzz.sh 400 json`: 6M runs clean. Not run here: the latest DMD/LDC (CI covers
+them), h2spec, Caddy and Playwright (not installed), so `VELA_STRICT=1` cannot pass on this machine. The compile budget
+moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the rest).
+
 ### Decision log
 
 | # | Item | Decision | Rejected | Why |

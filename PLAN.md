@@ -1485,6 +1485,7 @@ timeouts, any HTTP/2 or TLS feature (D3).
 | F19 | 11.4 | `EcKeyP256` is a class owning its `EVP_PKEY` (freed in the destructor); public keys are 65-byte uncompressed points checked with `EVP_PKEY_public_check`; a private key must be 1 <= d < n; ES256 signatures are raw `r||s` (DER only inside). | A struct with a pointer (copies would double-free). | Raw pointers never leave the module; an off-curve peer point is rejected before ECDH (invalid-curve attacks). |
 | F20 | 11.4 | bcrypt via libxcrypt `crypt_rn`/`crypt_gensalt_rn` (32 KiB scratch, zeroed after), `$2b$`, cost 4..31 (default 12), NUL in a password is an error (verify: false), 72-byte truncation documented; `bcryptHashOffload`/`bcryptVerifyOffload` wrap `offload`. | glibc `crypt_r` only; our own bcrypt. | libxcrypt is the system's bcrypt everywhere glibc dropped its own; `crypt_rn` returns null instead of a magic string. |
 | F21 | 11.4 | Web Push: `webPushEncrypt` (fresh key and salt; an overload takes them for known-answer tests), one 4096-byte record, payload <= 3993 bytes; `webPushDecrypt` for the receiver. The VAPID JWT is left to the app (`es256Sign` + `base64UrlEncode`, shown in the guide). | A full Web Push client (HTTP POST, VAPID header building). | The task asked for the primitives; sending is a few lines with `httpClient`, and VAPID claims are app policy. |
+| F22 | 11.5 | `T[]` parameters become a text array literal with every element quoted and `"`/`\` escaped, elements encoded exactly as a single parameter of that type would be; an empty `Optional` element is `NULL`; `ubyte[]`/`byte[]` and nested arrays are compile errors. | Binary array format; quoting only when needed. | Text keeps one encoding path for scalars and elements; always quoting makes `NULL`, commas, braces and spaces data with no special cases. `ubyte[]` could mean bytea. |
 | F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
 
 ### [x] 11.1 Custom validation error responses: `onValidationError` — M
@@ -1532,7 +1533,13 @@ timeouts, any HTTP/2 or TLS feature (D3).
 > and fails if the core imports it. Docs: `docs/crypto.md` (a `// check` example: signup/login with bcrypt, a VAPID JWT, a
 > push body), the index; `AGENTS.md` layout, dependencies, FFI list, "Adding things".
 
-### [ ] 11.5 Array parameters in `vela-pg` — S
+### [x] 11.5 Array parameters in `vela-pg` — S
+
+> **Done.** `Encoded.put` handles `E[]` (integers, bool, floats, strings, text types, `Optional` elements) through
+> `arrayElement`. Tests: `tests/db/pg_features.d` (new file in the PostgreSQL section): `= any($1::uuid[])`, `int[]`, empty,
+> `bigint[]` limits, `text[]` with commas, quotes, backslashes, braces, spaces, `NULL`, empty strings and UTF-8 round-tripped
+> through `unnest`, `Optional` elements, `const` arrays, `bool[]`. Docs: `database.md`. Reading array columns back is not
+> part of this item.
 
 ### [ ] 11.6 Nested row mapping in `rowsAs!T` — S/M
 

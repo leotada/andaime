@@ -204,6 +204,7 @@ s_browser() {
 
 s_postgres() {
     tools/with_postgres.sh "$(build_test tests/db/pg_net.d)"
+    tools/with_postgres.sh "$(build_test tests/db/pg_features.d)"
     # pg_jobs.d imports vela.jobs and vela.jobs.pg. Those -I flags stay on this compile only.
     tools/with_postgres.sh "$(I="$I -Ijobs/source -Idrivers/pgjobs/source" build_test tests/db/pg_jobs.d)"
 }

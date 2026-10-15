@@ -326,9 +326,63 @@ private struct Encoded(size_t N)
             textToString(a, (scope const(char)[] piece) { text ~= piece; });
             return append(text);
         }
+        else static if (is(U == E[], E))
+        {
+            // an array literal for `= any($1::uuid[])`: every element quoted (so commas, braces, spaces and the word NULL
+            // stay data), `"` and `\` escaped; an empty Optional element is NULL
+            static assert(!is(immutable E == immutable ubyte) && !is(immutable E == immutable byte),
+                "vela.db: " ~ A.stringof ~ " as a parameter is ambiguous (bytea or an array?); encode bytea as hex text "
+                ~ "('\\x...') or pass int[]");
+            static assert(!is(E == F[], F) || isSomeString!E || is(E : const(char)[]),
+                "vela.db: nested arrays are not supported as parameters (" ~ A.stringof ~ ")");
+            char[] lit;
+            lit ~= '{';
+            foreach (i, ref e; a)
+            {
+                if (i)
+                    lit ~= ',';
+                arrayElement(lit, e);
+            }
+            lit ~= '}';
+            return append(lit);
+        }
         else
             static assert(0, "vela.db: unsupported parameter type: " ~ A.stringof
-                    ~ " (use integers, bool, double, string, a text type with fromString/toString, null or Optional!X)");
+                    ~ " (use integers, bool, double, string, a text type with fromString/toString, an array of those, "
+                    ~ "null or Optional!X)");
+    }
+
+    /// One element of an array literal, quoted.
+    private static void arrayElement(E)(ref char[] lit, ref E e)
+    {
+        import std.traits : Unqual;
+
+        alias V = Unqual!E;
+        static if (is(V == Optional!X, X))
+        {
+            if (!e.has)
+            {
+                lit ~= "NULL";
+                return;
+            }
+            arrayElement(lit, e.get);
+        }
+        else
+        {
+            // the element's text, as a parameter would encode it
+            Encoded!1 one;
+            immutable at = one.put(e);
+            assert(at >= 0);
+            auto text = one.buf[at .. $ - 1]; // without the NUL
+            lit ~= '"';
+            foreach (c; text)
+            {
+                if (c == '"' || c == '\\')
+                    lit ~= '\\';
+                lit ~= c;
+            }
+            lit ~= '"';
+        }
     }
 
     private ptrdiff_t append(const(char)[] s)

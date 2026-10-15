@@ -258,7 +258,7 @@ Everything below still applies to those.
   (they become global symbols that the C library then calls itself).
 - A user helper named `get`/`put`/`post`/`ws` hides vela's free functions; use `vela.get!(...)(app)`.
 - DMD 2.109 segfaults on a call that relies on a default argument placed before a variadic parameter (`f(string a, S s = S.init,
-  T[] rest...)`): use an overload instead (`TestClient.websocket`). It also crashes, instead of reporting it, on some name clashes
+  T[] rest...)`): use an overload instead (`TestClient.websocket`, `TestClient.request`), and test the short call on DMD. It also crashes, instead of reporting it, on some name clashes
   between imported enums: when DMD dies with a segfault, try LDC for the real error message.
 - A libFuzzer target has no D `main`: one that needs druntime (the monotonic clock, say) calls `rt_init` in
   `LLVMFuzzerInitialize` (`tests/fuzz/libfuzzer_ws.d`).

@@ -53,7 +53,7 @@ unittest
     assert(c.get("/strict/deeper/x/").status == 404);
 
     // 405 still names the methods of the route
-    r = c.request(Method.DELETE, "/api/tasks/", null); // (the explicit null: DMD 2.109 crashes on the default before `...`)
+    r = c.request(Method.DELETE, "/api/tasks/");
     assert(r.status == 405 && r.header("Allow") == "GET, POST", r.header("Allow"));
 }
 

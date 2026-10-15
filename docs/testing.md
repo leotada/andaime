@@ -39,6 +39,7 @@ c.del("/path");
 c.head("/path");
 c.options("/path");
 c.request(Method.POST, "/path", body_, headers...);
+c.request(Method.DELETE, "/path");             // any method, no body
 
 c.get("/me", hdr("Authorization", "Bearer secret"), hdr("Accept-Language", "pt"));   // headers: any number at the end
 c.post("/login", "user=ana&password=x", hdr("Content-Type", "application/x-www-form-urlencoded"));

@@ -75,6 +75,21 @@ App build()
 
 unittest
 {
+    // request(): any method with two arguments (no body, no headers), with a body, and with headers. The two-argument
+    // call once crashed DMD 2.109 (a default argument before the variadic headers); check.sh compiles this on DMD.
+    auto c = TestClient(build());
+    auto r = c.request(Method.GET, "/echo");
+    assert(r.status == 200 && r.body == "");
+    r = c.request(Method.DELETE, "/echo");
+    assert(r.status == 405 && r.header("Allow") == "GET", r.header("Allow"));
+    r = c.request(Method.GET, "/echo", null, hdr("Cookie", "a=1"));
+    assert(r.body == "a=1");
+    r = c.request(Method.POST, "/users", `{"name":"Ana","age":30}`, hdr("Content-Type", "application/json"));
+    assert(r.status == 201, r.body);
+}
+
+unittest
+{
     auto c = TestClient(build());
 
     // multipart: text fields and files, binary-safe, with a boundary that appears in no part

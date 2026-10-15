@@ -173,8 +173,11 @@ struct TestClient
     TestResponse options(string target, HeaderField[] headers...) => send(Method.OPTIONS, target, null, headers);
 
     /// Any method: `request(Method.GET, "/x", null, hdr("Accept", "text/csv"))`.
-    TestResponse request(Method m, string target, string body = null, HeaderField[] headers...)
+    TestResponse request(Method m, string target, string body, HeaderField[] headers...)
         => send(m, target, body, headers);
+    /// ditto, with no body and no headers. (An overload, not a default for `body`: DMD 2.109 crashes on a call that
+    /// relies on a default argument placed before a variadic parameter.)
+    TestResponse request(Method m, string target) => send(m, target, null, null);
 
     /// Sends `value` as JSON (`Content-Type: application/json`): a DTO, an array, a `JsonValue`... or JSON text as is.
     TestResponse postJson(T)(string target, auto ref T value, HeaderField[] headers...)

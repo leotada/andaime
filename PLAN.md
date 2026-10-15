@@ -61,6 +61,7 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 - [Phase 9 — Evidence for "HTTP/2 compatible"](#phase-9--evidence-for-http2-compatible)
 - [Phase 10 — WebSockets](#phase-10--websockets)
 - [Phase 11 — Features for real applications](#phase-11--features-for-real-applications)
+- [Phase 12 — What the Visto migration still worked around](#phase-12--what-the-visto-migration-still-worked-around)
 - [Open owner decisions](#open-owner-decisions-not-blocking)
 - [Appendix A — Evidence](#appendix-a--evidence-gathered-during-the-review)
 - [Appendix B — Definition of done](#appendix-b--definition-of-done-every-item)
@@ -1595,6 +1596,100 @@ moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the re
 > **Done.** `HttpClient.post`/`put`/`request` for bytes and for `null`, `timeout` on every method. Tests
 > (`tests/net/client_net.d`): bytes with NUL and non-UTF-8 through POST, PUT and `request`, a null body, a 300 ms timeout
 > under the configured 2 s and a 5 s one over it; `tests/net/upstream.py` answers PUT. Docs: `http-client.md`.
+
+## Phase 12 — What the Visto migration still worked around
+
+Started on 2026-10-15 on `main`. The migration plan of the same app listed every place where it worked around vela; the
+owner turned them into 13 general items (5 high, 4 medium, 4 low gain), all approved, one commit each. Every default stays
+what it was. Out of scope as in Phase 11.
+
+**Status (2026-10-15):** see the end of this section.
+
+### Decision log
+
+| # | Item | Decision | Rejected | Why |
+|---|------|----------|----------|-----|
+| G1 | 12.1 | `@naming(Naming.snakeCase)` on the struct (also `kebabCase`, `camelCase`, `upperSnakeCase`, `asIs`), in `vela.http.naming` so vela-pg shares it; `jsonKeyOf` is the only source of field names (OpenAPI had a copy). A field's `@jsonKey` wins. Not inherited by nested structs. | An app-wide default; inheritance. | JSON code is templated on `T` with no App in sight, so an app-wide policy would need a global; one UDA per DTO is cheap and explicit. |
+| G2 | 12.1/12.3 | `@naming` on a field and wire-name clashes are `static assert`s deep in the JSON templates (multi-line), tested by unittests, not `compile_fail`. | Walking every DTO in `handlerError`. | The same as the existing "not serializable to JSON" error; a recursive walk costs compile time on every handler for a rare mistake. |
+| G3 | 12.1/12.3 | Types without a policy or attributes take a path with no CTFE (`jsonKeyOf`, `enumWireName` return the identifier). | Always calling `applyNaming`. | The first version cost ~15 ms on the budget; with the fast path the interleaved measurement is within noise. |
+| G4 | 12.3 | An enum's wire name is `@wireName`, else the enum's `@naming`, else the member; quotes, backslashes, control characters, empty and duplicate names are compile errors (so a wire name is never escaped). The D name is no longer accepted once renamed. In vela-pg an enum is its wire name as text (a Postgres enum or text column). | Accepting both spellings; integers in the database. | One spelling everywhere keeps OpenAPI honest; text matches Postgres enums, whose labels are what the API sends. |
+| G5 | 12.2 | `@column("x")` (vela.db) > the struct's `@naming` > the identifier; `@prefix` goes before the nested struct's own names. vela-pg-jobs' `JobRow` uses it. | Reusing `@jsonKey` for columns. | A column and a JSON key often differ (`created_at` vs `createdAt` in a legacy API). |
+| G6 | 12.4 | `JobSchedule` (`every!J`, `cron!J`, `disable!J`) in `WorkerHooks.schedule`, applied to the `ScheduledJob` list that already existed; checked by `runJobs`/`supervisorHook` before anything starts. Reading the environment stays in the app. | `@Every(5.minutes, env: "X")`. | The runtime list was already there; an env name in a UDA would tie the library to one configuration source. |
+| G7 | 12.5 | `FakeHttpClient` plugs in through a thread-local `HttpTransport` (`setHttpTransport`) that `HttpClient.request` checks after parsing the URL; adapters keep using `HttpClient`. | An interface for the client; a fake upstream server. | `HttpClient` stays `final` and the real path pays one null check; tests need no sockets. |
+| G8 | 12.6 | `TrailingSlash.matchBoth` registers each route's other form at `freeze`, after every explicit route (a duplicate is skipped, so explicit wins); groups choose `strict` or `matchBoth`; `redirect` stays app-wide (it is decided before routing). | A runtime retry on 404. | No work per request, and a group can opt in. |
+| G9 | 12.7 | `Json!T` (vela.web) is a text type for vela-pg (no new dependency) but plain `T` in JSON bodies, responses and OpenAPI; arrays are read from Postgres' text literal, 1-D only. | `@jsonColumn` with vela-pg depending on vela:web (owner's pick: `Json!T`). | Drivers depend only on the engine. |
+| G10 | 12.8 | `PgConfig.onQuery`/`PgConn.onQuery`, a `@safe` delegate called after every statement with `internal` for vela's own `BEGIN`/`COMMIT`/`SAVEPOINT`; `rollbackAfter` hides its own two. | A `@system` user callback. | AGENTS.md allows no new call site of `@system` user code; the hook is configuration, like `WorkerHooks.extra`. |
+| G11 | 12.9 | `JobTransaction` (one method) with `PgJobStore.within(tx)` and `TestJobStore.transaction()` (publishes on `commit`, id 0 before). | A `TestJobStore` that understands `PgConn`. | Keeps vela:jobs free of vela-pg. |
+| G12 | 12.11 | `ServerConfig.errorBodies` (status -> fixed body), `jsonErrorBodies()` for `{"detail":...}`; HTTP/1.1 only. | A callback. | The engine answers without a fiber and without the app; a fixed body needs neither. HTTP/2 is frozen (D3). |
+| G13 | 12.12 | `LogScope` in `vela.log` (fields rendered once), held in the fiber's slot while `perform` runs, or the thread's scope in `drainJobs`; both fiber sources (server, `runJobs`) know it. | A thread-local "current job". | Jobs interleave on a thread like requests do (F26). |
+| G14 | 12.13 | `TxMode.readOnly` -> `BEGIN READ ONLY`; nested it stays a savepoint of the outer mode. | `SET TRANSACTION` inside a savepoint (not allowed after the first query). | Documented, since under `rollbackAfter` a read-only block cannot refuse writes. |
+
+### [x] 12.1 Naming policy for JSON, `Query!T`, `Form!T` and OpenAPI — M
+
+> **Done.** `vela.http.naming` (`Naming`, `naming`, `wireName`, `applyNaming`, `namingOf`, enum helpers); `jsonKeyOf`;
+> OpenAPI's duplicate removed. Tests: `naming.d` and `dto.d` unittests, `tests/web/naming.d`. Docs: `requests.md`
+> ("Wire names"), `responses.md`, `validation.md`.
+
+### [x] 12.2 Column names in `rowsAs!T` — S
+
+> **Done.** `column`, `columnNameOf`; `JobRow` in vela-pg-jobs. Tests: `tests/db/pg_features.d` (`testNamesAndEnums`).
+> Docs: `database.md`.
+
+### [x] 12.3 Enum wire names — M
+
+> **Done.** JSON both ways, path/query/form/header, the 422 message, OpenAPI's list, logs, vela-pg parameters (also arrays)
+> and cells. Tests: `tests/web/naming.d`, `tests/db/pg_features.d` (a Postgres enum type). Docs: `requests.md`,
+> `database.md`.
+
+### [x] 12.4 `@Every` / `@Cron` set at startup: `JobSchedule` — S/M
+
+> **Done.** Tests: `worker.d` unittest (replace, add, disable, slots, three errors, `runJobs` refuses before starting),
+> `tests/compile_fail/job_schedule_not_job.d`. Docs: `jobs-and-cron.md` (a `// check` example).
+
+### [x] 12.5 `FakeHttpClient` — M
+
+> **Done.** `vela.engine.httpfake` (`FakeHttpClient`, `Expectation`, `RecordedRequest`), `HttpTransport`,
+> `setHttpTransport`. Tests: module unittest (replies in order, prefixes, `always`, timeout, failure, unexpected request,
+> `verify`, a client made by hand). Docs: `http-client.md` (a `// check` example), `testing.md`.
+
+### [x] 12.6 Optional trailing slash — S
+
+> **Done.** `TrailingSlash`, `App.trailingSlash`, `Group.trailingSlash`. Tests: `tests/web/trailing_slash.d`. Docs:
+> `routing.md`, `configuration.md`.
+
+### [x] 12.7 Array and JSON columns — M
+
+> **Done.** `parseArray` in vela-pg; `Json!T` in `vela.web.jsonvalue`, wired into `writeJson`, `readJson` and OpenAPI. Also
+> fixed: an `Optional!JsonValue` field made the OpenAPI document invalid (`{,"nullable":true}`). Tests:
+> `tests/db/pg_features.d` (every element kind, NULL elements, errors, an `array_agg` + `json_agg` query),
+> `tests/web/json_text.d`, `jsonvalue.d` unittest. Docs: `database.md`, `requests.md`.
+
+### [x] 12.8 Query hook: `PgConfig.onQuery` — S
+
+> **Done.** `QueryEvent`, `QueryHook`. Tests: `tests/db/pg_features.d` (`testQueryHook`). Docs: `database.md`.
+
+### [x] 12.9 Transactional enqueue that tests can fake: `JobTransaction` — S
+
+> **Done.** Tests: `tests/jobs/transaction.d`, `tests/db/pg_jobs.d` (`within` commits and rolls back with the caller).
+> Docs: `jobs-and-cron.md`.
+
+### [x] 12.10 `App.onMethodNotAllowed` — S
+
+> **Done.** Tests: `tests/web/features.d`. Docs: `routing.md`, `middleware.md`.
+
+### [x] 12.11 Bodies of the engine's own errors: `ServerConfig.errorBodies` — S
+
+> **Done.** `ErrorBody`, `jsonErrorBodies`, `putEngineError` in `epoll.d`. Tests: `tests/net/epoll_net.d`
+> (`testErrorBodies`: 400, 413, 505, 503 with `Retry-After`, none by default). Docs: `configuration.md`.
+
+### [x] 12.12 Job context in log lines — S
+
+> **Done.** `LogScope`, `setLogSyncScope`; fiber sources in `server.d` and `runJobs`. Tests: `tests/jobs/logging.d`
+> (kv and json under `drainJobs`), `tests/net/jobs_worker_net.d` (the worker role's fiber). Docs: `logging.md`.
+
+### [x] 12.13 Read-only transactions — S
+
+> **Done.** `TxMode`. Tests: `tests/db/pg_features.d` (`testSavepoints`). Docs: `database.md`.
 
 ## Open owner decisions (not blocking)
 

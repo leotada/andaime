@@ -37,15 +37,45 @@ ulong run(App app, LogFormat format)
     return GC.allocatedInCurrentThread - before;
 }
 
+version (Windows)
+{
+    private extern (C) nothrow @nogc
+    {
+        int _open(const(char)* filename, int oflag, ...);
+        int _dup(int fd);
+        int _dup2(int fd1, int fd2);
+        int _close(int fd);
+    }
+}
+
 void main()
 {
-    import core.sys.posix.fcntl : open, O_WRONLY;
-    import core.sys.posix.unistd : dup, dup2, close;
+    version (Posix)
+    {
+        import core.sys.posix.fcntl : open, O_WRONLY;
+        import core.sys.posix.unistd : dup, dup2, close;
 
-    // the lines go to /dev/null; restored for the result
-    immutable saved = dup(2);
-    immutable devnull = open("/dev/null", O_WRONLY);
-    dup2(devnull, 2);
+        // the lines go to /dev/null; restored for the result
+        immutable saved = dup(2);
+        immutable devnull = open("/dev/null", O_WRONLY);
+        dup2(devnull, 2);
+        scope (exit)
+        {
+            dup2(saved, 2);
+            close(devnull);
+        }
+    }
+    else version (Windows)
+    {
+        immutable saved = _dup(2);
+        immutable devnull = _open("NUL", 1 /*_O_WRONLY*/);
+        _dup2(devnull, 2);
+        scope (exit)
+        {
+            _dup2(saved, 2);
+            _close(devnull);
+        }
+    }
 
     auto app = new App;
     app.use(requestId());
@@ -64,8 +94,6 @@ void main()
     configureLog(LogLevel.warn); // everything below warn: filtered
     immutable off = run(app, LogFormat.text);
 
-    dup2(saved, 2);
-    close(devnull);
     printf("bytes allocated on the GC in 20k logged requests: kv %llu, json %llu, filtered %llu; to a sink: kv %llu, json %llu, text %llu\n",
         kv, js, off, kvSink, jsSink, textSink);
     assert(kv == 0 && js == 0 && off == 0, "logging allocated on the GC");

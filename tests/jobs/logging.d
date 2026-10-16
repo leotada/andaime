@@ -16,32 +16,69 @@ struct Greet
     }
 }
 
+version (Windows)
+{
+    private extern (C) nothrow @nogc
+    {
+        int _pipe(int* pfds, uint psize, int textmode);
+        int _dup(int fd);
+        int _dup2(int fd1, int fd2);
+        int _close(int fd);
+        int _read(int fd, void* buffer, uint count);
+    }
+}
+
 /// What `dg` wrote to stderr.
 string[] captureStderr(void delegate() dg) @trusted
 {
-    import core.sys.posix.unistd : pipe, dup, dup2, close, read;
-    import core.sys.posix.fcntl : fcntl, F_SETFL, O_NONBLOCK;
-
-    int[2] p;
-    pipe(p);
-    fcntl(p[0], F_SETFL, O_NONBLOCK);
-    immutable saved = dup(2);
-    dup2(p[1], 2);
-    dg();
-    dup2(saved, 2);
-    close(saved);
-    close(p[1]);
-    char[] all;
-    char[4096] buf;
-    for (;;)
+    version (Posix)
     {
-        auto n = read(p[0], buf.ptr, buf.length);
-        if (n <= 0)
-            break;
-        all ~= buf[0 .. n];
+        import core.sys.posix.unistd : pipe, dup, dup2, close, read;
+        import core.sys.posix.fcntl : fcntl, F_SETFL, O_NONBLOCK;
+
+        int[2] p;
+        pipe(p);
+        fcntl(p[0], F_SETFL, O_NONBLOCK);
+        immutable saved = dup(2);
+        dup2(p[1], 2);
+        dg();
+        dup2(saved, 2);
+        close(saved);
+        close(p[1]);
+        char[] all;
+        char[4096] buf;
+        for (;;)
+        {
+            auto n = read(p[0], buf.ptr, buf.length);
+            if (n <= 0)
+                break;
+            all ~= buf[0 .. n];
+        }
+        close(p[0]);
+        return (cast(string) all).splitLines;
     }
-    close(p[0]);
-    return (cast(string) all).splitLines;
+    else version (Windows)
+    {
+        int[2] p;
+        _pipe(p.ptr, 65_536, 0x8000 /*_O_BINARY*/);
+        immutable saved = _dup(2);
+        _dup2(p[1], 2);
+        dg();
+        _dup2(saved, 2);
+        _close(saved);
+        _close(p[1]);
+        char[] all;
+        char[4096] buf;
+        for (;;)
+        {
+            auto n = _read(p[0], buf.ptr, cast(uint) buf.length);
+            if (n <= 0)
+                break;
+            all ~= buf[0 .. n];
+        }
+        _close(p[0]);
+        return (cast(string) all).splitLines;
+    }
 }
 
 unittest

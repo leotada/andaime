@@ -472,6 +472,27 @@ s_budget() {
     fi
 }
 
+s_cross_platform() {
+    if ! command -v ldc2 >/dev/null 2>&1; then
+        echo "skip: ldc2 not available for cross-target compilation checks" >&2
+        return 77
+    fi
+    local flags="-c -o- -preview=dip1000 -Isource -Ihttp/source -Iweb/source -Iengine/source -Idrivers/pg/source -Ijobs/source -Icrypto/source -Idrivers/pgjobs/source -Itests/web -Itests/fuzz"
+    local lib t triple
+    lib=$(find source http/source web/source engine/source crypto/source jobs/source drivers/pg/source drivers/pgjobs/source -name '*.d')
+    for triple in x86_64-apple-darwin x86_64-pc-windows-msvc; do
+        ldc2 -mtriple=$triple $flags $lib
+        ldc2 -mtriple=$triple $flags -unittest $lib
+        for t in tests/web/*.d tests/jobs/*.d; do
+            ldc2 -mtriple=$triple $flags -unittest -main -i "$t"
+        done
+        for t in tests/h2/*.d tests/crypto/*.d tests/fuzz/*.d tests/alloc/*.d tests/db/*.d examples/*/source/*.d; do
+            ldc2 -mtriple=$triple $flags -i "$t"
+        done
+    done
+    echo "macOS (x86_64-apple-darwin) and Windows (x86_64-pc-windows-msvc) full cross-compilation OK"
+}
+
 section "module unittests" s_unittests
 section "-preview=dip1000: the library, tests and examples type-check" s_dip1000
 section "language edition 2025: the library, tests and examples type-check (DMD 2.112+)" s_edition
@@ -504,6 +525,7 @@ section "memory: 1,000 in-flight requests over HTTPS (peak RSS < 80 MB, depends 
 section "memory: 200 uploads of 512 KiB at once (above the pool classes), memory comes back" s_memory_uploads
 section "compile-error tests (expected message + at most 2 error lines)" s_compile_fail
 section "DUB builds and layering" s_dub
+section "cross-platform compilation (macOS Darwin and Windows MSVC type-check)" s_cross_platform
 section "compile budget (type-check; target < 400 ms on DMD) and rebuild time" s_budget
 
 echo

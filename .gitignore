@@ -31,5 +31,6 @@ timeout-*
 # Editores e sistema
 .vscode/
 .idea/
+.claude/
 *.swp
 .DS_Store

@@ -6,7 +6,9 @@ module static_files;
 import vela;
 import vela.web.testing;
 import core.stdc.stdio : tmpfile;
-import std.file : mkdirRecurse, write, symlink, tempDir, rmdirRecurse, exists;
+import std.file : mkdirRecurse, write, tempDir, rmdirRecurse, exists;
+version (Posix)
+    import std.file : symlink;
 import std.path : buildPath;
 
 unittest
@@ -22,7 +24,8 @@ unittest
     write(buildPath(base, "pub", ".git", "config"), "secret");
     write(buildPath(base, "pub", "a b.txt"), "with space");
     write(buildPath(base, "outside.txt"), "OUTSIDE");
-    symlink(buildPath(base, "outside.txt"), buildPath(base, "pub", "link.txt"));
+    version (Posix)
+        symlink(buildPath(base, "outside.txt"), buildPath(base, "pub", "link.txt"));
     write(buildPath(base, "pub", "big.bin"), new ubyte[600_000]);
     scope (exit)
         rmdirRecurse(base);

@@ -18,10 +18,9 @@ module vela.engine.offload;
 import core.atomic : atomicFetchSub, atomicStore, atomicLoad;
 import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
-import core.sys.linux.sys.eventfd : eventfd;
-import core.sys.posix.unistd : close, write;
 import core.thread : Thread;
 
+import vela.engine.os : NotifyFd;
 import vela.engine.fiberio : awaitFd, currentScheduler, IoEvent;
 
 /// The pool queue is full: too much pending work.
@@ -145,11 +144,11 @@ ThreadPool offloadPool() @trusted
     }
 }
 
-/// State shared between the fiber and the pool thread. Owner of the eventfd:
-/// whoever decrements `refs` to zero closes the fd.
+/// State shared between the fiber and the pool thread. Owner of the notification descriptor:
+/// whoever decrements `refs` to zero closes it.
 private final class Call(T)
 {
-    int efd = -1;
+    NotifyFd nfd;
     shared int refs = 2;
     Throwable err;
     static if (!is(T == void))
@@ -158,7 +157,7 @@ private final class Call(T)
     void release() nothrow @nogc @trusted
     {
         if (atomicFetchSub(refs, 1) == 1)
-            close(efd);
+            nfd.close();
     }
 }
 
@@ -170,9 +169,8 @@ T offload(T)(T delegate() @safe work) @trusted
         return work(); // outside a fiber: inline
 
     auto call = new Call!T;
-    call.efd = eventfd(0, 0x800 /*EFD_NONBLOCK*/ | 0x80000 /*EFD_CLOEXEC*/);
-    if (call.efd < 0)
-        throw new Exception("vela: eventfd failed in offload");
+    if (!call.nfd.open())
+        throw new Exception("vela: NotifyFd failed in offload");
 
     auto job = delegate() @trusted {
         try
@@ -184,22 +182,22 @@ T offload(T)(T delegate() @safe work) @trusted
         }
         catch (Throwable t)
             call.err = t;
-        ulong one = 1;
-        write(call.efd, &one, one.sizeof);
+        call.nfd.notify();
         call.release();
     };
 
     if (!offloadPool().submit(job))
     {
-        close(call.efd);
+        call.nfd.close();
         throw new PoolSaturated;
     }
 
-    // If awaitFd throws RequestCancelled, the job will still write to the eventfd
+    // If awaitFd throws RequestCancelled, the job will still notify
     // and close it; here we only drop our reference.
     scope (exit)
         call.release();
-    awaitFd(call.efd, IoEvent.readable);
+    awaitFd(call.nfd.readFd, IoEvent.readable);
+    call.nfd.drain();
 
     if (call.err !is null)
         throw call.err;

@@ -128,11 +128,40 @@ uint awaitFd(int fd, uint events, Duration timeout = Duration.max)
         return currentScheduler.awaitFd(fd, events, ms);
 
     // blocking fallback (outside the loop)
-    import core.sys.posix.poll : poll, pollfd;
+    version (Posix)
+    {
+        import core.sys.posix.poll : poll, pollfd;
 
-    pollfd p = pollfd(fd, cast(short) events, 0);
-    immutable r = (() @trusted => poll(&p, 1, cast(int)(ms < 0 ? -1 : ms)))();
-    return r > 0 ? cast(uint) p.revents : 0;
+        pollfd p = pollfd(fd, cast(short) events, 0);
+        immutable r = (() @trusted => poll(&p, 1, cast(int)(ms < 0 ? -1 : ms)))();
+        return r > 0 ? cast(uint) p.revents : 0;
+    }
+    else version (Windows)
+    {
+        import core.sys.windows.winsock2 : SOCKET;
+        import vela.engine.os : WSAPOLLFD, WSAPoll, POLLRDNORM, POLLWRNORM, POLLERR, POLLHUP;
+
+        WSAPOLLFD p;
+        p.fd = cast(SOCKET) fd;
+        p.events = cast(short)((events & IoEvent.readable ? POLLRDNORM : 0) | (events & IoEvent.writable ? POLLWRNORM : 0));
+        immutable r = (() @trusted => WSAPoll(&p, 1, cast(int)(ms < 0 ? -1 : ms)))();
+        if (r <= 0)
+            return 0;
+        uint rev;
+        if (p.revents & POLLRDNORM)
+            rev |= IoEvent.readable;
+        if (p.revents & POLLWRNORM)
+            rev |= IoEvent.writable;
+        if (p.revents & POLLERR)
+            rev |= IoEvent.error;
+        if (p.revents & POLLHUP)
+            rev |= IoEvent.hangup;
+        return rev;
+    }
+    else
+    {
+        return 0;
+    }
 }
 
 /// Set from the loop at `beginStop` and cleared when a new `run` starts. Stays set after the scheduler is
@@ -160,8 +189,7 @@ package void setStopRequested(bool v) nothrow @nogc @safe
 /// the loop never resumes a fiber from inside another. During `WorkerInit`, before the loop polls, `work` is
 /// queued and starts when `run` begins.
 ///
-/// On the development server (no epoll scheduler) `work` runs on this thread. Background jobs need the epoll loop.
-/// After the loop has shut down, a call on Linux does nothing: there is no scheduler left to attach the fiber to.
+/// After the loop has shut down, a call does nothing: there is no scheduler left to attach the fiber to.
 void spawn(void delegate() @safe work)
 {
     if (work is null)
@@ -171,10 +199,7 @@ void spawn(void delegate() @safe work)
         currentScheduler.spawn(work);
         return;
     }
-    version (linux)
-        return;
-    else
-        work();
+    return;
 }
 
 /// ditto. A function with no captures is not a delegate; this overload wraps it so `spawn(&work)` compiles.

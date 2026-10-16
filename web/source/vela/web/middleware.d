@@ -71,7 +71,7 @@ private void writeAccessLine(Context ctx, MonoTime t0)
     }
     // sound: every pointer/length pair below comes from a live slice
     () @trusted {
-        fprintf(stderr, "%.*s %.*s %d %ld.%ldms ip=%.*s%s%.*s\n", cast(int) m.length, m.ptr,
+        fprintf(stderr, "%.*s %.*s %d %lld.%lldms ip=%.*s%s%.*s\n", cast(int) m.length, m.ptr,
             cast(int) ctx.request.target.length, ctx.request.target.ptr, ctx.response.status,
             cast(long)(us / 1000), cast(long)((us % 1000) / 100), cast(int) ipLen, ipBuf.ptr,
             rid is null ? "".ptr : " rid=".ptr, rid is null ? 0 : cast(int) rid.value.length,
@@ -116,9 +116,8 @@ private void fillRandomHex(char[] out_) nothrow @trusted
 {
     if (rngState == 0)
     {
-        import core.sys.posix.pthread : pthread_self;
-
-        rngState = cast(ulong) MonoTime.currTime.ticks ^ (cast(ulong) pthread_self() * 0x9E3779B97F4A7C15UL) | 1;
+        // &rngState is in this thread's TLS, so its address distinguishes worker threads portably
+        rngState = cast(ulong) MonoTime.currTime.ticks ^ (cast(ulong)&rngState * 0x9E3779B97F4A7C15UL) | 1;
     }
     foreach (i; 0 .. out_.length)
     {

@@ -531,13 +531,46 @@ private void putValue(T)(ref ByteBuffer o, ref T v, bool json)
 /// `2026-10-14T12:34:56.789Z` (UTC, milliseconds).
 private void putTime(ref ByteBuffer o) nothrow @trusted
 {
-    // @trusted: clock_gettime writes one timespec
-    import core.sys.posix.time : clock_gettime, timespec, CLOCK_REALTIME;
+    long secs;
+    int ms;
+    version (linux)
+    {
+        // @trusted: clock_gettime writes one timespec
+        import core.sys.posix.time : clock_gettime, timespec, CLOCK_REALTIME;
 
-    timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
-    long secs = ts.tv_sec;
-    immutable ms = cast(int)(ts.tv_nsec / 1_000_000);
+        timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        secs = ts.tv_sec;
+        ms = cast(int)(ts.tv_nsec / 1_000_000);
+    }
+    else version (Posix)
+    {
+        import core.sys.posix.sys.time : gettimeofday, timeval;
+
+        timeval tv;
+        gettimeofday(&tv, null);
+        secs = tv.tv_sec;
+        ms = cast(int)(tv.tv_usec / 1_000);
+    }
+    else version (Windows)
+    {
+        import core.sys.windows.winbase : FILETIME, GetSystemTimeAsFileTime;
+
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        ulong t100ns = (cast(ulong) ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+        // Intervals between 1601-01-01 and 1970-01-01: 11644473600 seconds
+        long unix100ns = cast(long)(t100ns - 116_444_736_000_000_000UL);
+        secs = unix100ns / 10_000_000L;
+        ms = cast(int)((unix100ns % 10_000_000L) / 10_000L);
+        if (ms < 0) ms = 0;
+    }
+    else
+    {
+        import core.stdc.time : time;
+        secs = time(null);
+        ms = 0;
+    }
     long days = secs / 86_400;
     long rem = secs % 86_400;
     // civil date from days since 1970-01-01 (H. Hinnant's algorithm)
@@ -573,14 +606,27 @@ private void putTime(ref ByteBuffer o) nothrow @trusted
 
 private void writeStderr(scope const(char)[] s) nothrow @trusted
 {
-    // @trusted: write(2) reads at most s.length - off bytes from inside s
-    import core.sys.posix.unistd : write;
     import core.stdc.errno : errno, EINTR;
 
     size_t off;
     while (off < s.length)
     {
-        immutable n = write(2, s.ptr + off, s.length - off);
+        ptrdiff_t n;
+        version (Posix)
+        {
+            import core.sys.posix.unistd : write;
+            n = write(2, s.ptr + off, s.length - off);
+        }
+        else version (Windows)
+        {
+            extern (C) int _write(int fd, const(void)* buffer, uint count) nothrow @nogc;
+            n = _write(2, s.ptr + off, cast(uint)(s.length - off));
+        }
+        else
+        {
+            import core.stdc.stdio : fwrite, stderr;
+            n = fwrite(s.ptr + off, 1, s.length - off, stderr);
+        }
         if (n < 0)
         {
             if (errno == EINTR)
@@ -639,6 +685,18 @@ private void applyEnvironment() nothrow @nogc @trusted
 
 version (unittest)
 {
+    version (Windows)
+    {
+        private extern (C) nothrow @nogc
+        {
+            int _pipe(int* pfds, uint psize, int textmode);
+            int _dup(int fd);
+            int _dup2(int fd1, int fd2);
+            int _close(int fd);
+            int _read(int fd, void* buffer, uint count);
+        }
+    }
+
     /// Captures what `emit` would write (the unittests run without a terminal to read).
     private string render(Args...)(LogFormat fmt, LogLevel level, const(char)[] msg, Args fields)
     {
@@ -647,25 +705,50 @@ version (unittest)
         atomicStore(gEnvRead, true);
         scope (exit)
             atomicStore(gFormat, oldFmt);
-        // emit writes to stderr; render the same line by calling the formatter through a redirected fd
-        import core.sys.posix.unistd : pipe, dup, dup2, close, read;
+        version (Posix)
+        {
+            import core.sys.posix.unistd : pipe, dup, dup2, close, read;
 
-        int[2] p;
-        string got;
-        () @trusted {
-            pipe(p);
-            immutable saved = dup(2);
-            dup2(p[1], 2);
-            emit(level, null, false, msg, fields);
-            dup2(saved, 2);
-            close(saved);
-            close(p[1]);
-            char[4096] buf;
-            auto n = read(p[0], buf.ptr, buf.length);
-            close(p[0]);
-            got = buf[0 .. n > 0 ? n : 0].idup;
-        }();
-        return got;
+            int[2] p;
+            string got;
+            () @trusted {
+                pipe(p);
+                immutable saved = dup(2);
+                dup2(p[1], 2);
+                emit(level, null, false, msg, fields);
+                dup2(saved, 2);
+                close(saved);
+                close(p[1]);
+                char[4096] buf;
+                auto n = read(p[0], buf.ptr, buf.length);
+                close(p[0]);
+                got = buf[0 .. n > 0 ? n : 0].idup;
+            }();
+            return got;
+        }
+        else version (Windows)
+        {
+            int[2] p;
+            string got;
+            () @trusted {
+                _pipe(p.ptr, 4096, 0x8000 /*_O_BINARY*/);
+                immutable saved = _dup(2);
+                _dup2(p[1], 2);
+                emit(level, null, false, msg, fields);
+                _dup2(saved, 2);
+                _close(saved);
+                _close(p[1]);
+                char[4096] buf;
+                auto n = _read(p[0], buf.ptr, cast(uint) buf.length);
+                _close(p[0]);
+                got = buf[0 .. n > 0 ? n : 0].idup;
+            }();
+            return got;
+        }
+        else
+        {
+            return "";
+        }
     }
 }
 

@@ -15,20 +15,31 @@
 /// - does not follow redirects (3xx comes back as a response; read `Location`).
 module vela.engine.httpclient;
 
-version (linux):
-
-import core.stdc.errno : errno, EAGAIN, EINTR, EINPROGRESS, EWOULDBLOCK, ECONNRESET, EPIPE;
 import core.stdc.string : memchr, memcmp, memcpy, memmove, strlen;
-import core.sys.posix.fcntl : fcntl, F_GETFL, F_SETFL, O_NONBLOCK;
-import core.sys.posix.netdb : addrinfo, getaddrinfo, freeaddrinfo, AI_ADDRCONFIG;
-import core.sys.posix.netinet.in_ : IPPROTO_TCP;
-import core.sys.posix.netinet.tcp : TCP_NODELAY;
-import core.sys.posix.sys.socket;
-import core.sys.posix.unistd : close, read, write;
 import core.time : Duration, MonoTime, seconds, msecs;
+
+version (Posix)
+{
+    import core.stdc.errno : errno, EAGAIN, EINTR, EINPROGRESS, EWOULDBLOCK, ECONNRESET, EPIPE;
+    import core.sys.posix.netdb : addrinfo, getaddrinfo, freeaddrinfo, AI_ADDRCONFIG;
+    import core.sys.posix.sys.socket : AF_UNSPEC, SOCK_STREAM, sockaddr_storage;
+}
+else version (Windows)
+{
+    import core.stdc.errno : errno, EINTR;
+    import core.sys.windows.winsock2 : addrinfo, getaddrinfo, freeaddrinfo, AI_ADDRCONFIG,
+        AF_UNSPEC, SOCK_STREAM, sockaddr_storage;
+    enum EAGAIN = 11;
+    enum EWOULDBLOCK = EAGAIN;
+    enum EINPROGRESS = 115;
+    enum ECONNRESET = 104;
+    enum EPIPE = 32;
+}
 
 import vela.engine.fiberio : awaitFd, IoEvent;
 import vela.engine.offload : offload;
+import vela.engine.os : sockOpenNonBlock, sockRead, sockSend, sockClose, sockSetTcpNoDelay,
+    sockGetError, sockConnectInProgress, sockConnect;
 import vela.engine.tls;
 
 // ============================================================ public types
@@ -191,7 +202,7 @@ private ushort parsePort(string s, string url) @safe
 private struct Addr
 {
     sockaddr_storage ss;
-    socklen_t len;
+    uint len;
     int family;
 }
 
@@ -217,7 +228,7 @@ private Addr[] resolveBlocking(string host, ushort port) nothrow
             continue;
         Addr a;
         memcpy(&a.ss, p.ai_addr, p.ai_addrlen);
-        a.len = p.ai_addrlen;
+        a.len = cast(uint) p.ai_addrlen;
         a.family = p.ai_family;
         out_ ~= a;
     }
@@ -248,7 +259,7 @@ package final class Conn // package: the WebSocket client (vela.engine.wsclient)
         }
         if (fd >= 0)
         {
-            close(fd);
+            sockClose(fd);
             fd = -1;
         }
     }
@@ -502,23 +513,20 @@ final class HttpClient
 
     private void connectTcp(Conn c, ref Addr a, MonoTime deadline)
     {
-        int fd = socket(a.family, SOCK_STREAM | 0x80000 /*SOCK_CLOEXEC*/ | O_NONBLOCK, 0);
+        int fd = sockOpenNonBlock(a.family);
         if (fd < 0)
             throw new HttpClientError("vela.http: socket failed");
         c.fd = fd;
-        int one = 1;
-        setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, one.sizeof);
+        sockSetTcpNoDelay(fd);
 
-        auto r = connect(fd, cast(sockaddr*)&a.ss, a.len);
-        if (r < 0 && errno != EINPROGRESS)
+        auto r = sockConnect(fd, &a.ss, a.len);
+        if (r < 0 && !sockConnectInProgress())
             throw new HttpClientError("vela.http: connect failed");
         if (r < 0)
         {
             if (awaitFd(fd, IoEvent.writable, left(deadline)) == 0)
                 throw new HttpClientTimeout("timed out while connecting");
-            int err;
-            socklen_t len = err.sizeof;
-            getsockopt(fd, SOL_SOCKET, SO_ERROR, &err, &len);
+            int err = sockGetError(fd);
             if (err != 0)
                 throw new HttpClientError("vela.http: connection refused or unreachable");
         }
@@ -622,9 +630,9 @@ final class HttpClient
                     return 0; // EOF without close_notify
                 throw new HttpClientError("vela.http: TLS error while reading: " ~ tlsError());
             }
-            immutable n = read(c.fd, buf.ptr, buf.length);
+            immutable n = sockRead(c.fd, buf.ptr, buf.length);
             if (n > 0)
-                return n;
+                return cast(size_t) n;
             if (n == 0)
                 return 0;
             if (errno == EINTR)
@@ -664,7 +672,7 @@ final class HttpClient
                 }
                 throw staleOr(c, "TLS error while writing: " ~ tlsError());
             }
-            immutable n = send(c.fd, data.ptr, data.length, 0x4000 /*MSG_NOSIGNAL*/);
+            immutable n = sockSend(c.fd, data.ptr, data.length);
             if (n >= 0)
             {
                 data = data[n .. $];

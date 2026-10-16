@@ -13,8 +13,6 @@
 /// sessions per context); resumption uses stateless tickets whose keys are shared by all workers.
 module vela.engine.tlsserver;
 
-version (linux):
-
 @safe:
 
 import core.stdc.errno : errno, EAGAIN, EPROTO;
@@ -34,24 +32,10 @@ struct TicketKeys
 
     static TicketKeys random() @trusted
     {
-        import core.sys.posix.fcntl : open, O_RDONLY;
-        import core.sys.posix.unistd : read, close;
+        import vela.engine.random : randomBytes;
 
         TicketKeys k;
-        immutable fd = open("/dev/urandom", O_RDONLY);
-        size_t got = 0;
-        if (fd >= 0)
-        {
-            while (got < k.bytes.length)
-            {
-                immutable n = read(fd, k.bytes.ptr + got, k.bytes.length - got);
-                if (n <= 0)
-                    break;
-                got += n;
-            }
-            close(fd);
-        }
-        assert(got == k.bytes.length, "vela: could not read /dev/urandom for TLS ticket keys");
+        randomBytes(k.bytes[]);
         return k;
     }
 }
@@ -66,13 +50,31 @@ private struct Stamp
 
 private Stamp stampOf(string path) @trusted
 {
-    import core.sys.posix.sys.stat : stat, stat_t;
-
-    stat_t st;
     auto z = path ~ '\0';
-    if (stat(z.ptr, &st) != 0)
+    version (Posix)
+    {
+        import core.sys.posix.sys.stat : stat, stat_t;
+
+        stat_t st;
+        if (stat(z.ptr, &st) != 0)
+            return Stamp.init;
+        return Stamp(st.st_mtime, st.st_ctime, st.st_size, st.st_ino, true);
+    }
+    else version (Windows)
+    {
+        import core.sys.windows.winbase : WIN32_FILE_ATTRIBUTE_DATA, GetFileAttributesExA, GET_FILEEX_INFO_LEVELS;
+
+        WIN32_FILE_ATTRIBUTE_DATA data;
+        if (!GetFileAttributesExA(z.ptr, GET_FILEEX_INFO_LEVELS.GetFileExInfoStandard, &data))
+            return Stamp.init;
+        ulong size = (cast(ulong) data.nFileSizeHigh << 32) | data.nFileSizeLow;
+        ulong mtime = (cast(ulong) data.ftLastWriteTime.dwHighDateTime << 32) | data.ftLastWriteTime.dwLowDateTime;
+        return Stamp(cast(long) mtime, 0, cast(long) size, 0, true);
+    }
+    else
+    {
         return Stamp.init;
-    return Stamp(st.st_mtime, st.st_ctime, st.st_size, st.st_ino, true);
+    }
 }
 
 /// The TLS context of one worker.

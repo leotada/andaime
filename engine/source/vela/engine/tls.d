@@ -5,10 +5,8 @@ module vela.engine.tls;
 
 @safe:
 
-version (linux):
-
-import core.sys.posix.dlfcn : dlopen, dlsym, dlerror, RTLD_NOW, RTLD_GLOBAL;
 import vela.http.optional : Optional;
+import vela.engine.os : dlOpen, dlSym, dlError;
 
 package:
 
@@ -114,25 +112,24 @@ shared static this() @trusted
 /// installed a handler of its own.
 private void ignoreSigpipe() @system nothrow @nogc
 {
-    import core.sys.posix.signal : sigaction, sigaction_t, sigemptyset, SIGPIPE, SIG_DFL, SIG_IGN;
+    version (Posix)
+    {
+        import core.sys.posix.signal : sigaction, sigaction_t, sigemptyset, SIGPIPE, SIG_DFL, SIG_IGN;
 
-    sigaction_t current;
-    if (sigaction(SIGPIPE, null, &current) != 0 || current.sa_handler != SIG_DFL)
-        return;
-    sigaction_t ign;
-    ign.sa_handler = SIG_IGN;
-    sigemptyset(&ign.sa_mask);
-    sigaction(SIGPIPE, &ign, null);
+        sigaction_t current;
+        if (sigaction(SIGPIPE, null, &current) != 0 || current.sa_handler != SIG_DFL)
+            return;
+        sigaction_t ign;
+        ign.sa_handler = SIG_IGN;
+        sigemptyset(&ign.sa_mask);
+        sigaction(SIGPIPE, &ign, null);
+    }
 }
 
 /// The text of the last failed `dlopen` (null when there is none), for load error messages.
 string dlDetail() @trusted nothrow
 {
-    import core.stdc.string : strlen;
-
-    // dlerror returns a NUL-terminated string owned by libc; it is copied before the next dl call
-    auto e = dlerror();
-    return e is null ? null : e[0 .. strlen(e)].idup;
+    return dlError();
 }
 
 /// Loads libssl/libcrypto. Returns null on success, or the error message.
@@ -168,16 +165,47 @@ private string loadLocked() @trusted nothrow
     if (loadError !is null)
         return loadError;
 
+    version (linux)
+    {
+        static immutable string[] cryptoNames = ["libcrypto.so.3\0", "libcrypto.so\0"];
+        static immutable string[] sslNames = ["libssl.so.3\0", "libssl.so\0"];
+    }
+    else version (OSX)
+    {
+        static immutable string[] cryptoNames = [
+            "libcrypto.3.dylib\0",
+            "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib\0",
+            "/usr/local/opt/openssl@3/lib/libcrypto.3.dylib\0",
+            "libcrypto.dylib\0"
+        ];
+        static immutable string[] sslNames = [
+            "libssl.3.dylib\0",
+            "/opt/homebrew/opt/openssl@3/lib/libssl.3.dylib\0",
+            "/usr/local/opt/openssl@3/lib/libssl.3.dylib\0",
+            "libssl.dylib\0"
+        ];
+    }
+    else version (Windows)
+    {
+        static immutable string[] cryptoNames = ["libcrypto-3-x64.dll\0", "libcrypto-3.dll\0", "libcrypto.dll\0"];
+        static immutable string[] sslNames = ["libssl-3-x64.dll\0", "libssl-3.dll\0", "libssl.dll\0"];
+    }
+    else
+    {
+        static immutable string[] cryptoNames = ["libcrypto.so.3\0", "libcrypto.so\0"];
+        static immutable string[] sslNames = ["libssl.so.3\0", "libssl.so\0"];
+    }
+
     // libcrypto first and GLOBAL: libssl depends on it and ERR_* come from it
     void* crypto, ssl;
     string detail;
-    foreach (n; ["libcrypto.so.3\0", "libcrypto.so\0"])
-        if ((crypto = dlopen(n.ptr, RTLD_NOW | RTLD_GLOBAL)) !is null)
+    foreach (n; cryptoNames)
+        if ((crypto = dlOpen(n.ptr)) !is null)
             break;
         else if (detail is null)
             detail = dlDetail();
-    foreach (n; ["libssl.so.3\0", "libssl.so\0"])
-        if ((ssl = dlopen(n.ptr, RTLD_NOW | RTLD_GLOBAL)) !is null)
+    foreach (n; sslNames)
+        if ((ssl = dlOpen(n.ptr)) !is null)
             break;
         else if (detail is null)
             detail = dlDetail();
@@ -189,9 +217,9 @@ private string loadLocked() @trusted nothrow
     {
         {
             auto zname = (m ~ "\0").ptr;
-            auto p = dlsym(ssl, zname);
+            auto p = dlSym(ssl, zname);
             if (p is null)
-                p = dlsym(crypto, zname);
+                p = dlSym(crypto, zname);
             if (p is null)
                 return loadError = "vela.http: missing symbol in OpenSSL: " ~ m;
             __traits(getMember, tls, m) = cast(typeof(__traits(getMember, tls, m))) p;

@@ -4,32 +4,38 @@ module vela.engine.zlib;
 
 @safe:
 
-version (linux):
-
-import core.sys.posix.dlfcn : dlopen, dlsym, RTLD_NOW;
+import core.stdc.config : c_ulong;
+import vela.engine.os : dlOpen, dlSym, dlError;
 import vela.http.buffer : ByteBuffer;
 import vela.http.optional : Optional;
 import vela.http.websocket : WsDeflate, InflateResult;
 
+version (Windows)
+    private enum zlibPkg = "zlib1.dll";
+else version (OSX)
+    private enum zlibPkg = "libz.1.dylib";
+else
+    private enum zlibPkg = "libz.so.1";
+
 private:
 
-/// zlib's z_stream (zlib.h); `uInt` is 32 bits and `uLong` is C's long (64 bits on 64-bit Linux).
+/// zlib's z_stream (zlib.h); `uInt` is 32 bits and `uLong` is C's unsigned long (`c_ulong`).
 struct ZStream
 {
     const(ubyte)* next_in;
     uint avail_in;
-    ulong total_in;
+    c_ulong total_in;
     ubyte* next_out;
     uint avail_out;
-    ulong total_out;
+    c_ulong total_out;
     const(char)* msg;
     void* state;
     void* zalloc;
     void* zfree;
     void* opaque;
     int data_type;
-    ulong adler;
-    ulong reserved;
+    c_ulong adler;
+    c_ulong reserved;
 }
 
 enum
@@ -82,7 +88,7 @@ bool loadZlib() @trusted
             import core.stdc.stdio : fprintf, stderr;
 
             warned = true;
-            fprintf(stderr, "vela: zlib (libz.so.1) not found: WebSockets are not compressed\n");
+            fprintf(stderr, "vela: zlib (%s) not found: WebSockets are not compressed\n", zlibPkg.ptr);
         }
         return false;
     }
@@ -95,32 +101,41 @@ public Optional!string zlibLoadError() @trusted
         return loadLocked() ? Optional!string.none : Optional!string(loadError);
 }
 
-/// True when libz.so.1 is installed. Without it WebSockets are served uncompressed (permessage-deflate is not offered).
+/// True when libz is installed. Without it WebSockets are served uncompressed (permessage-deflate is not offered).
 public bool zlibAvailable() => !zlibLoadError().has;
 
 // Called with `gLock` held.
 private bool loadLocked() @trusted nothrow
 {
-    import vela.engine.tls : dlDetail;
-
     if (loaded || failed)
         return loaded;
     void* lib;
     string detail;
-    foreach (n; ["libz.so.1\0", "libz.so\0"])
-        if ((lib = dlopen(n.ptr, RTLD_NOW)) !is null)
+
+    version (Windows)
+        immutable string[] names = ["zlib1.dll\0", "zlib.dll\0"];
+    else version (OSX)
+        immutable string[] names = ["libz.1.dylib\0", "libz.dylib\0", "/opt/homebrew/lib/libz.dylib\0", "/usr/local/lib/libz.dylib\0"];
+    else
+        immutable string[] names = ["libz.so.1\0", "libz.so\0"];
+
+    foreach (n; names)
+    {
+        lib = dlOpen(n.ptr);
+        if (lib !is null)
             break;
-        else if (detail is null)
-            detail = dlDetail();
+        if (detail is null)
+            detail = dlError();
+    }
     if (lib is null)
-        loadError = "vela: zlib (libz.so.1) not found" ~ (detail is null ? "" : ": " ~ detail);
+        loadError = "vela: zlib (" ~ zlibPkg ~ ") not found" ~ (detail is null ? "" : ": " ~ detail);
     else
     {
         string missing;
         static foreach (m; __traits(allMembers, Api))
         {
             {
-                auto p = dlsym(lib, (m ~ "\0").ptr);
+                auto p = dlSym(lib, (m ~ "\0").ptr);
                 if (p is null)
                     missing = m;
                 else

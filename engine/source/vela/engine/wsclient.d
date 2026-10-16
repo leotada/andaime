@@ -14,11 +14,14 @@
 /// - the connection belongs to the fiber that opened it (it receives); other fibers of the worker may `send`.
 module vela.engine.wsclient;
 
-version (linux):
-
-import core.stdc.errno : errno, EAGAIN, EINTR, EWOULDBLOCK;
-import core.sys.posix.sys.socket : send;
-import core.sys.posix.unistd : read;
+version (Posix)
+    import core.stdc.errno : errno, EAGAIN, EINTR, EWOULDBLOCK;
+else version (Windows)
+{
+    import core.stdc.errno : errno, EINTR;
+    enum EAGAIN = 11;
+    enum EWOULDBLOCK = EAGAIN;
+}
 import core.time : Duration, MonoTime, msecs, seconds;
 
 import vela.http.buffer : ByteBuffer;
@@ -27,6 +30,7 @@ import vela.http.websocket;
 import vela.http.sha1 : base64Encode;
 import vela.engine.fiberio : awaitFd, IoEvent;
 import vela.engine.httpclient;
+import vela.engine.os : sockRead, sockSend;
 import vela.engine.tls;
 import vela.engine.zlib : zlibDeflate;
 
@@ -345,7 +349,7 @@ private final class ClientPort : UpgradedConn
             }
             else
             {
-                n = send(conn.fd, p.ptr, p.length, 0x4000 /*MSG_NOSIGNAL*/);
+                n = sockSend(conn.fd, p.ptr, p.length);
                 if (n < 0)
                 {
                     if (errno == EINTR)
@@ -404,7 +408,7 @@ private final class ClientPort : UpgradedConn
                 }
                 return -2;
             }
-            immutable n = read(conn.fd, space.ptr, space.length);
+            immutable n = sockRead(conn.fd, space.ptr, space.length);
             if (n > 0)
             {
                 inLen += n;

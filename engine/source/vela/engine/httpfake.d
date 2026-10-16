@@ -18,8 +18,6 @@
 /// The real client pays one thread-local null check per request for this.
 module vela.engine.httpfake;
 
-version (linux):
-
 @safe:
 
 import core.time : Duration;

@@ -28,21 +28,63 @@
 /// through `ioRead`/`ioSend`, which hide OpenSSL behind read(2)/send(2) semantics.
 module vela.engine.epoll;
 
-version (linux):
-
 import core.thread : Fiber, Thread;
 import core.time : MonoTime;
 import core.atomic : atomicLoad, atomicStore;
-import core.stdc.errno;
 import core.stdc.stdio : printf, fprintf, stderr, perror;
-import core.sys.posix.sys.socket;
-import core.sys.posix.netinet.in_;
-import core.sys.posix.netinet.tcp : TCP_NODELAY;
-import core.sys.posix.arpa.inet : inet_pton, inet_ntop;
-import core.sys.posix.unistd : close, read, write, sysconf, _SC_NPROCESSORS_ONLN;
-import core.sys.posix.signal;
-import core.sys.linux.epoll;
-import core.sys.linux.sys.eventfd : eventfd;
+
+version (Posix)
+{
+    import core.stdc.errno;
+    import core.sys.posix.sys.socket;
+    import core.sys.posix.netinet.in_;
+    import core.sys.posix.netinet.tcp : TCP_NODELAY;
+    import core.sys.posix.arpa.inet : inet_pton, inet_ntop;
+    import core.sys.posix.unistd : close, read, write;
+    import core.sys.posix.signal;
+}
+version (linux)
+{
+    import core.sys.linux.epoll;
+}
+else
+{
+    version (OSX)
+    {
+        import core.sys.darwin.sys.event;
+        import core.sys.posix.time : timespec;
+    }
+    else version (Windows)
+    {
+        import core.sys.windows.winsock2;
+        import core.stdc.errno : errno, EINTR, EAGAIN, EWOULDBLOCK, ECONNRESET;
+        import vela.engine.os : WSAPOLLFD, WSAPoll, POLLIN, POLLOUT, POLLERR, POLLHUP, POLLNVAL;
+
+        private extern (Windows) nothrow @nogc
+        {
+            int InetPtonA(int af, const(char)* src, void* dst);
+            const(char)* InetNtopA(int af, const(void)* src, char* dst, size_t size);
+        }
+        alias inet_pton = InetPtonA;
+        alias inet_ntop = InetNtopA;
+
+        private __gshared int gBoundFd = -1;
+        private __gshared int gBoundRedirectFd = -1;
+        private __gshared ushort gBoundPort;
+        private __gshared ushort gBoundRedirectPort;
+    }
+
+    enum : uint
+    {
+        EPOLLIN = 0x001,
+        EPOLLOUT = 0x004,
+        EPOLLERR = 0x008,
+        EPOLLHUP = 0x010,
+        EPOLLRDHUP = 0x2000,
+        EPOLLET = 0x80000000,
+        EPOLLONESHOT = 0x40000000,
+    }
+}
 
 import vela.http;
 import vela.http.h2;
@@ -51,10 +93,11 @@ import vela.engine.bufferpool;
 import vela.engine.loop;
 import vela.engine.fiberio : Scheduler, currentScheduler, RequestCancelled, IoEvent, workerIndex, setStopRequested,
     LocalFiber;
+import vela.engine.os : NotifyFd, sockOpenNonBlock, sockAcceptNonBlock, sockRead, sockSend, sockClose,
+    sockShutdownWr, sockSetTcpNoDelay, cpuCount;
 import vela.engine.tls : SSL;
 import vela.engine.tlsserver;
 
-private extern (C) int accept4(int, sockaddr*, socklen_t*, int) nothrow @nogc;
 version (CRuntime_Glibc)
     private extern (C) int malloc_trim(size_t) nothrow @nogc;
 private void mallocTrim(size_t pad) nothrow @nogc
@@ -62,7 +105,6 @@ private void mallocTrim(size_t pad) nothrow @nogc
     version (CRuntime_Glibc)
         malloc_trim(pad);
 }
-private enum SOCK_NONBLOCK = 0x800, SOCK_CLOEXEC = 0x80000;
 
 // ======================================================================= structures
 
@@ -337,7 +379,20 @@ final class EpollLoop : EventLoop, Scheduler
     private ServerConfig cfg;
     private HandlerFactory factory;
 
-    private int ep = -1, wakeFd = -1;
+    private int ep = -1;
+    private NotifyFd wakeNotify;
+    version (Windows)
+    {
+        private struct PollItem
+        {
+            SOCKET fd;
+            uint events;
+            Item item;
+        }
+        private PollItem[] pollItems;
+        private WSAPOLLFD[] pollFds;
+        private bool pollFdsDirty;
+    }
     private ListenItem mainListener, redirectListener;
     private Item wakeItem;
     private size_t redirectsN;
@@ -398,22 +453,275 @@ final class EpollLoop : EventLoop, Scheduler
     /// Set once the listener is open and never cleared (`ready` goes back to false at teardown).
     shared bool everListened;
 
+    private void pollerInit() @trusted
+    {
+        wakeNotify.open();
+        wakeItem = new Item(Kind.wake);
+        version (linux)
+        {
+            ep = epoll_create1(0);
+            pollerAdd(wakeNotify.readFd, EPOLLIN, wakeItem);
+        }
+        else version (OSX)
+        {
+            ep = kqueue();
+            pollerAdd(wakeNotify.readFd, EPOLLIN, wakeItem);
+        }
+        else version (Windows)
+        {
+            ep = 1;
+            pollerAdd(wakeNotify.readFd, EPOLLIN, wakeItem);
+        }
+    }
+
+    private void pollerClose() @trusted
+    {
+        wakeNotify.close();
+        version (Windows)
+        {
+            pollItems = null;
+            pollFds = null;
+            ep = -1;
+        }
+        else
+        {
+            if (ep >= 0)
+            {
+                close(ep);
+                ep = -1;
+            }
+        }
+    }
+
+    private int pollerAdd(int fd, uint events, Item item) @trusted
+    {
+        version (linux)
+        {
+            epoll_event ev;
+            ev.events = events;
+            ev.data.ptr = cast(void*) item;
+            return epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev);
+        }
+        else version (OSX)
+        {
+            kevent_t[2] changes;
+            int n = 0;
+            ushort flags = EV_ADD | EV_ENABLE;
+            if (events & EPOLLET)
+                flags |= EV_CLEAR;
+            if (events & EPOLLONESHOT)
+                flags |= EV_ONESHOT;
+
+            if (events & (EPOLLIN | EPOLLRDHUP | EPOLLHUP))
+            {
+                changes[n].ident = fd;
+                changes[n].filter = EVFILT_READ;
+                changes[n].flags = flags;
+                changes[n].fflags = 0;
+                changes[n].data = 0;
+                changes[n].udata = cast(void*) item;
+                n++;
+            }
+            if (events & EPOLLOUT)
+            {
+                changes[n].ident = fd;
+                changes[n].filter = EVFILT_WRITE;
+                changes[n].flags = flags;
+                changes[n].fflags = 0;
+                changes[n].data = 0;
+                changes[n].udata = cast(void*) item;
+                n++;
+            }
+            if (n > 0)
+                return kevent(ep, changes.ptr, n, null, 0, null);
+            return 0;
+        }
+        else version (Windows)
+        {
+            foreach (ref pi; pollItems)
+            {
+                if (pi.fd == cast(SOCKET) fd)
+                {
+                    pi.events = events;
+                    pi.item = item;
+                    pollFdsDirty = true;
+                    return 0;
+                }
+            }
+            pollItems ~= PollItem(cast(SOCKET) fd, events, item);
+            pollFdsDirty = true;
+            return 0;
+        }
+    }
+
+    private int pollerMod(int fd, uint events, Item item) @trusted
+    {
+        version (linux)
+        {
+            epoll_event ev;
+            ev.events = events;
+            ev.data.ptr = cast(void*) item;
+            if (epoll_ctl(ep, EPOLL_CTL_MOD, fd, &ev) < 0)
+            {
+                if (errno != ENOENT || epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev) < 0)
+                    return -1;
+            }
+            return 0;
+        }
+        else
+        {
+            return pollerAdd(fd, events, item);
+        }
+    }
+
+    private void pollerDel(int fd) @trusted
+    {
+        version (linux)
+        {
+            epoll_ctl(ep, EPOLL_CTL_DEL, fd, null);
+        }
+        else version (OSX)
+        {
+            kevent_t[2] changes;
+            changes[0].ident = fd;
+            changes[0].filter = EVFILT_READ;
+            changes[0].flags = EV_DELETE;
+            changes[1].ident = fd;
+            changes[1].filter = EVFILT_WRITE;
+            changes[1].flags = EV_DELETE;
+            kevent(ep, changes.ptr, 2, null, 0, null);
+        }
+        else version (Windows)
+        {
+            for (size_t i = 0; i < pollItems.length; i++)
+            {
+                if (pollItems[i].fd == cast(SOCKET) fd)
+                {
+                    pollItems[i] = pollItems[$ - 1];
+                    pollItems.length--;
+                    pollFdsDirty = true;
+                    break;
+                }
+            }
+        }
+    }
+
+    private bool pollWait(long timeout) @trusted
+    {
+        version (linux)
+        {
+            epoll_event[256] evs;
+            immutable n = epoll_wait(ep, evs.ptr, cast(int) evs.length, cast(int) timeout);
+            if (n < 0 && errno != EINTR)
+                return false;
+            foreach (i; 0 .. (n < 0 ? 0 : n))
+                onEvent(cast(Item) evs[i].data.ptr, evs[i].events);
+            return true;
+        }
+        else version (OSX)
+        {
+            timespec ts;
+            ts.tv_sec = timeout / 1000;
+            ts.tv_nsec = (timeout % 1000) * 1_000_000;
+            kevent_t[256] evs;
+            immutable n = kevent(ep, null, 0, evs.ptr, cast(int) evs.length, &ts);
+            if (n < 0 && errno != EINTR)
+                return false;
+            foreach (i; 0 .. (n < 0 ? 0 : n))
+            {
+                auto k = &evs[i];
+                auto it = cast(Item) k.udata;
+                if (it is null)
+                    continue;
+                uint ev = 0;
+                if (k.filter == EVFILT_READ)
+                    ev |= EPOLLIN;
+                else if (k.filter == EVFILT_WRITE)
+                    ev |= EPOLLOUT;
+                if (k.flags & EV_EOF)
+                    ev |= (EPOLLRDHUP | EPOLLHUP);
+                if (k.flags & EV_ERROR)
+                    ev |= EPOLLERR;
+                onEvent(it, ev);
+            }
+            return true;
+        }
+        else version (Windows)
+        {
+            if (pollFdsDirty || pollFds.length != pollItems.length)
+            {
+                if (pollFds.length != pollItems.length)
+                    pollFds.length = pollItems.length;
+                foreach (i, ref pi; pollItems)
+                {
+                    pollFds[i].fd = pi.fd;
+                    short pEvents = 0;
+                    if (pi.events & (EPOLLIN | EPOLLRDHUP))
+                        pEvents |= POLLIN;
+                    if (pi.events & EPOLLOUT)
+                        pEvents |= POLLOUT;
+                    pollFds[i].events = pEvents;
+                    pollFds[i].revents = 0;
+                }
+                pollFdsDirty = false;
+            }
+            else
+            {
+                foreach (ref p; pollFds)
+                    p.revents = 0;
+            }
+
+            int r = 0;
+            if (pollFds.length > 0)
+                r = WSAPoll(pollFds.ptr, cast(uint) pollFds.length, cast(int) timeout);
+            else if (timeout > 0)
+            {
+                import core.thread : Thread;
+                import core.time : msecs;
+                Thread.sleep(msecs(timeout > 50 ? 50 : timeout));
+            }
+
+            if (r < 0)
+                return false;
+
+            for (size_t i = 0; i < pollFds.length; i++)
+            {
+                auto rev = pollFds[i].revents;
+                if (rev == 0)
+                    continue;
+                auto pi = pollItems[i];
+                uint ev = 0;
+                if (rev & POLLIN)
+                    ev |= EPOLLIN;
+                if (rev & POLLOUT)
+                    ev |= EPOLLOUT;
+                if (rev & POLLHUP)
+                    ev |= (EPOLLHUP | EPOLLRDHUP);
+                if (rev & (POLLERR | POLLNVAL))
+                    ev |= EPOLLERR;
+
+                if (pi.events & EPOLLONESHOT)
+                {
+                    pollItems[i] = pollItems[$ - 1];
+                    pollItems.length--;
+                    pollFdsDirty = true;
+                    i--;
+                }
+                onEvent(pi.item, ev);
+            }
+            return true;
+        }
+    }
+
     this()
     {
-        ep = epoll_create1(0);
-        wakeFd = eventfd(0, 0x800 /*EFD_NONBLOCK*/ | 0x80000 /*EFD_CLOEXEC*/);
-        wakeItem = new Item(Kind.wake);
-        epoll_event ev;
-        ev.events = EPOLLIN;
-        ev.data.ptr = cast(void*) wakeItem;
-        epoll_ctl(ep, EPOLL_CTL_ADD, wakeFd, &ev);
+        pollerInit();
         cancelledEx = new RequestCancelled;
     }
 
     ~this()
     {
-        if (ep >= 0) close(ep);
-        if (wakeFd >= 0) close(wakeFd);
+        pollerClose();
     }
 
     LoopStats stats() const nothrow @nogc
@@ -431,8 +739,7 @@ final class EpollLoop : EventLoop, Scheduler
     override void stop() nothrow @nogc @trusted
     {
         atomicStore(stopReq, true);
-        ulong one = 1;
-        write(wakeFd, &one, one.sizeof);
+        wakeNotify.wake();
     }
 
     // ------------------------------------------------------------------ run
@@ -451,8 +758,6 @@ final class EpollLoop : EventLoop, Scheduler
             currentScheduler = null;
             teardown();
         }
-        // `accept = false`: no listening socket and no TLS. The epoll fd and its wake eventfd already exist
-        // (see the constructor); epoll_wait still runs so background fibers can sleep.
         if (cfg.accept && !openListener())
             return;
         nowMs = elapsedMs();
@@ -464,7 +769,6 @@ final class EpollLoop : EventLoop, Scheduler
         if (cfg.accept)
             atomicStore(everListened, true);
 
-        epoll_event[256] evs;
         for (;;)
         {
             long timeout = nextSweepMs - nowMs;
@@ -479,13 +783,10 @@ final class EpollLoop : EventLoop, Scheduler
             if (timeout < 0)
                 timeout = 0;
 
-            immutable n = epoll_wait(ep, evs.ptr, cast(int) evs.length, cast(int) timeout);
-            if (n < 0 && errno != EINTR)
+            if (!pollWait(timeout))
                 break;
             nowMs = elapsedMs();
 
-            foreach (i; 0 .. (n < 0 ? 0 : n))
-                onEvent(cast(Item) evs[i].data.ptr, evs[i].events);
             drainResumeQ();
             drainWsWakes();
             drainSpawnQ();
@@ -571,7 +872,26 @@ final class EpollLoop : EventLoop, Scheduler
     /// Opens, binds and registers one listening socket. Null on failure (already reported).
     private ListenItem listenOn(ushort port, bool redirect, out ushort bound)
     {
-        immutable fd = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK | SOCK_CLOEXEC, 0);
+        version (Windows)
+        {
+            if (!redirect && gBoundFd >= 0)
+            {
+                bound = gBoundPort;
+                auto li = new ListenItem(redirect);
+                li.fd = gBoundFd;
+                pollerAdd(li.fd, EPOLLIN, li);
+                return li;
+            }
+            if (redirect && gBoundRedirectFd >= 0)
+            {
+                bound = gBoundRedirectPort;
+                auto li = new ListenItem(redirect);
+                li.fd = gBoundRedirectFd;
+                pollerAdd(li.fd, EPOLLIN, li);
+                return li;
+            }
+        }
+        immutable fd = sockOpenNonBlock(AF_INET);
         if (fd < 0)
         {
             perror("vela: socket");
@@ -580,9 +900,21 @@ final class EpollLoop : EventLoop, Scheduler
         auto li = new ListenItem(redirect);
         li.fd = fd;
         int one = 1;
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, one.sizeof);
-        if (cfg.reusePort)
-            setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, one.sizeof);
+        version (Posix)
+        {
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, one.sizeof);
+            if (cfg.reusePort)
+            {
+                version (linux)
+                    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, one.sizeof);
+                else version (OSX)
+                    setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &one, one.sizeof);
+            }
+        }
+        else version (Windows)
+        {
+            setsockopt(cast(SOCKET) fd, SOL_SOCKET, SO_REUSEADDR, cast(const(char)*)&one, one.sizeof);
+        }
 
         sockaddr_in addr;
         addr.sin_family = AF_INET;
@@ -596,32 +928,61 @@ final class EpollLoop : EventLoop, Scheduler
             if (inet_pton(AF_INET, host.ptr, &addr.sin_addr) != 1)
             {
                 fprintf(stderr, "vela: invalid host: %s\n", host.ptr);
-                close(fd);
+                sockClose(fd);
                 return null;
             }
         }
-        if (bind(fd, cast(sockaddr*)&addr, addr.sizeof) < 0)
+        version (Windows)
         {
-            fprintf(stderr, "vela: bind to port %d: ", cast(int) port);
-            perror(null);
-            close(fd);
-            return null;
+            if (bind(cast(SOCKET) fd, cast(sockaddr*)&addr, addr.sizeof) < 0)
+            {
+                fprintf(stderr, "vela: bind to port %d: error %d\n", cast(int) port, WSAGetLastError());
+                sockClose(fd);
+                return null;
+            }
+            if (listen(cast(SOCKET) fd, cast(int) cfg.backlog) < 0)
+            {
+                fprintf(stderr, "vela: listen: error %d\n", WSAGetLastError());
+                sockClose(fd);
+                return null;
+            }
+            sockaddr_in got;
+            int gl = got.sizeof;
+            getsockname(cast(SOCKET) fd, cast(sockaddr*)&got, &gl);
+            bound = ntohs(got.sin_port);
+            if (!redirect)
+            {
+                gBoundFd = fd;
+                gBoundPort = bound;
+            }
+            else
+            {
+                gBoundRedirectFd = fd;
+                gBoundRedirectPort = bound;
+            }
         }
-        if (listen(fd, cast(int) cfg.backlog) < 0)
+        else
         {
-            perror("vela: listen");
-            close(fd);
-            return null;
+            if (bind(fd, cast(sockaddr*)&addr, addr.sizeof) < 0)
+            {
+                fprintf(stderr, "vela: bind to port %d: ", cast(int) port);
+                perror(null);
+                sockClose(fd);
+                return null;
+            }
+            if (listen(fd, cast(int) cfg.backlog) < 0)
+            {
+                perror("vela: listen");
+                sockClose(fd);
+                return null;
+            }
+            sockaddr_in got;
+            socklen_t gl = got.sizeof;
+            getsockname(fd, cast(sockaddr*)&got, &gl);
+            bound = ntohs(got.sin_port);
         }
-        sockaddr_in got;
-        socklen_t gl = got.sizeof;
-        getsockname(fd, cast(sockaddr*)&got, &gl);
-        bound = ntohs(got.sin_port);
 
-        epoll_event ev;
-        ev.events = EPOLLIN; // level-triggered: if connections remain after the batch, the next wait reports them
-        ev.data.ptr = cast(void*) li;
-        epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev);
+        pollerAdd(fd, EPOLLIN, li);
         return li;
     }
 
@@ -629,8 +990,16 @@ final class EpollLoop : EventLoop, Scheduler
     {
         if (li is null || li.fd < 0)
             return;
-        epoll_ctl(ep, EPOLL_CTL_DEL, li.fd, null);
-        close(li.fd);
+        pollerDel(li.fd);
+        version (Windows)
+        {
+            if (workerIndex == 0)
+                sockClose(li.fd);
+        }
+        else
+        {
+            sockClose(li.fd);
+        }
         li.fd = -1;
     }
 
@@ -639,17 +1008,16 @@ final class EpollLoop : EventLoop, Scheduler
         foreach (_; 0 .. 64)
         {
             sockaddr_in peer;
-            socklen_t pl = peer.sizeof;
-            immutable fd = accept4(li.fd, cast(sockaddr*)&peer, &pl, SOCK_NONBLOCK | SOCK_CLOEXEC);
+            uint pl = cast(uint) peer.sizeof;
+            immutable fd = sockAcceptNonBlock(li.fd, cast(sockaddr*)&peer, &pl);
             if (fd < 0)
                 return; // EAGAIN, EMFILE...: the next wait tries again
             if (connCount >= cfg.maxConnections || stopping)
             {
-                close(fd);
+                sockClose(fd);
                 continue;
             }
-            int one = 1;
-            setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, one.sizeof);
+            sockSetTcpNoDelay(fd);
 
             Conn c = spare.empty ? new Conn : spare.pop();
             c.fd = fd;
@@ -680,7 +1048,7 @@ final class EpollLoop : EventLoop, Scheduler
                 c.ssl = tlsServer.accept(fd);
                 if (c.ssl is null)
                 {
-                    close(fd);
+                    sockClose(fd);
                     spare.push(c);
                     continue;
                 }
@@ -692,10 +1060,7 @@ final class EpollLoop : EventLoop, Scheduler
             conns[fd] = c;
             connCount++;
 
-            epoll_event ev;
-            ev.events = EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET;
-            ev.data.ptr = cast(void*) c;
-            epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev);
+            pollerAdd(fd, EPOLLIN | EPOLLOUT | EPOLLRDHUP | EPOLLET, c);
         }
     }
 
@@ -710,8 +1075,7 @@ final class EpollLoop : EventLoop, Scheduler
                     acceptSome(cast(ListenItem) cast(void*) it);
                 break;
             case Kind.wake:
-                ulong v;
-                read(wakeFd, &v, v.sizeof);
+                wakeNotify.drain();
                 break;
             case Kind.conn:
                 onConnEvent(cast(Conn) cast(void*) it, events);
@@ -1542,13 +1906,13 @@ final class EpollLoop : EventLoop, Scheduler
         lastStallLogMs = now;
         if (w.background)
         {
-            fprintf(stderr, "vela: warning: a background fiber held the worker for %ld ms without yielding; "
-                ~ "wait with sleep/awaitFd or move the heavy work out of the loop\n", ms);
+            fprintf(stderr, "vela: warning: a background fiber held the worker for %lld ms without yielding; "
+                ~ "wait with sleep/awaitFd or move the heavy work out of the loop\n", cast(long) ms);
             return;
         }
         auto m = methodName(w.req.method);
-        fprintf(stderr, "vela: warning: a handler held the worker for %ld ms without yielding (%.*s %.*s); "
-            ~ "wait with sleep/awaitFd or move the heavy work out of the loop\n", ms,
+        fprintf(stderr, "vela: warning: a handler held the worker for %lld ms without yielding (%.*s %.*s); "
+            ~ "wait with sleep/awaitFd or move the heavy work out of the loop\n", cast(long) ms,
             cast(int) m.length, m.ptr, cast(int) w.req.path.length, w.req.path.ptr);
     }
 
@@ -2532,8 +2896,7 @@ final class EpollLoop : EventLoop, Scheduler
     /// it cannot climb out of the directory; symlinks are not followed; at most 8 KiB.
     private void serveChallenge(ref const Request req, const(char)[] token)
     {
-        import core.sys.posix.fcntl : open, O_RDONLY, O_NOFOLLOW, O_CLOEXEC;
-        import core.sys.posix.sys.stat : fstat, stat_t, S_ISREG;
+        import core.stdc.stdio : fopen, fclose, fread, fseek, ftell, SEEK_END, SEEK_SET;
 
         bool valid = token.length >= 1 && token.length <= 255;
         foreach (ch; token)
@@ -2553,25 +2916,57 @@ final class EpollLoop : EventLoop, Scheduler
         path[n .. n + token.length] = token[];
         n += token.length;
         path[n] = 0;
-        immutable fd = open(path.ptr, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
-        if (fd < 0)
-            return writeResponseHead(errOut, 404, null, 0, null, req.keepAlive);
-        scope (exit) close(fd);
-        stat_t st;
-        char[8192] content = void;
-        if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > content.length)
-            return writeResponseHead(errOut, 404, null, 0, null, req.keepAlive);
-        size_t got = 0;
-        while (got < st.st_size)
+        version (Posix)
         {
-            immutable r = read(fd, content.ptr + got, content.length - got);
-            if (r <= 0)
-                break;
-            got += r;
+            import core.sys.posix.fcntl : open, O_RDONLY;
+            enum O_CLOEXEC = 0x80000;
+            version (linux)
+                enum O_NOFOLLOW = 0x20000;
+            else version (OSX)
+                enum O_NOFOLLOW = 0x0100;
+            else
+                enum O_NOFOLLOW = 0;
+            import core.sys.posix.sys.stat : fstat, stat_t, S_ISREG;
+            import core.sys.posix.unistd : close, read;
+
+            immutable fd = open(path.ptr, O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+            if (fd < 0)
+                return writeResponseHead(errOut, 404, null, 0, null, req.keepAlive);
+            scope (exit) close(fd);
+            stat_t st;
+            char[8192] content = void;
+            if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size > content.length)
+                return writeResponseHead(errOut, 404, null, 0, null, req.keepAlive);
+            size_t got = 0;
+            while (got < st.st_size)
+            {
+                immutable r = read(fd, content.ptr + got, content.length - got);
+                if (r <= 0)
+                    break;
+                got += r;
+            }
+            writeResponseHead(errOut, 200, "text/plain", got, null, req.keepAlive);
+            if (req.method == Method.GET)
+                errOut.put(content[0 .. got]);
         }
-        writeResponseHead(errOut, 200, "text/plain", got, null, req.keepAlive);
-        if (req.method == Method.GET)
-            errOut.put(content[0 .. got]);
+        else version (Windows)
+        {
+            import core.stdc.stdio : fopen, fclose, fread, fseek, ftell, SEEK_END, SEEK_SET;
+            auto fp = fopen(path.ptr, "rb");
+            if (fp is null)
+                return writeResponseHead(errOut, 404, null, 0, null, req.keepAlive);
+            scope (exit) fclose(fp);
+            fseek(fp, 0, SEEK_END);
+            immutable sz = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            char[8192] content = void;
+            if (sz < 0 || sz > content.length)
+                return writeResponseHead(errOut, 404, null, 0, null, req.keepAlive);
+            immutable got = fread(content.ptr, 1, cast(size_t) sz, fp);
+            writeResponseHead(errOut, 200, "text/plain", got, null, req.keepAlive);
+            if (req.method == Method.GET)
+                errOut.put(content[0 .. got]);
+        }
     }
 
     // ------------------------------------------------------------------ TLS
@@ -2591,7 +2986,11 @@ final class EpollLoop : EventLoop, Scheduler
         char[64] ip = 0;
         in_addr a;
         a.s_addr = c.peerIp;
-        if (inet_ntop(AF_INET, &a, ip.ptr, cast(socklen_t) ip.length) is null)
+        version (Windows)
+            const(char)* ntopRes = inet_ntop(AF_INET, cast(const(void)*)&a, ip.ptr, ip.length);
+        else
+            const(char)* ntopRes = inet_ntop(AF_INET, &a, ip.ptr, cast(socklen_t) ip.length);
+        if (ntopRes is null)
             ip[0 .. 7] = "unknown";
         if (suppressedConnLogs)
             fprintf(stderr, "vela: %.*s from %s: %.*s (%zu similar messages suppressed)\n", cast(int) what.length,
@@ -2606,7 +3005,7 @@ final class EpollLoop : EventLoop, Scheduler
     private ptrdiff_t ioRead(Conn c, void* p, size_t n)
     {
         if (c.ssl is null)
-            return read(c.fd, p, n);
+            return sockRead(c.fd, p, n);
         return tlsRead(c.ssl, p, n, c.tlsFatal);
     }
 
@@ -2614,7 +3013,7 @@ final class EpollLoop : EventLoop, Scheduler
     private ptrdiff_t ioSend(Conn c, const(void)* p, size_t n)
     {
         if (c.ssl is null)
-            return send(c.fd, p, n, MSG_NOSIGNAL);
+            return sockSend(c.fd, p, n);
         return tlsWrite(c.ssl, p, n, c.tlsFatal);
     }
 
@@ -2982,7 +3381,7 @@ final class EpollLoop : EventLoop, Scheduler
         c.lingering = true;
         c.h2Paused = false;
         c.deadlineMs = nowMs + lingerMs;
-        if (shutdown(c.fd, SHUT_WR) != 0)
+        if (sockShutdownWr(c.fd) != 0)
             return closeConn(c);
         drainLingering(c, EPOLLIN);
     }
@@ -2993,12 +3392,12 @@ final class EpollLoop : EventLoop, Scheduler
         char[1024] sink = void;
         for (;;)
         {
-            immutable n = read(c.fd, sink.ptr, sink.length);
+            immutable n = sockRead(c.fd, sink.ptr, sink.length);
             if (n > 0)
                 continue;
             if (n < 0 && errno == EINTR)
                 continue;
-            if (n < 0 && errno == EAGAIN)
+            if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK))
                 break;
             return closeConn(c); // EOF (the peer closed too) or an error
         }
@@ -3132,14 +3531,8 @@ final class EpollLoop : EventLoop, Scheduler
         if (w.cancelled)
             throw cancelledEx;
 
-        epoll_event ev;
-        ev.events = events | EPOLLONESHOT;
-        ev.data.ptr = cast(void*) w.item;
-        if (epoll_ctl(ep, EPOLL_CTL_MOD, fd, &ev) < 0)
-        {
-            if (errno != ENOENT || epoll_ctl(ep, EPOLL_CTL_ADD, fd, &ev) < 0)
-                return IoEvent.error;
-        }
+        if (pollerMod(fd, events | EPOLLONESHOT, w.item) < 0)
+            return IoEvent.error;
         w.waitFd = fd;
         beginWait(w, timeoutMs);
         Fiber.yield();
@@ -3176,12 +3569,16 @@ final class EpollLoop : EventLoop, Scheduler
     /// Ends the wait of `w` (fd ready, timer or cancellation).
     private void wake(Worker w)
     {
+        if (w.waitFd >= 0)
+        {
+            pollerDel(w.waitFd);
+            w.waitFd = -1;
+        }
         w.waiting = false;
         if (w.timerPending)
             staleTimers++; // the Timer stays in the heap until it expires; it no longer counts
         w.timerPending = false;
         w.waitGen++;
-        w.waitFd = -1;
     }
 
     // ------------------------------------------------------------------ timers (min-heap)
@@ -3375,9 +3772,12 @@ final class EpollLoop : EventLoop, Scheduler
             tlsClose(c.ssl, !c.tlsFatal && c.phase != Phase.handshake);
             c.ssl = null;
         }
-        close(c.fd); // the kernel removes the fd from epoll
-        conns[c.fd] = null;
+        pollerDel(c.fd);
+        immutable int oldFd = c.fd;
         c.fd = -1;
+        sockClose(oldFd);
+        if (oldFd >= 0 && oldFd < conns.length)
+            conns[oldFd] = null;
         connCount--;
         clearPending(c);
         c.pending.shrinkTo(maxCoalescedBytes * 2); // a pooled Conn does not pin a peak
@@ -3602,81 +4002,89 @@ private __gshared EpollLoop[] gLoops;
 private Worker crashWorker;   // thread-local: the fiber running right now (null while the loop itself runs)
 private uint crashStackKiB;   // thread-local: ServerConfig.fiberStackBytes of this worker
 
-private extern (C) void onCrash(int sig, siginfo_t* info, void*) nothrow @nogc @system
+version (Posix)
 {
-    auto w = crashWorker;
-    if (w is null)
-        return; // not in a handler: nothing useful to add
-    char[512] buf = void;
-    size_t n;
-    void put(scope const(char)[] t) nothrow @nogc
+    private extern (C) void onCrash(int sig, siginfo_t* info, void*) nothrow @nogc @system
     {
-        foreach (c; t)
-            if (n < buf.length)
-                buf[n++] = c;
-    }
-    void putNum(ulong v, uint base) nothrow @nogc
-    {
-        char[20] d = void;
-        size_t k = d.length;
-        do
+        auto w = crashWorker;
+        if (w is null)
+            return; // not in a handler: nothing useful to add
+        char[512] buf = void;
+        size_t n;
+        void put(scope const(char)[] t) nothrow @nogc
         {
-            d[--k] = "0123456789abcdef"[v % base];
-            v /= base;
+            foreach (c; t)
+                if (n < buf.length)
+                    buf[n++] = c;
         }
-        while (v);
-        put(d[k .. $]);
+        void putNum(ulong v, uint base) nothrow @nogc
+        {
+            char[20] d = void;
+            size_t k = d.length;
+            do
+            {
+                d[--k] = "0123456789abcdef"[v % base];
+                v /= base;
+            }
+            while (v);
+            put(d[k .. $]);
+        }
+        put("vela: segmentation fault (address 0x");
+        putNum(cast(ulong) info.si_addr, 16);
+        put(") while running ");
+        put(methodName(w.req.method));
+        put(" ");
+        put(w.req.path.length > 120 ? w.req.path[0 .. 120] : w.req.path);
+        put(". If the handler recurses deeply or keeps large arrays on the stack, raise ServerConfig.fiberStackBytes (now ");
+        putNum(crashStackKiB, 10);
+        put(" KiB).\n");
+        write(2, buf.ptr, n);
     }
-    put("vela: segmentation fault (address 0x");
-    putNum(cast(ulong) info.si_addr, 16);
-    put(") while running ");
-    put(methodName(w.req.method));
-    put(" ");
-    put(w.req.path.length > 120 ? w.req.path[0 .. 120] : w.req.path);
-    put(". If the handler recurses deeply or keeps large arrays on the stack, raise ServerConfig.fiberStackBytes (now ");
-    putNum(crashStackKiB, 10);
-    put(" KiB).\n");
-    write(2, buf.ptr, n);
-}
 
-/// Alternate stack for this thread plus the process-wide handler (installed once).
-private void installCrashReport(uint stackBytes) nothrow @nogc @system
-{
-    import core.stdc.stdlib : malloc;
-    import core.atomic : cas;
-
-    crashStackKiB = stackBytes >> 10;
-    enum altBytes = 64 * 1024;
-    stack_t ss;
-    ss.ss_sp = malloc(altBytes);
-    ss.ss_size = altBytes;
-    ss.ss_flags = 0;
-    if (ss.ss_sp is null || sigaltstack(&ss, null) != 0)
-        return;
-    static shared bool installed;
-    if (cas(&installed, false, true))
+    /// Alternate stack for this thread plus the process-wide handler (installed once).
+    private void installCrashReport(uint stackBytes) nothrow @nogc @system
     {
-        sigaction_t sa;
-        sa.sa_sigaction = &onCrash;
-        sigemptyset(&sa.sa_mask);
-        sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
-        sigaction(SIGSEGV, &sa, null);
-        sigaction(SIGBUS, &sa, null);
+        import core.stdc.stdlib : malloc;
+        import core.atomic : cas;
+
+        crashStackKiB = stackBytes >> 10;
+        enum altBytes = 64 * 1024;
+        stack_t ss;
+        ss.ss_sp = malloc(altBytes);
+        ss.ss_size = altBytes;
+        ss.ss_flags = 0;
+        if (ss.ss_sp is null || sigaltstack(&ss, null) != 0)
+            return;
+        static shared bool installed;
+        if (cas(&installed, false, true))
+        {
+            sigaction_t sa;
+            sa.sa_sigaction = &onCrash;
+            sigemptyset(&sa.sa_mask);
+            sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_RESETHAND;
+            sigaction(SIGSEGV, &sa, null);
+            sigaction(SIGBUS, &sa, null);
+        }
+    }
+
+    private void removeCrashReportStack() nothrow @nogc @system
+    {
+        import core.stdc.stdlib : free;
+
+        stack_t cur;
+        if (sigaltstack(null, &cur) == 0 && cur.ss_sp !is null)
+        {
+            stack_t off;
+            off.ss_flags = SS_DISABLE;
+            sigaltstack(&off, null);
+            free(cur.ss_sp);
+        }
     }
 }
-
-private void removeCrashReportStack() nothrow @nogc @system
+else
 {
-    import core.stdc.stdlib : free;
-
-    stack_t cur;
-    if (sigaltstack(null, &cur) == 0 && cur.ss_sp !is null)
-    {
-        stack_t off;
-        off.ss_flags = SS_DISABLE;
-        sigaltstack(&off, null);
-        free(cur.ss_sp);
-    }
+    private void installCrashReport(uint) nothrow @nogc @system {}
+    private void removeCrashReportStack() nothrow @nogc @system {}
 }
 
 private extern (C) void onSignal(int) nothrow @nogc
@@ -3737,12 +4145,22 @@ private Thread startWorker(EpollLoop lp, ServerConfig cfg, WorkerInit init, int 
 /// Starts `cfg.workers` loops (one per core if 0), each building its own handler with `init` on its own thread, and
 /// blocks until SIGINT/SIGTERM. Returns false if the server could not start (TLS configuration, `init` threw, a
 /// listener could not bind); the caller decides what to do about it.
+version (linux)
+    private enum loopBackendName = "epoll";
+else version (OSX)
+    private enum loopBackendName = "kqueue";
+else
+    private enum loopBackendName = "poll";
+
+/// Starts `cfg.workers` loops (one per core if 0), each building its own handler with `init` on its own thread, and
+/// blocks until SIGINT/SIGTERM. Returns false if the server could not start (TLS configuration, `init` threw, a
+/// listener could not bind); the caller decides what to do about it.
 bool runEpollServer(ServerConfig cfg, WorkerInit init)
 {
     uint n = cfg.workers;
     if (n == 0)
     {
-        immutable cpus = sysconf(_SC_NPROCESSORS_ONLN);
+        immutable cpus = cpuCount();
         n = cpus > 0 ? cast(uint) cpus : 1;
     }
     TicketKeys keys;
@@ -3777,17 +4195,26 @@ bool runEpollServer(ServerConfig cfg, WorkerInit init)
         return false;
     }
 
-    sigaction_t sa;
-    sa.sa_handler = &onSignal;
-    sigemptyset(&sa.sa_mask);
-    sigaction(SIGINT, &sa, null);
-    sigaction(SIGTERM, &sa, null);
+    version (Posix)
+    {
+        sigaction_t sa;
+        sa.sa_handler = &onSignal;
+        sigemptyset(&sa.sa_mask);
+        sigaction(SIGINT, &sa, null);
+        sigaction(SIGTERM, &sa, null);
+    }
+    else version (Windows)
+    {
+        import core.stdc.signal : signal, SIGINT, SIGTERM;
+        signal(SIGINT, &onSignal);
+        signal(SIGTERM, &onSignal);
+    }
 
     if (!cfg.accept)
-        printf("vela (epoll, %u worker%s) not accepting connections\n", n, n == 1 ? "".ptr : "s".ptr);
+        printf("vela (%s, %u worker%s) not accepting connections\n", loopBackendName.ptr, n, n == 1 ? "".ptr : "s".ptr);
     else
     {
-        printf("vela (epoll, %u worker%s) at %s://%.*s:%d\n", n, n == 1 ? "".ptr : "s".ptr,
+        printf("vela (%s, %u worker%s) at %s://%.*s:%d\n", loopBackendName.ptr, n, n == 1 ? "".ptr : "s".ptr,
             cfg.tls.enabled ? "https".ptr : "http".ptr,
             cast(int) cfg.host.length, cfg.host.ptr, cast(int) cfg.port);
         if (cfg.tls.enabled && cfg.tls.redirectPort)
@@ -3807,5 +4234,10 @@ bool runEpollServer(ServerConfig cfg, WorkerInit init)
     if (cfg.accept)
         foreach (l; gLoops)
             ok = ok && atomicLoad(l.everListened);
+    version (Windows)
+    {
+        gBoundFd = -1;
+        gBoundRedirectFd = -1;
+    }
     return ok;
 }

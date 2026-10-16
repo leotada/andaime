@@ -33,11 +33,8 @@ private bool fiberRequestId(out const(char)[] id, out LogScope fields) nothrow
 import core.stdc.stdlib : exit;
 import core.sync.mutex : Mutex;
 import vela.engine.devserver : runDevServer;
-version (linux)
-{
-    import vela.engine.epoll : runEpollServer;
-    import vela.engine.zlib : zlibDeflate;
-}
+import vela.engine.epoll : runEpollServer;
+import vela.engine.zlib : zlibDeflate;
 
 /// Starts the server. Each worker (one per core by default) calls `build` once, on its own thread, and serves the App it
 /// returns, so everything `build` creates -- the App, controllers, module-level state, `pgPool`, `httpClient` -- belongs to
@@ -141,13 +138,7 @@ bool tryServe(App delegate() @system build, ServerConfig cfg, void delegate() @s
     };
     // @trusted: the engine is raw-syscall @system code, but it only ever calls back into `@safe` handlers
     // (RequestCallback is a @safe delegate) and owns its fds and buffers.
-    version (linux)
-        return (() @trusted => runEpollServer(cfg, init))();
-    else
-    {
-        () @trusted { runDevServer(cfg, init()()); }();
-        return true;
-    }
+    return (() @trusted => runEpollServer(cfg, init))();
 }
 
 /// ditto
@@ -215,8 +206,7 @@ HandlerFactory handlerFactory(App app)
 {
     return () {
         auto ctx = new Context;
-        version (linux)
-            ctx.newDeflate = (int bits, bool noContext) => zlibDeflate(bits, noContext); // WebSocket compression
+        ctx.newDeflate = (int bits, bool noContext) => zlibDeflate(bits, noContext); // WebSocket compression
         RequestCallback cb = (ref Request req, ResponseSink sink) {
             ctx.reset(req, sink);
             setCurrentFiberLocal(ctx); // the request fiber carries its Context (vela.log reads the request id)

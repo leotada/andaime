@@ -10,13 +10,10 @@ public import vela.engine.loop : ServerConfig, TlsConfig, ErrorBody, jsonErrorBo
 public import vela.engine.fiberio : sleep, awaitFd, IoEvent, RequestCancelled, spawn, stopping, workerIndex;
 // Blocking work (DNS, CPU, C libs) and outgoing HTTP calls, both cooperative
 public import vela.engine.offload : offload, configureOffload, PoolSaturated;
-version (linux)
-{
-    public import vela.engine.httpclient : httpClient, HttpClient, HttpClientConfig, HttpClientError,
-        HttpClientTimeout, ClientResponse, HeaderPair, HttpTransport, setHttpTransport;
-    public import vela.engine.httpfake : FakeHttpClient, Expectation, RecordedRequest;
-    public import vela.engine.wsclient : wsConnect, WsClientOptions;
-    // Is a native library installed? (startup and image checks)
-    public import vela.engine.tls : tlsAvailable, tlsLoadError;
-    public import vela.engine.zlib : zlibAvailable, zlibLoadError;
-}
+public import vela.engine.httpclient : httpClient, HttpClient, HttpClientConfig, HttpClientError,
+    HttpClientTimeout, ClientResponse, HeaderPair, HttpTransport, setHttpTransport;
+public import vela.engine.httpfake : FakeHttpClient, Expectation, RecordedRequest;
+public import vela.engine.wsclient : wsConnect, WsClientOptions;
+// Is a native library installed? (startup and image checks)
+public import vela.engine.tls : tlsAvailable, tlsLoadError;
+public import vela.engine.zlib : zlibAvailable, zlibLoadError;

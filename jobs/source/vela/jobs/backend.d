@@ -680,15 +680,38 @@ private void releaseQuiet(JobStore store, long id) @safe
 /// Wall clock in microseconds since the Unix epoch.
 long unixNowUs() @safe nothrow
 {
-    // sound: clock_gettime only writes the local timespec; the caller sees a number or 0.
     static long read() @trusted nothrow @nogc
     {
-        import core.sys.posix.time : CLOCK_REALTIME, clock_gettime, timespec;
+        version (linux)
+        {
+            import core.sys.posix.time : CLOCK_REALTIME, clock_gettime, timespec;
 
-        timespec ts;
-        if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
-            return 0;
-        return cast(long) ts.tv_sec * 1_000_000L + cast(long) ts.tv_nsec / 1_000L;
+            timespec ts;
+            if (clock_gettime(CLOCK_REALTIME, &ts) != 0)
+                return 0;
+            return cast(long) ts.tv_sec * 1_000_000L + cast(long) ts.tv_nsec / 1_000L;
+        }
+        else version (Posix)
+        {
+            import core.sys.posix.sys.time : gettimeofday, timeval;
+
+            timeval tv;
+            if (gettimeofday(&tv, null) != 0)
+                return 0;
+            return cast(long) tv.tv_sec * 1_000_000L + cast(long) tv.tv_usec;
+        }
+        else version (Windows)
+        {
+            import core.sys.windows.winbase : GetSystemTimeAsFileTime, FILETIME;
+
+            FILETIME ft;
+            GetSystemTimeAsFileTime(&ft);
+            ulong t = (cast(ulong) ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+            enum ulong epochDiff = 116_444_736_000_000_000UL;
+            if (t < epochDiff)
+                return 0;
+            return cast(long)((t - epochDiff) / 10);
+        }
     }
 
     return read();

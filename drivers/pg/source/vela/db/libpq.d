@@ -6,7 +6,7 @@ module vela.db.libpq;
 
 @safe:
 
-import core.sys.posix.dlfcn : dlopen, dlsym, dlerror, RTLD_NOW;
+import vela.engine.os : dlOpen, dlSym, dlError;
 
 package:
 
@@ -122,16 +122,6 @@ shared static this() @trusted
     gLock = new Object;
 }
 
-/// The text of the last failed `dlopen` (null when there is none), for the load error message.
-private string dlDetail() @trusted nothrow
-{
-    import core.stdc.string : strlen;
-
-    // dlerror returns a NUL-terminated string owned by libc; it is copied before the next dl call
-    auto e = dlerror();
-    return e is null ? null : e[0 .. strlen(e)].idup;
-}
-
 private string loadLocked() @trusted nothrow
 {
     if (loaded)
@@ -139,13 +129,25 @@ private string loadLocked() @trusted nothrow
     if (loadError !is null)
         return loadError;
 
+    version (linux)
+        immutable string[] names = ["libpq.so.5\0", "libpq.so\0"];
+    else version (OSX)
+        immutable string[] names = [
+            "libpq.5.dylib\0",
+            "libpq.dylib\0",
+            "/opt/homebrew/opt/libpq/lib/libpq.5.dylib\0",
+            "/usr/local/opt/libpq/lib/libpq.5.dylib\0"
+        ];
+    else version (Windows)
+        immutable string[] names = ["libpq.dll\0"];
+
     void* h;
     string detail;
-    foreach (name; ["libpq.so.5\0", "libpq.so\0", "libpq.5.dylib\0"])
-        if ((h = dlopen(name.ptr, RTLD_NOW)) !is null)
+    foreach (name; names)
+        if ((h = dlOpen(name.ptr)) !is null)
             break;
         else if (detail is null)
-            detail = dlDetail();
+            detail = dlError();
     if (h is null)
         return loadError = "vela.db: libpq not found (install libpq5 / libpq)"
             ~ (detail is null ? "" : ": " ~ detail);
@@ -153,7 +155,7 @@ private string loadLocked() @trusted nothrow
     static foreach (m; __traits(allMembers, Api))
     {
         {
-            auto p = dlsym(h, (m ~ "\0").ptr);
+            auto p = dlSym(h, (m ~ "\0").ptr);
             if (p is null)
                 return loadError = "vela.db: missing symbol in libpq: " ~ m;
             __traits(getMember, pq, m) = cast(typeof(__traits(getMember, pq, m))) p;

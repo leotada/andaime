@@ -15,9 +15,37 @@ module vela.staticfiles;
 
 import core.stdc.errno : errno, EINTR;
 import core.stdc.stdlib : free;
-import core.sys.posix.fcntl : open, O_RDONLY, O_CLOEXEC;
-import core.sys.posix.sys.stat : fstat, stat_t, S_ISDIR, S_ISREG, mode_t;
-import core.sys.posix.unistd : close, read;
+
+version (linux)
+{
+    import core.sys.posix.fcntl : open, O_RDONLY, O_CLOEXEC;
+    import core.sys.posix.sys.stat : fstat, stat_t, S_ISDIR, S_ISREG, mode_t;
+    import core.sys.posix.unistd : close, read;
+}
+else version (Posix)
+{
+    import core.sys.posix.fcntl : open, O_RDONLY;
+    enum O_CLOEXEC = 0x1000000;
+    import core.sys.posix.sys.stat : fstat, stat_t, S_ISDIR, S_ISREG, mode_t;
+    import core.sys.posix.unistd : close, read;
+}
+else version (Windows)
+{
+    import core.sys.windows.stat : fstat, struct_stat, S_ISDIR, S_ISREG;
+    alias stat_t = struct_stat;
+    alias mode_t = ushort;
+    enum O_RDONLY = 0x0000;
+    enum O_CLOEXEC = 0;
+    extern (C) nothrow @nogc
+    {
+        int _open(const(char)*, int, ...);
+        int _close(int);
+        int _read(int, void*, uint);
+    }
+    alias open = _open;
+    alias close = _close;
+    alias read = _read;
+}
 
 import vela.http.types : Method, equalsIgnoreCase;
 import vela.http.date : formatHttpDate;
@@ -216,34 +244,55 @@ private int openChecked(string resolved) @trusted
     }
 }
 
-/// @trusted: the C string from realpath() is copied and freed before returning.
+/// @trusted: the resolved path is copied before returning.
 string realPath(string path) @trusted
 {
-    import core.sys.posix.stdlib : realpath;
-    import core.stdc.string : strlen;
+    version (Posix)
+    {
+        import core.sys.posix.stdlib : realpath;
+        import core.stdc.string : strlen;
 
-    auto z = path ~ '\0';
-    char* r = realpath(z.ptr, null);
-    if (r is null)
-        return null;
-    scope (exit)
-        free(r);
-    return r[0 .. strlen(r)].idup;
+        auto z = path ~ '\0';
+        char* r = realpath(z.ptr, null);
+        if (r is null)
+            return null;
+        scope (exit)
+            free(r);
+        return r[0 .. strlen(r)].idup;
+    }
+    else version (Windows)
+    {
+        import core.sys.windows.winbase : GetFullPathNameA;
+        import core.stdc.string : strlen;
+
+        auto z = path ~ '\0';
+        char[1024] buf;
+        auto len = GetFullPathNameA(z.ptr, cast(uint) buf.length, buf.ptr, null);
+        if (len == 0 || len >= buf.length)
+            return null;
+        foreach (ref c; buf[0 .. len])
+            if (c == '\\')
+                c = '/';
+        return buf[0 .. len].idup;
+    }
 }
 
 /// @trusted: fstat writes only into `st`, which is a live local.
 private bool statFd(int fd, out stat_t st) @trusted nothrow @nogc => fstat(fd, &st) == 0;
 
 // Older druntime declares S_ISDIR/S_ISREG @system (and impure). Sound: each is a bit test on an integer.
-private bool isDirMode(mode_t m) @trusted nothrow @nogc => S_ISDIR(m);
-private bool isRegMode(mode_t m) @trusted nothrow @nogc => S_ISREG(m);
+private bool isDirMode(mode_t m) @trusted nothrow @nogc => S_ISDIR(m) != 0;
+private bool isRegMode(mode_t m) @trusted nothrow @nogc => S_ISREG(m) != 0;
 
 private size_t readFully(int fd, char[] dest) nothrow @nogc @trusted
 {
     size_t got;
     while (got < dest.length)
     {
-        auto n = read(fd, dest.ptr + got, dest.length - got);
+        version (Windows)
+            auto n = read(fd, dest.ptr + got, cast(uint)(dest.length - got > uint.max ? uint.max : dest.length - got));
+        else
+            auto n = read(fd, dest.ptr + got, dest.length - got);
         if (n > 0)
             got += n;
         else if (n == 0)

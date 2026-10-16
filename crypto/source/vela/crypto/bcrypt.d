@@ -7,8 +7,8 @@ module vela.crypto.bcrypt;
 
 @safe:
 
-import core.sys.posix.dlfcn : dlopen, dlsym, RTLD_NOW, RTLD_LOCAL;
 import vela.crypto.common;
+import vela.engine.os : dlOpen, dlSym;
 
 /// The default cost (2^12 rounds), passlib's and Python bcrypt's default.
 enum uint bcryptDefaultCost = 12;
@@ -110,18 +110,31 @@ private string loadLibxcrypt() @trusted
             return null;
         if (xcError !is null)
             return xcError;
+
+        version (linux)
+            immutable string[] names = ["libcrypt.so.1\0", "libcrypt.so.2\0", "libcrypt.so\0"];
+        else version (OSX)
+            immutable string[] names = [
+                "libcrypt.2.dylib\0",
+                "libcrypt.dylib\0",
+                "/opt/homebrew/lib/libcrypt.dylib\0",
+                "/usr/local/lib/libcrypt.dylib\0"
+            ];
+        else version (Windows)
+            immutable string[] names = ["libcrypt-2.dll\0", "libcrypt.dll\0", "crypt.dll\0"];
+
         void* h;
-        foreach (n; ["libcrypt.so.1\0", "libcrypt.so.2\0", "libcrypt.so\0"])
+        foreach (n; names)
         {
-            h = dlopen(n.ptr, RTLD_NOW | RTLD_LOCAL);
-            if (h !is null && dlsym(h, "crypt_rn") !is null && dlsym(h, "crypt_gensalt_rn") !is null)
+            h = dlOpen(n.ptr);
+            if (h !is null && dlSym(h, "crypt_rn\0".ptr) !is null && dlSym(h, "crypt_gensalt_rn\0".ptr) !is null)
                 break;
             h = null;
         }
         if (h is null)
-            return xcError = "vela.crypto: libxcrypt (libcrypt.so.1 with crypt_rn) not found; install libxcrypt / libcrypt1";
-        xc.crypt_rn = cast(typeof(xc.crypt_rn)) dlsym(h, "crypt_rn");
-        xc.crypt_gensalt_rn = cast(typeof(xc.crypt_gensalt_rn)) dlsym(h, "crypt_gensalt_rn");
+            return xcError = "vela.crypto: libxcrypt (libcrypt) not found; install libxcrypt";
+        xc.crypt_rn = cast(typeof(xc.crypt_rn)) dlSym(h, "crypt_rn\0".ptr);
+        xc.crypt_gensalt_rn = cast(typeof(xc.crypt_gensalt_rn)) dlSym(h, "crypt_gensalt_rn\0".ptr);
         xcLoaded = true;
         return null;
     }

@@ -161,28 +161,22 @@ void runJobs(Jobs...)(JobStore store, Startup startup, ServerConfig cfg = Server
     cast(void) scheduledJobs!Jobs(hooks.schedule); // throws now, not on worker 0 once the loop runs
     idleBackoff = normalizeBackoff(idleBackoff);
     configureWorker(cfg, singleThread, healthPort);
-    version (linux)
-    {
-        WorkerInit init = () {
-            setLogFiberSource(&jobFiberLog); // vela.log reads the running job from its fiber
-            if (workerIndex == 0)
-                startSupervisor!Jobs(store, startup, hooks, idleBackoff);
-            if (healthPort == 0)
-                return () => (ref Request, ResponseSink) {};
-            auto app = healthApp();
-            app.freeze();
-            return healthFactory(app);
-        };
-        import vela.engine.epoll : runEpollServer;
+    WorkerInit init = () {
+        setLogFiberSource(&jobFiberLog); // vela.log reads the running job from its fiber
+        if (workerIndex == 0)
+            startSupervisor!Jobs(store, startup, hooks, idleBackoff);
+        if (healthPort == 0)
+            return () => (ref Request, ResponseSink) {};
+        auto app = healthApp();
+        app.freeze();
+        return healthFactory(app);
+    };
+    import vela.engine.epoll : runEpollServer;
 
-        // sound: runEpollServer is @system epoll code; it only calls this @safe WorkerInit and the @safe fibers it spawns
-        bool ok = (() @trusted => runEpollServer(cfg, init))();
-        if (!ok)
-            throw new Exception("vela.jobs: the worker loop did not start");
-    }
-    else
-        throw new Exception(
-            "vela.jobs: background jobs need the epoll loop (the development server runs spawn inline)");
+    // sound: runEpollServer is @system event loop code; it only calls this @safe WorkerInit and the @safe fibers it spawns
+    bool ok = (() @trusted => runEpollServer(cfg, init))();
+    if (!ok)
+        throw new Exception("vela.jobs: the worker loop did not start");
 }
 
 /// vela.log's context in a `--role=worker` fiber: the `LogScope` the runner put in the fiber's slot while `perform`
@@ -1031,7 +1025,6 @@ unittest
     assert(badQueues);
 }
 
-version (linux)
 unittest
 {
     auto store = new TestJobStore;

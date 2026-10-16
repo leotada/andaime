@@ -27,8 +27,7 @@ import core.stdc.stdio : snprintf;
 import core.stdc.stdlib : strtod;
 import core.time : Duration, MonoTime, msecs, seconds, minutes;
 
-import core.sys.linux.sys.eventfd : eventfd;
-import core.sys.posix.unistd : close, write;
+import vela.engine.os : NotifyFd;
 
 import vela.http.texttype : isTextType, textFromString, textToString;
 import vela.http.naming : applyNaming, namingOf, parseEnumWire, enumToWire;
@@ -1138,7 +1137,7 @@ private string trimEol(string s) pure nothrow @safe
 
 private final class Waiter
 {
-    int efd = -1;
+    NotifyFd notify;
     PgConn conn;     /// handed over directly by release()
     bool signaled;
 }
@@ -1200,15 +1199,14 @@ final class PgPool
 
             // pool full: join the queue and wait for a return
             auto w = new Waiter;
-            w.efd = eventfd(0, 0x800 | 0x80000);
-            if (w.efd < 0)
-                throw new PgError("vela.db: eventfd failed");
+            if (!w.notify.open())
+                throw new PgError("vela.db: notify failed");
             waiters ~= w;
             bool served;
             scope (exit)
             {
                 removeWaiter(w);
-                close(w.efd);
+                w.notify.close();
                 if (!served && w.signaled)
                 {
                     // we were woken but left before using it (deadline/cancellation):
@@ -1220,9 +1218,10 @@ final class PgPool
                 }
             }
             immutable left = deadline - MonoTime.currTime;
-            if (left <= Duration.zero || awaitFd(w.efd, IoEvent.readable, left) == 0)
+            if (left <= Duration.zero || awaitFd(w.notify.readFd, IoEvent.readable, left) == 0)
                 throw new PgError("vela.db: connection pool exhausted (all in use for more than "
                         ~ "acquireTimeout)");
+            w.notify.drain();
             served = true;
             if (w.conn !is null)
                 return w.conn;
@@ -1256,8 +1255,7 @@ final class PgPool
                 continue;
             w.signaled = true;
             w.conn = c;
-            ulong one = 1;
-            write(w.efd, &one, one.sizeof);
+            w.notify.wake();
             return true;
         }
         return false;

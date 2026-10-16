@@ -1,10 +1,8 @@
-/// libcrypto (OpenSSL 3) loaded at run time for `vela:crypto`. Only the functions the primitives need, in one table.
-/// Nothing here is public outside the package: the facades in the other modules are the API.
 module vela.crypto.libcrypto;
 
 @system:
 
-import core.sys.posix.dlfcn : dlopen, dlsym, RTLD_NOW, RTLD_LOCAL;
+import vela.engine.os : dlOpen, dlSym;
 
 package struct EVP_MD;
 package struct EVP_CIPHER;
@@ -120,20 +118,37 @@ package string loadLibcrypto() @trusted
             return null;
         if (loadError !is null)
             return loadError;
+
+        version (linux)
+            immutable string[] names = ["libcrypto.so.3\0", "libcrypto.so\0"];
+        else version (OSX)
+            immutable string[] names = [
+                "libcrypto.3.dylib\0",
+                "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib\0",
+                "/usr/local/opt/openssl@3/lib/libcrypto.3.dylib\0",
+                "libcrypto.dylib\0"
+            ];
+        else version (Windows)
+            immutable string[] names = [
+                "libcrypto-3-x64.dll\0",
+                "libcrypto-3.dll\0",
+                "libcrypto.dll\0"
+            ];
+
         void* h;
-        foreach (n; ["libcrypto.so.3\0", "libcrypto.so\0"])
+        foreach (n; names)
         {
-            h = dlopen(n.ptr, RTLD_NOW | RTLD_LOCAL);
+            h = dlOpen(n.ptr);
             // a libcrypto without the OpenSSL 3 key API (LibreSSL, OpenSSL 1.1) is not usable
-            if (h !is null && dlsym(h, "EVP_PKEY_fromdata") !is null)
+            if (h !is null && dlSym(h, "EVP_PKEY_fromdata\0".ptr) !is null)
                 break;
             h = null;
         }
         if (h is null)
-            return loadError = "vela.crypto: OpenSSL 3 (libcrypto.so.3) not found; install libssl3 / openssl";
+            return loadError = "vela.crypto: OpenSSL 3 (libcrypto) not found; install libssl3 / openssl";
         static foreach (m; __traits(allMembers, CryptoApi))
         {{
-            auto p = dlsym(h, (m ~ "\0").ptr);
+            auto p = dlSym(h, (m ~ "\0").ptr);
             if (p is null)
                 return loadError = "vela.crypto: missing symbol in libcrypto: " ~ m;
             __traits(getMember, lc, m) = cast(typeof(__traits(getMember, lc, m))) p;

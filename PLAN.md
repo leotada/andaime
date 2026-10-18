@@ -62,6 +62,7 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 - [Phase 10 — WebSockets](#phase-10--websockets)
 - [Phase 11 — Features for real applications](#phase-11--features-for-real-applications)
 - [Phase 12 — What the Visto migration still worked around](#phase-12--what-the-visto-migration-still-worked-around)
+- [Phase 13 — E-mail (`andaime:mail`), parked](#phase-13--e-mail-andaimemail-parked)
 - [Open owner decisions](#open-owner-decisions-not-blocking)
 - [Appendix A — Evidence](#appendix-a--evidence-gathered-during-the-review)
 - [Appendix B — Definition of done](#appendix-b--definition-of-done-every-item)
@@ -1695,6 +1696,28 @@ the baseline 416 ms on this machine).
 
 > **Done.** `TxMode`. Tests: `tests/db/pg_features.d` (`testSavepoints`). Docs: `database.md`.
 
+## Phase 13 — E-mail (`andaime:mail`), parked
+
+Recorded on 2026-10-18 so that e-mail is a known gap, not a forgotten one. **Do not start without the owner.**
+
+Real applications send transactional e-mail (sign-up confirmation, password reset, receipts). Today that is application
+code: a call to the provider's HTTP API with `httpClient`, run from a job (`@Job("mail")` is already the example in
+`docs/jobs-and-cron.md`) so a slow provider never holds a request, and faked in tests with `FakeHttpClient` (12.5).
+
+**Likely scope** (not decided):
+- A `Mailer` interface: one message (from, to, cc, bcc, reply-to, subject, text, HTML, attachments) in, a provider
+  message id or an error out.
+- HTTP providers first (Resend, Postmark), over `httpClient`: no new native library and no new TLS code.
+- A `FakeMailer` for tests that records messages and asserts on them, in the style of `FakeHttpClient` and `TestJobStore`.
+- A guide in `docs/` showing a mail job with retries, and the transactional enqueue (`JobTransaction`, 12.9) for "send
+  after the row is committed".
+
+**Open decisions:**
+- A subpackage (`andaime:mail`, depending on `andaime:engine`) or a package under `drivers/` (one per provider?).
+- SMTP. It needs a client that speaks TLS over an arbitrary socket (implicit TLS on 465, STARTTLS on 587), which is new
+  TLS work and falls under the freeze (D3). An HTTP-only first version avoids it.
+- Templates stay out of scope: the application renders the text and HTML bodies.
+
 ## Open owner decisions (not blocking)
 
 - **The final name.** Decided: **andaime** (Portuguese for "scaffolding"), renamed from the provisional name "vela". The
@@ -1702,6 +1725,7 @@ the baseline 416 ms on this machine).
   variables, the docs. Still check code.dlang.org for a collision before the first public release.
 - **When to unfreeze HTTP/2 and TLS** (D3).
 - **Whether and when to publish on code.dlang.org** (after Phase 4 or Phase 5?).
+- **Whether andaime ships e-mail, and over which transports** (see Phase 13).
 
 ---
 

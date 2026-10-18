@@ -48,7 +48,8 @@ void main()
 - `@Job("mail")` is the **queue**. It is required. The stored job name is `jobName!SendMail` (the struct's fully
   qualified name), so two `SendMail` structs in different modules do not collide.
 - `void perform(ref JobContext ctx) @safe`. There is no dependency injection: a pool or an HTTP client stays
-  thread-local, as `db()` does in [database.md](database.md).
+  thread-local, as `db()` does in [database.md](database.md). To hand a job the use case it should call, see the
+  `provided!T` pattern in [architecture.md](architecture.md#background-jobs).
 - The payload is the JSON of the struct fields: bool, numbers, string, enum, arrays, string-keyed maps, structs,
   `Optional!T`. A pointer, class, delegate or interface is a one-line compile error (`andaime.jobs:`).
 - `TestJobStore` never runs by itself. `assertEnqueued!T(substring)` checks the job name, the queue and a payload

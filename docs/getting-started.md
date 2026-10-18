@@ -30,6 +30,10 @@ targetType "executable"
 dependency "andaime" path="../andaime"
 ```
 
+This page builds a project by hand, to show how andaime works. The optional `andaime` command can also create one:
+`andaime new my-api --template minimal` for a single module, or `andaime new my-api` for a project in layers
+([The andaime command](cli.md), [Architecture](architecture.md)).
+
 ## The first route
 
 `source/app.d`:

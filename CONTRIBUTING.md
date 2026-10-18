@@ -17,8 +17,8 @@ improvement plan and its decision log. Everything is written in English: code, c
 
 ## Toolchain
 
-DMD 2.109.1+ or LDC 1.40.1+ (both minimums are tested in CI), DUB, Linux x86_64. A change is done when `tools/check.sh` passes
-on **both** compilers.
+DMD 2.112.0+ or LDC 1.42.0+ (the first compilers with language editions; the code is on edition 2025; CI tests DMD 2.112.0,
+the latest DMD and the latest LDC), DUB, Linux x86_64. A change is done when `tools/check.sh` passes on **both** DMD and LDC.
 
 ## The test suite
 
@@ -30,8 +30,7 @@ ANDAIME_STRICT=1 tools/check.sh         # a skipped section fails the run (CI do
 ```
 
 `check.sh` runs sections: unittests, a `-preview=dip1000` type-check of everything (new code must keep it passing: mark
-parameters that are only read `scope`, and `return scope` when the result points into them), the same under language
-edition 2025 (DMD 2.112+; older compilers skip it, CI runs it on 2.112.0), the web layer, documentation examples, OpenAPI validity, the parser, HTTP/2 session and
+parameters that are only read `scope`, and `return scope` when the result points into them), the web layer, documentation examples, OpenAPI validity, the parser, HTTP/2 session and
 WebSocket layer with mutation fuzzing, the GC-free hot path, network tests (HTTP/1.1, HTTP/2, HTTPS, WebSockets),
 interoperability (curl, python-h2, h2spec, python websockets, Caddy, Chromium), PostgreSQL, the HTTP client, the API example end to end, the `andaime` command end to end
 (`tools/cli_e2e.sh`: every template and generator, and `examples/clean` against a fresh output), memory ceilings, compile-error tests, DUB

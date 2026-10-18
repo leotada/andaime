@@ -44,10 +44,9 @@ the flag, or a test runner that turns it on (`unit-threaded` does), can use anda
 parameters that keep views into the caller's memory are not `scope` for that reason: the request parser's buffer and header
 store, the multipart body (the parts point into it) and `Request.queryValues(name)`.
 
-The code is also checked under language edition 2025 (`module x 2025;`, DMD 2.112 and later), which includes DIP1000. An
-application written in a newer edition can import andaime: a template follows the rules of the edition of the module that
-defines it, not of the one that instantiates it. andaime itself stays on the baseline edition, because the older compilers it
-supports do not read the syntax.
+The code is written in language edition 2025 (`module x 2025;`, DMD 2.112 and later), which includes DIP1000. An
+application in any edition can import andaime: a template follows the rules of the edition of the module that defines it,
+not of the one that instantiates it.
 
 ## What you may keep from a request
 

@@ -29,9 +29,10 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 - Error messages start with the prefix of their package: `andaime:` in `http/`, `web/`, the root package and the engine's server
   modules (`epoll.d`, `tlsserver.d`, `random.d`...); `andaime.http:` in the HTTP and WebSocket clients (`httpclient.d`, `httpfake.d`,
   `wsclient.d`) and `tls.d`; `andaime.crypto:`, `andaime.jobs:` (also `drivers/pgjobs`) and `andaime.db:` (the Postgres driver).
-- Code also type-checks under language edition 2025 (the `edition` section of `check.sh`: a scratch copy with `module x 2025;`;
-  the repository stays on the baseline edition because DMD 2.109 / LDC 1.40 cannot read it; CI runs it on DMD 2.112.0, the
-  oldest compiler with editions, and older compilers skip it).
+- The code is on language edition 2025: every module of the libraries, tests, examples and CLI templates starts with
+  `module x 2025;` (a program without a declaration gets `module <file name> 2025;`). That is why the minimum is DMD 2.112.0 and
+  LDC 1.42.0, the first with editions. `tests/compile_fail/` (user code under test), `cli/source/` and `spikes/` stay on the
+  baseline edition.
 - Code type-checks with `-preview=dip1000` (the `dip1000` section of `check.sh`, on DMD and LDC). A parameter that is only
   read is `scope`; one whose result points into it is `return scope`; one the callee stores views of (the parser's buffer,
   the multipart body) is a plain slice. Where the compiler cannot see that a view never outlives its source, a small named
@@ -94,7 +95,7 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 | `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `ws_interop.sh` (python `websockets`), `proxy_interop.sh` (behind Caddy over h2c), `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, `api_e2e.sh` (`examples/api` end to end), `cli_e2e.sh` (the `andaime` command end to end), `bench.sh`, and the helpers that start a throwaway Postgres / test upstream. |
 | `internals/` | Contributor notes per subsystem (concurrency, jobs, response contract, WebSockets, HTTP/2, TLS); see [Subsystem notes](#subsystem-notes). |
 | `docs/`, `README.md` | User-facing docs: `docs/README.md` is the index (guides: getting-started, routing, requests, validation, responses, middleware, streaming, websocket, static files/OpenAPI, concurrency, database, jobs and cron, http-client, logging, crypto, testing, safety, architecture, cli; reference: deploy, tls, http2, configuration). Keep them in sync with behavior; code blocks whose first line is `// check` are compiled by `tools/doc_examples.sh`. Contributor material goes in `CONTRIBUTING.md`, not the README. |
-| `.github/workflows/check.yml` | CI: DMD and LDC at the minimum and latest versions, strict mode; the `edition` section on DMD 2.112.0 in its own job; the browser test and fuzzing in their own jobs, nightly or on a manual run only. |
+| `.github/workflows/check.yml` | CI: DMD 2.112.0 (the minimum), DMD latest and LDC latest, strict mode; the browser test and fuzzing in their own jobs, nightly or on a manual run only. |
 
 Dependency direction: `http` <- `web`, `http` <- `engine` <- `drivers/pg`. `jobs` depends on `web` and `engine`, not on `pg`.
 `drivers/pgjobs` depends on `jobs` and `andaime:pg`. `crypto` depends on `http` and `engine`; nothing in the core or `jobs`
@@ -114,7 +115,7 @@ tools/bench.sh [seconds]       # throughput (req/s) of one worker, with and with
 tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SPEC=/path); also run by check.sh
 ```
 
-- A change is done when `tools/check.sh` passes on **both** DMD and LDC (minimum supported: DMD 2.109.1, LDC 1.40.1), with new
+- A change is done when `tools/check.sh` passes on **both** DMD and LDC (minimum supported: DMD 2.112.0, LDC 1.42.0; CI tests DMD 2.112.0 and the latest DMD and LDC), with new
   tests, a `compile_fail` case for every new signature rule, the hot path still GC-free and the memory numbers within their limits.
 - **Skips**: a test or helper that cannot run prints `skip: <reason>` to stderr and exits **77**; `check.sh` lists the skips in its
   summary. `dmd -run` turns every non-zero code into 1, so tests that can skip are built first and run afterwards.

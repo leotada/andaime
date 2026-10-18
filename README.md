@@ -5,9 +5,9 @@
 **A fast, modular, memory-safe web framework for D. Your function signature *is* your HTTP contract.**
 
 [![CI](https://github.com/leotada/andaime/actions/workflows/check.yml/badge.svg)](https://github.com/leotada/andaime/actions/workflows/check.yml)
-![D edition 2025](https://img.shields.io/badge/D_edition-2025_compatible-B03931)
-![DMD 2.109.1+](https://img.shields.io/badge/DMD-2.109.1%2B-informational)
-![LDC 1.40.1+](https://img.shields.io/badge/LDC-1.40.1%2B-informational)
+![D edition 2025](https://img.shields.io/badge/D_edition-2025-B03931)
+![DMD 2.112.0+](https://img.shields.io/badge/DMD-2.112.0%2B-informational)
+![LDC 1.42.0+](https://img.shields.io/badge/LDC-1.42.0%2B-informational)
 ![@safe](https://img.shields.io/badge/%40safe-%2B_dip1000-success)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
@@ -602,13 +602,12 @@ Spotted something outdated in this table? Open an issue.</sub>
 
 | | |
 |---|---|
-| 🟢 **Minimum compilers** | DMD **2.109.1** and LDC **1.40.1**. CI tests the minimum and the latest of both |
-| 🆕 **D edition 2025** | The whole code base, tests and examples type-check as **edition 2025** (DMD **2.112+**; CI runs it on 2.112.0) |
-| ✍️ **Your app** | Can be written in edition 2025 (`module app 2025;`) and import andaime: each template follows the edition of the module that defines it |
-| 🧱 **The library itself** | Stays on the baseline edition, so the older compilers above can still read it |
+| 🟢 **Minimum compilers** | DMD **2.112.0** and LDC **1.42.0**, the first with language editions. CI tests DMD 2.112.0, the latest DMD and the latest LDC |
+| 🆕 **D edition 2025** | The whole code base, tests and examples are written in **edition 2025** (`module x 2025;`) |
+| ✍️ **Your app** | Can be written in edition 2025 (`module app 2025;`), which the CLI templates do, or in an older edition: each template follows the edition of the module that defines it |
 | 🛡️ **DIP1000** | Library, tests and examples type-check with `-preview=dip1000` on DMD and LDC |
 
-In short: **use any compiler from DMD 2.109.1 / LDC 1.40.1 up, and edition 2025 when your compiler has it.**
+In short: **use DMD 2.112.0 / LDC 1.42.0 or newer.**
 
 ---
 
@@ -640,7 +639,7 @@ curl -fsS https://dlang.org/install.sh | bash -s dmd   # or ldc; see https://dla
 **Requirements**
 - 🐧 **Linux x86_64** for production (epoll). The event loop also has macOS (kqueue) and Windows (WSAPoll) backends, which CI
   type-checks but does not run yet
-- 🧑‍💻 DMD 2.109.1+ or LDC 1.40.1+, with DUB
+- 🧑‍💻 DMD 2.112.0+ or LDC 1.42.0+, with DUB
 - 📦 Optional, loaded only when used: OpenSSL 3 (HTTPS, crypto), `libpq.so.5` (PostgreSQL), zlib (WebSocket compression),
   `libcrypt.so.1` (bcrypt)
 

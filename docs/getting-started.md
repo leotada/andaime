@@ -1,14 +1,14 @@
 # Getting started
 
-From an empty folder to a running API. Everything here is tested with DMD 2.109.1 and LDC 1.40.1 (the minimum versions) on
+From an empty folder to a running API. Everything here is tested with DMD 2.112.0 (the minimum version), the latest DMD and the latest LDC on
 Linux x86_64.
 
 > The framework is called **andaime** (Portuguese for "scaffolding"; `import andaime;`); the repository is called `andaime`.
 
 ## Requirements
 
-- A D compiler (DMD 2.109.1+ or LDC 1.40.1+) and DUB. The code also type-checks as language edition 2025 (DMD 2.112+), and
-  your application may be written in that edition (see [Memory safety](safety.md)).
+- A D compiler (DMD 2.112.0+ or LDC 1.42.0+) and DUB. The code is written in language edition 2025, and so are the
+  applications the CLI generates (see [Memory safety](safety.md)).
 - Linux for the production server (epoll). The event loop also has macOS (kqueue) and Windows (WSAPoll) backends: CI
   type-checks them, but does not run them yet.
 - Optional, loaded at run time only when used: OpenSSL 3 for HTTPS, libpq5 for the PostgreSQL driver.

@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Guidance for AI coding agents (and humans) working on this repository.
-The framework is called **andaime** (Portuguese for "scaffolding": a modular web framework where you attach modules as you need them; DUB package `andaime`, `import andaime;`); the repository is `dapi`.
+The framework is called **andaime** (Portuguese for "scaffolding": a modular web framework where you attach modules as you need them; DUB package `andaime`, `import andaime;`); the repository is `andaime`.
 `PLAN.md` holds the improvement plan with its decision log (owner decisions D1-D4, planner decisions P1-P9) and what was done.
 
 ## What this is

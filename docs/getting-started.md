@@ -3,7 +3,7 @@
 From an empty folder to a running API. Everything here is tested with DMD 2.109.1 and LDC 1.40.1 (the minimum versions) on
 Linux x86_64.
 
-> The framework is called **andaime** (Portuguese for "scaffolding"; `import andaime;`); the repository is called `dapi`.
+> The framework is called **andaime** (Portuguese for "scaffolding"; `import andaime;`); the repository is called `andaime`.
 
 ## Requirements
 
@@ -18,7 +18,7 @@ Linux x86_64.
 andaime is not on code.dlang.org yet, so depend on a checkout:
 
 ```sh
-git clone https://github.com/leotada/dapi
+git clone https://github.com/leotada/andaime
 mkdir my-api && cd my-api
 ```
 
@@ -27,7 +27,7 @@ mkdir my-api && cd my-api
 ```sdl
 name "my-api"
 targetType "executable"
-dependency "andaime" path="../dapi"
+dependency "andaime" path="../andaime"
 ```
 
 ## The first route

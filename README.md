@@ -4,7 +4,7 @@
 
 **A fast, modular, memory-safe web framework for D. Your function signature *is* your HTTP contract.**
 
-[![CI](https://github.com/leotada/dapi/actions/workflows/check.yml/badge.svg)](https://github.com/leotada/dapi/actions/workflows/check.yml)
+[![CI](https://github.com/leotada/andaime/actions/workflows/check.yml/badge.svg)](https://github.com/leotada/andaime/actions/workflows/check.yml)
 ![D edition 2025](https://img.shields.io/badge/D_edition-2025_compatible-B03931)
 ![DMD 2.109.1+](https://img.shields.io/badge/DMD-2.109.1%2B-informational)
 ![LDC 1.40.1+](https://img.shields.io/badge/LDC-1.40.1%2B-informational)
@@ -17,7 +17,7 @@
 
 > [!NOTE]
 > **andaime** is Portuguese for *scaffolding*. Start with a small core and attach modules (database, jobs, crypto,
-> HTTPS...) only when you need them. DUB package `andaime`, `import andaime;`. The repository is `dapi`.
+> HTTPS...) only when you need them. DUB package `andaime`, `import andaime;`. The repository is `andaime`.
 
 ---
 
@@ -209,7 +209,7 @@ Short and complete enough to copy. Each one links to its full guide.
 ### 🐘 PostgreSQL
 
 ```sdl
-dependency "andaime-pg" path="../dapi/drivers/pg"
+dependency "andaime-pg" path="../andaime/drivers/pg"
 ```
 
 ```d
@@ -276,7 +276,7 @@ unittest                                                        // in memory, no
 ### ⏰ Background jobs and cron
 
 ```sdl
-dependency "andaime:jobs" path="../dapi"
+dependency "andaime:jobs" path="../andaime"
 ```
 
 ```d
@@ -498,7 +498,7 @@ curl -fsS https://dlang.org/install.sh | bash -s dmd   # or ldc; see https://dla
 **1. Create a project.** andaime is not on `code.dlang.org` yet, so depend on a checkout:
 
 ```sh
-git clone https://github.com/leotada/dapi
+git clone https://github.com/leotada/andaime
 mkdir my-api && cd my-api
 ```
 
@@ -507,7 +507,7 @@ mkdir my-api && cd my-api
 ```sdl
 name "my-api"
 targetType "executable"
-dependency "andaime" path="../dapi"
+dependency "andaime" path="../andaime"
 ```
 
 **2. Write a route and its test** in `source/app.d`:

@@ -271,7 +271,7 @@ compiles in ~250 ms", which readers take to mean the build time.
 > `POSTGRES_HOST_AUTH_METHOD: trust` (with SCRAM, libpq's synchronous PBKDF2 stalls the single-threaded worker and
 > `tests/db/pg_net.d` fails). h2spec 2.6.0 is pinned by SHA-256. Verify the `setup-dlang` major version (`@v2`).
 
-**Why.** The repository (`github.com/leotada/dapi`) has no CI. Given how many optional dependencies the tests have,
+**Why.** The repository (`github.com/leotada/andaime`) has no CI. Given how many optional dependencies the tests have,
 a local green run proves little.
 
 **Change.** Add `.github/workflows/check.yml`:

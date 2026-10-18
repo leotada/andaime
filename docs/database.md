@@ -9,8 +9,8 @@ use it neither link nor install it.
 `dub.sdl`:
 
 ```sdl
-dependency "andaime" path="../dapi"
-dependency "andaime-pg" path="../dapi/drivers/pg"
+dependency "andaime" path="../andaime"
+dependency "andaime-pg" path="../andaime/drivers/pg"
 ```
 
 The machine needs libpq (`libpq5` on Debian/Ubuntu, `libpq5` or `postgresql-libs` elsewhere). `pgAvailable()` says whether

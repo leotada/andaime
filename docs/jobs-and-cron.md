@@ -10,7 +10,7 @@ The package is `andaime:jobs` (`import andaime.jobs;`). It does not talk to Post
 development server.
 
 ```sdl
-dependency "andaime:jobs" path="../dapi"
+dependency "andaime:jobs" path="../andaime"
 ```
 
 ## Declaring a job
@@ -381,9 +381,9 @@ is kept. `--role=api` leaves the API's grace alone.
 ## Postgres (`andaime-pg-jobs`)
 
 ```sdl
-dependency "andaime:jobs" path="../dapi"
-dependency "andaime-pg" path="../dapi/drivers/pg"
-dependency "andaime-pg-jobs" path="../dapi/drivers/pgjobs"
+dependency "andaime:jobs" path="../andaime"
+dependency "andaime-pg" path="../andaime/drivers/pg"
+dependency "andaime-pg-jobs" path="../andaime/drivers/pgjobs"
 ```
 
 `PgJobStore` (`import andaime.jobs.pg;`) is the durable `JobStore`. One store per worker thread: it uses that thread's

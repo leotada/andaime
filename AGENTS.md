@@ -117,153 +117,20 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 - Timing checks are noisy: the compile budget fails above 440 ms (target 400), the HTTPS memory ceiling is 80 MB (OpenSSL 3.5).
 - Parser changes: add corpus files and run `tools/fuzz.sh 300 parse`. JSON reader changes (`json.d`, `jsonvalue.d`): run
   `tools/fuzz.sh 300 json` (`JsonValue` recursion is bounded by `JsonLimits.maxDepth`; keep it so). HTTP/2 and WebSocket
-  changes: see below.
+  changes: see [Subsystem notes](#subsystem-notes).
 
-## Concurrency model (read before touching `engine/` or `drivers/`)
+## Subsystem notes
 
-- One worker per core (`SO_REUSEPORT`), each with its own epoll loop. **One fiber per request.**
-- **One `App` per worker** (D1): `serve(build)` takes a build function; each worker calls it once, on its own thread (`WorkerInit`
-  in `loop.d`; worker 0 first, alone). Everything the build function creates belongs to that worker, so no App state needs a lock.
-  `serve` refuses a build function that returns the same App twice. Never hand an `App`, a controller or a connection to another worker.
-- Waiting for I/O inside a handler must go through `awaitFd`/`sleep` (or a library built on them: the Postgres driver, the HTTP
-  client). Any blocking call stalls the whole worker; the loop logs a warning past `stallWarnMs`.
-- CPU-heavy or blocking-library work goes through `offload(...)` (bounded thread pool; `PoolSaturated` when the queue is full).
-- Cancellation (client gone, deadline, a reader that stopped reading) is delivered as `RequestCancelled` (a `Throwable`) at the
-  handler's next wait or write; `scope(exit)` and destructors run normally.
-- Module-level variables in D are **thread-local**. Share across workers only with `__gshared`/`shared` and a reason, behind a lock
-  that is never held across an I/O wait. `pgPool(...)` and `httpClient()` are per worker.
-- **Per-request state that the code below a handler needs** (the logger's request id) lives with the request's fiber:
-  `Worker` is a `LocalFiber` (`fiberio.d`) whose `fiberLocal` slot `server.d` sets to the request's `Context`. Never keep
-  such state in a thread-local variable: requests interleave on one thread at every wait. Without fibers (`TestClient`,
-  the devserver) `App.handle` sets `andaime.log`'s per-thread source instead.
-- **Errors inside handlers** (D4): an `Exception` becomes a 500 through the app (logged with a stack trace, 5 traces per second per
-  App); an `Error` (RangeError, AssertError...) also gets a 500, a full trace in the log (5 per second per worker, the rest
-  counted), and the fiber is retired (`LoopStats.fibersPoisoned`): after an `Error`, cleanup may not have run. A fiber stack
-  overflow is a SIGSEGV that kills the process; `onCrash` in `epoll.d` prints which request was running first.
+Read the matching file before touching its area. The rules in those files are not repeated here.
 
-## Background jobs (read before touching `jobs/` or `drivers/pgjobs/`)
-
-- `perform` is `@safe`. A missing `perform`, an `@system` `perform`, a payload `writeJson` cannot encode, or a bad `@Cron` is one
-  line from `jobError`, asserted by `JobSet`. Cover a new rule with `tests/compile_fail/job_*.d` (`// FLAGS: -Ijobs/source`).
-- I/O that waits (`sleep`, `awaitFd`, the Postgres driver, the HTTP client) runs on the fiber. CPU-heavy work and blocking C go
-  through `@Offload` or `offload`.
-- A Postgres claim is `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)` and that transaction commits before `perform`.
-  Do not hold the row lock across the work.
-- Cron dedupe across processes is `INSERT ... ON CONFLICT` on `(job_name, scheduled_slot)` in `andaime_cron_executions`
-  (`claimCron` / `claimCronSlot`). The supervisor enqueues only when that insert wins. `PgJobStore.startServices`
-  starts `LISTEN` and the reaper on worker 0; an empty claim waits for a notification or 5 seconds.
-- Shutdown stops calling `claimBatch`. `release` returns an in-flight row to `retryable` without spending the attempt: a claimed
-  row not yet run, `RequestCancelled` inside `perform`, and an `Error`. `--role=worker` and `--role=all` (`applyJobGrace`)
-  raise `shutdownGraceMs` from the 10 second default to 30 seconds. A value the application already set is kept.
-- The cron parser (`cronError`, `parseCron`) is `@safe pure nothrow @nogc`. Keep it that way.
-- `InMemoryJobStore` is one thread. `runJobs` forces `workers = 1` by default. Several cores or processes use `PgJobStore`, one
-  store per worker thread, and only worker 0 consumes. Queue concurrency is how many jobs that worker runs at once, not per core.
-  One fiber per queue claims. `WorkerHooks.extra` runs on worker 0 before the loop polls: `spawn` from there, and do not call
-  `sleep` or `awaitFd` in `extra` itself. A store failure is logged (`andaime.jobs:`) and the fiber continues.
-
-## The response contract (read before touching `engine/`, `server.d` or `web/.../stream.d`)
-
-- The engine calls `RequestCallback(ref Request, ResponseSink)` (`andaime.http.response`): `sink.start(ResponseHead)`, any number of
-  `sink.write(bytes)`, `sink.end()`. The web layer never produces HTTP/1.1 text and the HTTP/2 session never parses it: both
-  protocols encode from the structured head.
-- `Worker` is the sink. Output goes to `w.output`; on HTTP/1.1 the loop sends it after the handler returns (the buffered case), or
-  the fiber sends it itself once `streamHighWaterBytes` are buffered or on `flush` (waiting for `EPOLLOUT` in `waitWritable`,
-  `writeTimeoutMs` at most; `awaitFd` is not used for the connection's own fd). Known `contentLength` -> `Content-Length`; unknown ->
-  chunked (HTTP/1.1) or close-delimited (HTTP/1.0); HEAD, 204 and 304 discard writes. On HTTP/2 the stream is *committed* (HEADERS +
-  the bytes so far) at the high-water mark or on `flush`; `H2Session.beginResponse/sendData/endResponse` carry the rest and
-  `pendingBytes` suspends the handler. Before the commit a failure is a clean 500; after it only a cut-off is possible
-  (`ResponseAborted`: connection closed without the last chunk / `RST_STREAM(INTERNAL_ERROR)`).
-- `requestTimeoutMs` ends at `start`; then `writeTimeoutMs` bounds each blocked write and `streamTimeoutMs` (0 = none) the stream.
-  A streaming handler keeps its fiber and counts toward `maxInFlight`.
-- The sink copies: never hold the caller's slice past `write`. Never call `closeConn` from inside the fiber: mark
-  `cancelled`/`failed` and let `finish`/`finishH2` act.
-- Web layer: `Stream`/`EventStream` run inside `dispatch`; the head is committed lazily by `commit()` in `stream.d`, which runs the
-  same `checkResponse` (owned headers, validation, `Date`) as `App.handle` and locks the headers. `server.d` and `TestClient` both
-  finish with `sendResponse`.
-- Request bodies: HTTP/1 chunked bodies are decoded in place by `ChunkedDecoder` (`tryParse`); the decoded body ends up right after
-  the head and the next pipelined request right behind it, so `compact(c.total)` is unchanged.
-- Pipelining (cleartext HTTP/1.1): when the next request is already in the buffer, `coalesce` appends the finished response to
-  `Conn.pending` instead of sending it, so a batch of responses leaves in one send (16 KiB at most). `pendingQ` sends it at the end
-  of the event batch at the latest. **Every write to the connection sends `pending` first**: `trySend`, `sendFully` (from the
-  fiber), `sendRaw`; an error that closes the connection goes through `closeAfterSend`; an `Upgrade: h2c` behind held-back
-  responses is served as HTTP/1.1. A new place that writes to an HTTP/1 connection must keep that order.
-- The loop parses each head once: `parseHead` (in `tryParse`) fills the loop's `head`/`scratch`, and `parsedHead` hands it to
-  `startRequest`, `tryUpgrade`, the `Expect` check and the redirect port, parsing again only if another connection's head or a
-  grow came in between. Nothing else may write into `scratch`.
-- `sink.upgrade(head, protocol)` instead of `start` answers 101 and hands the connection over (an `UpgradedConn`); on HTTP/2 it
-  answers an extended CONNECT with `head` (2xx) and hands the stream over. It returns null where that is impossible
-  (`BufferedSink`, the devserver, an HTTP/2 stream that is not an extended CONNECT), before anything was sent. See the
-  WebSocket section.
-
-## WebSockets (read before touching `http/.../websocket.d`, `web/.../websocket.d`, `wsclient.d` or `Phase.upgraded` in `epoll.d`)
-
-- Layers: `andaime.http.websocket` has the codec, the handshake and `WsConn` (the whole message layer: fragments, pings, close
-  handshake, limits, ping/idle timing, deflate hooks) and does I/O only through `UpgradedConn` (`andaime.http.response`). The engine
-  implements `UpgradedConn` on a server connection (`WsPort` in `epoll.d`), `wsclient.d` on a client one, `TestClient` in memory.
-  Protocol rules belong in `WsConn`, where the unittests, `tests/web/websocket.d` and the fuzzers reach them without sockets.
-- The web layer never imports the engine: compression reaches it as `Context.newDeflate` (a `WsDeflateFactory`), set by
-  `server.d` to `andaime.engine.zlib`.
-- The takeover (`sinkUpgrade`): pending pipelined answers go into `wsOut` before the 101; bytes after the request in `c.buf`
-  become the first WebSocket input (`wsIn`); `c.buf` itself stays untouched until the connection closes, because the handler's
-  `Request` (and its captured params) point into it. The connection never goes back to HTTP.
-- Reads belong to the owner (the fiber that upgraded). Any fiber of the worker may write: `write` appends the whole frame to
-  `wsOut` before it can wait, so frames never interleave. Writers wait for the drain like `waitH2Drain`; a dead connection gives the
-  owner `RequestCancelled` and other fibers `WsClosed`. **Never resume a fiber from inside another fiber**: a wake-up decided in
-  fiber context goes through `wsDefer` and runs at the end of the batch (`drainWsWakes`).
-- A `WsPort` (and a `WsConn`) is per connection, never pooled: a `WsConn` kept by another fiber after its connection ended must
-  find it closed, never reach a later connection on the same pooled `Conn`. Every `WsConn` method checks its state before I/O.
-- When the owner returns, `finishUpgraded` sends what is left of `wsOut` (`writeTimeoutMs`) and closes with `lingerClose`;
-  graceful stop wakes the readers (`fill` returns `stopping`, `WsConn` closes with 1001). `sweepUpgraded` drops a connection
-  whose output is blocked longer than `writeTimeoutMs`.
-- Over HTTP/2 (RFC 8441) a WebSocket is a stream. The session announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`
-  (`H2Config.enableConnectProtocol`, `ServerConfig.http2WebSockets`), hands an extended CONNECT out at its HEADERS as a GET
-  with `Request.connectProtocol` (`H2Stream.tunnel`), and keeps its DATA for the engine (`tunnelInput`/`tunnelConsume`,
-  `popInput`): the stream window is credited only as the owner consumes, so it bounds the buffer. `runWebSocket` answers 200
-  without an accept key; only a WebSocket route may answer an extended CONNECT (`dispatch` refuses it with 400 elsewhere).
-- The engine side is `H2Tunnel` in `epoll.d` (one per stream, never pooled, like `WsPort`): `upgradeStream` sends the 2xx with
-  `beginResponse`; writes are `sendData` plus a wait in `t.writers` (woken from `wakeH2Writers`); readers and writers are
-  woken with `wsDefer`; a peer RST breaks the tunnel (`tunnelBreak`: the reader sees 1006) instead of cancelling the owner.
-  `finishTunnel` ends the stream with `endResponse` (END_STREAM after the queued DATA) or `cancelStream(CANCEL)`; the session
-  then keeps it half-closed (local) until the peer's END_STREAM, resetting it after a second (`tick`). `closeH2` detaches
-  every tunnel before it cancels the owners. Set `st.deadlineMs = 0` at the upgrade: WsConn's pings are the liveness check.
-- A WebSocket change: cases in `tests/web/websocket.d` (TestClient, `c.http2 = true` for RFC 8441) or `tests/net/ws_net.d` /
-  `tests/net/ws_h2_net.d` (sockets), `tools/ws_interop.sh`, `tools/fuzz.sh 300 ws` (and `h2` for the session's tunnels), and
-  the hot path (`tests/alloc/ws_hot_path.d`, both transports) stays GC-free.
-- A socket test client running in the server's process must retry `read`/`send` on `EINTR`: the server's GC stops every
-  thread with signals.
-
-## HTTP/2 (read before touching `http/.../h2.d` or the h2 part of `epoll.d`)
-
-**Frozen (D3).** No new HTTP/2 or TLS features until the owner says so. Allowed: bug fixes, and the changes other plan items
-require (response sink, memory model). The owner lifted it once, for WebSockets over HTTP/2 (RFC 8441, `PLAN.md` 10.7).
-Everything below still applies to those.
-
-- Protocol logic lives in `H2Session` (`andaime.http.h2`), which does no I/O: the engine feeds it bytes (`receive`), runs what
-  `popReady` hands out (one fiber per stream), cancels what `popReset` hands out, hands each response back with `respond` (or
-  `beginResponse`/`sendData`/`endResponse` for a streamed body), and writes `pendingOutput`. Anything about frames, HPACK, stream
-  states or flow control belongs in the session, where `tests/h2/session_test.d` and the fuzzers can reach it without sockets.
-- A stream object the engine holds (`task` set) is never recycled by the session; the engine gives it back with `respond`,
-  `endResponse`, `cancelStream` or `detach`. Stream and session objects are pooled: reset every field in `H2Stream.reset`/`H2Session.reset`.
-- Never send RST_STREAM for a stream that was never opened (idle, or even-numbered): use a connection error.
-- A connection that ends is closed with `lingerClose` (FIN, then discard input for up to a second): closing with unread input makes
-  the kernel send RST and the peer can lose our last frames.
-- An HTTP/2 change: a case in `tests/h2/session_test.d`, `tools/h2_interop.sh` (h2spec at 146/146 over TLS and 145/146 in cleartext:
-  3.5/2 cannot pass on a mixed HTTP/1.1 port), and `tools/fuzz.sh 300 h2`. Inputs that once broke the session go in
-  `tests/fuzz/h2_regressions/`.
-
-## TLS (read before touching `tlsserver.d` or the TLS parts of `epoll.d`; also frozen, see above)
-
-- Every read and write on a connection goes through `ioRead`/`ioSend` in `epoll.d`, never `read`/`send` on the fd: with TLS they
-  go through OpenSSL with read(2)/send(2) semantics (EAGAIN for WANT_READ/WANT_WRITE).
-- A short TLS read does not mean the socket is drained (one record at a time): keep reading until EAGAIN (edge-triggered epoll).
-- OpenSSL writes with write(2): SIGPIPE must stay ignored (`loadOpenSsl` does it).
-- Never call `SSL_shutdown` after a fatal TLS error (`Conn.tlsFatal`) or during the handshake.
-- Each worker has its own `SSL_CTX` (no locks); ticket keys are shared so resumption works across workers.
-- The redirect port (`tls.redirectPort`) is answered in `answerRedirectPort`, never by the app (no fibers, no handlers). ACME
-  tokens are validated as base64url before touching the file system.
-- Connection logs go through `logConnError` (rate-limited). Do not log clients that just close mid-handshake.
-- The deploy config example in `docs/deploy.md` is compiled by `tools/doc_examples.sh`; its deploy hook must work with the reload
-  logic. Re-check both when changing `TlsConfig` or the reload.
+| Area | Read before touching | Covers |
+|------|----------------------|--------|
+| `engine/`, `drivers/` | [internals/concurrency.md](internals/concurrency.md) | workers, fibers, `offload`, cancellation, errors inside handlers |
+| `jobs/`, `drivers/pgjobs/` | [internals/jobs.md](internals/jobs.md) | job claims, cron, shutdown |
+| `engine/`, `server.d`, `web/.../stream.d` | [internals/response-contract.md](internals/response-contract.md) | the response sink, streaming, pipelining, upgrades |
+| `http/.../websocket.d`, `web/.../websocket.d`, `wsclient.d`, `Phase.upgraded` in `epoll.d` | [internals/websockets.md](internals/websockets.md) | WebSocket codec, takeover, RFC 8441 tunnels |
+| `http/.../h2.d`, the h2 part of `epoll.d` | [internals/http2.md](internals/http2.md) | HTTP/2 session (frozen, D3) |
+| `tlsserver.d`, the TLS parts of `epoll.d` | [internals/tls.md](internals/tls.md) | TLS listener and reads/writes (frozen, D3) |
 
 ## Pitfalls
 

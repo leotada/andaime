@@ -879,10 +879,11 @@ void testPoolShrink()
         c.hang();
     }
     assert(waitFor(() => s.loop.stats().inFlight == 0, 1000));
+    // (the last fibers retire just after inFlight drops to 0: wait for them instead of sampling once)
+    assert(waitFor(() { auto t = s.loop.stats(); return t.idleWorkers <= 8 && t.workersRetired >= t.workersCreated - 8; }, 1000),
+        "idle fibers above the ceiling were not torn down");
     auto st = s.loop.stats();
     assert(st.workersCreated >= 150, "the burst should have created ~200 fibers");
-    assert(st.idleWorkers <= 8, "idle fibers above the ceiling were not torn down");
-    assert(st.workersRetired >= st.workersCreated - 8);
     assert(waitFor(() => s.loop.trimCount() == 1, 3500), "the post-burst memory cleanup did not run");
     printf("ok  burst of %d: %zu fibers created, %zu torn down, %zu idle in the pool\n",
         N, st.workersCreated, st.workersRetired, st.idleWorkers);

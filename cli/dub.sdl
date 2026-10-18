@@ -1,5 +1,8 @@
 name "cli"
 description "The andaime command (optional): projects from templates, generators, the route table, the dependency rule"
+authors "Leonardo Tada Antunes"
+copyright "Copyright © 2026, leotada"
+license "MIT"
 targetType "executable"
 targetName "andaime"
 targetPath "bin"

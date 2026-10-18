@@ -1,5 +1,8 @@
 name "jobs"
 description "Background jobs: the compile-time contract (UDAs, JSON payload, perform). No I/O."
+authors "Leonardo Tada Antunes"
+copyright "Copyright © 2026, leotada"
+license "MIT"
 targetType "library"
 dependency "andaime:web" version="*"
 dependency "andaime:engine" version="*"

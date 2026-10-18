@@ -1,5 +1,8 @@
 name "engine"
 description "Transport: event loop, buffers and connections. Knows nothing about routes or DTOs."
+authors "Leonardo Tada Antunes"
+copyright "Copyright © 2026, leotada"
+license "MIT"
 targetType "library"
 dependency "andaime:http" version="*"
 

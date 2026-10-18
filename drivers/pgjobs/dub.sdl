@@ -1,5 +1,8 @@
 name "pgjobs"
 description "Postgres job queue for andaime: SKIP LOCKED claims, LISTEN/NOTIFY, a lease reaper and one cron slot across processes. A separate subpackage: the core does not depend on it."
+authors "Leonardo Tada Antunes"
+copyright "Copyright © 2026, leotada"
+license "MIT"
 targetType "library"
 sourcePaths "source"
 importPaths "source"

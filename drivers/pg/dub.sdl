@@ -1,5 +1,8 @@
 name "pg"
 description "Cooperative (fiber-based) PostgreSQL driver for andaime, over asynchronous libpq loaded via dlopen. A separate subpackage: the core does not depend on it."
+authors "Leonardo Tada Antunes"
+copyright "Copyright © 2026, leotada"
+license "MIT"
 targetType "library"
 sourcePaths "source"
 importPaths "source"

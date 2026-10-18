@@ -1,5 +1,8 @@
 name "http"
 description "HTTP types, zero-copy HTTP/1.1 parser and response serialization. No I/O."
+authors "Leonardo Tada Antunes"
+copyright "Copyright © 2026, leotada"
+license "MIT"
 targetType "library"
 
 toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

@@ -33,24 +33,78 @@ reflection.
 
 import andaime;
 
-struct UserInput { @minLength(2) string name; @inRange(0, 150) int age; }
-struct User { long id; string name; int age; }
+struct NewUser                                   // the JSON body, validated before your code runs
+{
+    @minLength(2) @maxLength(60) string name;
+    @inRange(0, 150) int age;
+    Optional!string email;                       // may be absent or null
+}
 
-User getUser(long id) => User(id, "Ana", 31);                                 // GET /users/{id}
+struct User { long id; string name; int age; Optional!string email; }
+
+struct Page                                      // the query string: ?limit=10&offset=20
+{
+    @inRange(1, 100) int limit = 20;
+    @optional @inRange(0, int.max) int offset;
+}
+
+private User[] users;                            // stands in for a database (see main)
+private long lastId;
+
+User[] listUsers(Query!Page page)                                       // GET /users
+{
+    auto rest = page.offset < users.length ? users[page.offset .. $] : null;
+    return rest.length > page.limit ? rest[0 .. page.limit] : rest;
+}
+
+@responds(404, "user not found")
+User getUser(long id)                                                   // GET /users/{id}
+{
+    foreach (u; users)
+        if (u.id == id) return u;
+    throw new HttpError(404, "user not found");
+}
 
 @status(201)
-User createUser(JsonBody!UserInput body_) => User(1, body_.name, body_.age);  // POST /users
+User createUser(JsonBody!NewUser body_)                                 // POST /users
+{
+    users ~= User(++lastId, body_.name, body_.age, body_.email);
+    return users[$ - 1];
+}
 
-App buildApp()
+@responds(404, "user not found")
+void deleteUser(long id)                                                // DELETE /users/{id}: void is 204
+{
+    foreach (i, u; users)
+        if (u.id == id) { users = users[0 .. i] ~ users[i + 1 .. $]; return; }
+    throw new HttpError(404, "user not found");
+}
+
+App buildApp()                                   // runs once per worker
 {
     auto app = new App;
+    app.get!("/users", listUsers);
     app.get!("/users/{id}", getUser);
     app.post!("/users", createUser);
-    app.serveOpenApi(OpenApiInfo("Users API", "1.0.0"));                      // /openapi.json + Swagger UI at /docs
+    app.del!("/users/{id}", deleteUser);
+    app.serveOpenApi(OpenApiInfo("Users API", "1.0.0"));                // /openapi.json + Swagger UI at /docs
     return app;
 }
 
-void main() { serve(&buildApp, 8080); }
+void main()
+{
+    // Module variables are per thread, so this in-memory store needs one worker.
+    // With a real database, leave `workers` at 0: one per CPU core.
+    ServerConfig cfg = { port: 8080, workers: 1 };
+    serve(&buildApp, cfg);
+}
+```
+
+```sh
+curl -X POST localhost:8080/users -d '{"name":"Ana","age":31}'   # 201 {"id":1,"name":"Ana","age":31,"email":null}
+curl 'localhost:8080/users?limit=10'                             # 200 [{"id":1,...}]
+curl localhost:8080/users/7                                      # 404 {"detail":"user not found"}
+curl -X DELETE localhost:8080/users/1                            # 204
 ```
 
 Bad input never reaches your handler. Every problem is reported at once:

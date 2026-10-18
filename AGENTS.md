@@ -2,7 +2,8 @@
 
 Guidance for AI coding agents (and humans) working on this repository.
 The framework is called **andaime** (Portuguese for "scaffolding": a modular web framework where you attach modules as you need them; DUB package `andaime`, `import andaime;`); the repository is `andaime`.
-`PLAN.md` holds the improvement plan with its decision log (owner decisions D1-D4, planner decisions P1-P9) and what was done.
+`PLAN.md` holds the improvement plan with its decision logs (owner decisions D1-D4, planner decisions P1-P9, Phase 11's F1-F30
+and Phase 12's G1-G14) and what was done.
 
 ## What this is
 
@@ -47,14 +48,15 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 - **User-facing callbacks accept `@system`** (`Middleware`, `ErrorHandler`, `UserHandler`, `ValidationErrorHandler`, route
   handlers, a text type's methods): user code may call C libraries without ceremony, and `@safe` code converts to them implicitly.
   The framework invokes user code only through `callMiddleware`, `callUser` (one overload per handler type, `application.d`;
-  a validation handler is reached from `dispatch` through the `@safe` `Context.onValidation` that `App.freeze` sets), `callBuild` (the app build function, `server.d`), `callStream`/`callEvents` (stream
-  bodies, `stream.d`), `callWebSocket` (a WebSocket body, `web/.../websocket.d`), `textFromString`/`textToString` (a user's
-  text type, `andaime.http.texttype`) and the `@trusted` lambda in `dispatch`. Add no other call sites.
+  a validation handler is reached from `dispatch` through the `@safe` `Context.onValidation` that `App.freeze` sets),
+  `callBuild` (the app build function, `server.d`), `callStream`/`callEvents` (stream bodies, `stream.d`), `callWebSocket`
+  (a WebSocket body, `web/.../websocket.d`), `textFromString`/`textToString` (a user's text type, `andaime.http.texttype`)
+  and the `@trusted` lambda in `dispatch`. Add no other call sites.
 - `-version=AndaimeStrictSafe` (dub: `versions "AndaimeStrictSafe"`) makes `handlerError` reject `@system` handlers with a one-line
   message (`tests/compile_fail/system_handler.d` declares its flag with a `// FLAGS:` line). `tests/web/system_code.d` proves
   that `@system` handlers, middleware and error handlers work by default.
-- Every module that declares code starts with `@safe:`. Exceptions: `engine/.../epoll.d` and `devserver.d` are `@system:` (raw
-  syscalls); `EventLoop.run` is `@system` and `andaime.server.serve` is the single `@trusted` entry point into them. Their overrides of
+- Every module that declares code starts with `@safe:`. Exceptions: `engine/.../epoll.d` and `devserver.d` have no module attribute
+  (D's default, `@system`; raw syscalls); `EventLoop.run` is `@system` and `andaime.server.serve` is the single `@trusted` entry point into them. Their overrides of
   `@safe` interfaces (`stop`, `awaitFd`, `sleepMs`, the `ResponseSink` methods) are small `@trusted` bodies. `crypto/.../libcrypto.d`
   is `@system:` (a table of C prototypes) and exposes `@trusted` functions. `engine/.../httpclient.d` has no module attribute: each
   declaration is marked `@safe` or `@trusted`. Re-export modules (`package.d`) have no code and need neither.
@@ -87,10 +89,11 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 | `drivers/pgjobs/` (`andaime-pg-jobs`) | Postgres `JobStore` (`PgJobStore`): `SKIP LOCKED` claims, `LISTEN`/`NOTIFY`, a lease reaper, one cron slot across processes. Depends on `andaime:jobs` and `andaime-pg`. |
 | `source/andaime/` (`andaime`) | `import andaime;`, `server.d` (the only glue between web and engine), `staticfiles.d`. |
 | `examples/hello`, `examples/api` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI. |
-| `tests/` | `web/` (no network; helper modules in `web/support/`), `jobs/` (no network), `h2/` (HTTP/2 session), `net/` (real sockets), `db/` (needs Postgres), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
-| `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `ws_interop.sh` (python `websockets`), `proxy_interop.sh` (behind Caddy over h2c), `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, `bench.sh`, and the helpers that start a throwaway Postgres / test upstream. |
-| `docs/`, `README.md` | User-facing docs: `docs/README.md` is the index (guides: getting-started, routing, requests, validation, responses, middleware, streaming, websocket, static files/OpenAPI, concurrency, database, jobs and cron, http-client, testing, safety; reference: deploy, tls, http2, configuration). Keep them in sync with behavior; code blocks whose first line is `// check` are compiled by `tools/doc_examples.sh`. Contributor material goes in `CONTRIBUTING.md`, not the README. |
-| `.github/workflows/check.yml` | CI: DMD and LDC at the minimum and latest versions, strict mode; browser test and nightly fuzzing in their own jobs. |
+| `tests/` | `web/` (no network; helper modules in `web/support/`), `jobs/` (no network), `h2/` (HTTP/2 session), `net/` (real sockets), `db/` (needs Postgres), `crypto/` (exits 77 without libcrypto), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
+| `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `ws_interop.sh` (python `websockets`), `proxy_interop.sh` (behind Caddy over h2c), `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, `api_e2e.sh` (`examples/api` end to end), `bench.sh`, and the helpers that start a throwaway Postgres / test upstream. |
+| `internals/` | Contributor notes per subsystem (concurrency, jobs, response contract, WebSockets, HTTP/2, TLS); see [Subsystem notes](#subsystem-notes). |
+| `docs/`, `README.md` | User-facing docs: `docs/README.md` is the index (guides: getting-started, routing, requests, validation, responses, middleware, streaming, websocket, static files/OpenAPI, concurrency, database, jobs and cron, http-client, logging, crypto, testing, safety; reference: deploy, tls, http2, configuration). Keep them in sync with behavior; code blocks whose first line is `// check` are compiled by `tools/doc_examples.sh`. Contributor material goes in `CONTRIBUTING.md`, not the README. |
+| `.github/workflows/check.yml` | CI: DMD and LDC at the minimum and latest versions, strict mode; the `edition` section on DMD 2.112.0 in its own job; the browser test and fuzzing in their own jobs, nightly or on a manual run only. |
 
 Dependency direction: `http` <- `web`, `http` <- `engine` <- `drivers/pg`. `jobs` depends on `web` and `engine`, not on `pg`.
 `drivers/pgjobs` depends on `jobs` and `andaime-pg`. `crypto` depends on `http` and `engine`; nothing in the core or `jobs`
@@ -138,8 +141,9 @@ Read the matching file before touching its area. The rules in those files are no
   (they become global symbols that the C library then calls itself).
 - A user helper named `get`/`put`/`post`/`ws` hides andaime's free functions; use `andaime.get!(...)(app)`.
 - DMD 2.109 segfaults on a call that relies on a default argument placed before a variadic parameter (`f(string a, S s = S.init,
-  T[] rest...)`): use an overload instead (`TestClient.websocket`, `TestClient.request`), and test the short call on DMD. It also crashes, instead of reporting it, on some name clashes
-  between imported enums: when DMD dies with a segfault, try LDC for the real error message.
+  T[] rest...)`): use an overload instead (`TestClient.websocket`, `TestClient.request`), and test the short call on DMD.
+  It also crashes, instead of reporting it, on some name clashes between imported enums: when DMD dies with a segfault, try
+  LDC for the real error message.
 - A libFuzzer target has no D `main`: one that needs druntime (the monotonic clock, say) calls `rt_init` in
   `LLVMFuzzerInitialize` (`tests/fuzz/libfuzzer_ws.d`).
 - Middleware applies to every route of its App/Group whatever the registration order; the app freezes when it starts serving

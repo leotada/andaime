@@ -226,7 +226,7 @@ private final class ClientPort : UpgradedConn
     override FillResult fill(int timeoutMs) @trusted
     {
         if (!isOwner())
-            throw new Exception("andaime: only the fiber that opened a WebSocket can read from it");
+            throw new Exception("andaime.http: only the fiber that opened a WebSocket can read from it");
         if (closed || broken || eof)
             return FillResult.eof;
         immutable deadline = timeoutMs < 0 ? MonoTime.max : MonoTime.currTime + timeoutMs.msecs;

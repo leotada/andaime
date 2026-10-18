@@ -1,7 +1,7 @@
 /// OpenSSL loaded at run time (dlopen), used in non-blocking mode by the HTTP client and by the
 /// server's TLS listener (`andaime.engine.tlsserver`). No headers and no `-lssl` at build time: only
 /// whoever does HTTPS needs libssl.so.3 installed (`libssl3` / `openssl`).
-module andaime.engine.tls;
+module andaime.engine.tls 2025;
 
 @safe:
 

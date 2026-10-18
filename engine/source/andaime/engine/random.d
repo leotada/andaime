@@ -1,6 +1,6 @@
 /// Random bytes from the kernel (getrandom(2)): WebSocket masking keys and handshake nonces, and `andaime:crypto`'s
 /// `randomBytes` (salts, keys, tokens).
-module andaime.engine.random;
+module andaime.engine.random 2025;
 
 @safe:
 

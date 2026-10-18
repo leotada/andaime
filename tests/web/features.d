@@ -1,6 +1,6 @@
 /// Web-layer features a real application uses: groups with middleware,
 /// ctx.locals / Local!T, onError, onNotFound, trailing slash and CORS.
-module features;
+module features 2025;
 
 @safe:
 

@@ -3,7 +3,7 @@
 /// No I/O here: `WsConn` reads and writes through an `UpgradedConn` (andaime.http.response), which the engine implements on
 /// a socket, the WebSocket client on its own connection and `TestClient` in memory. Compression goes through `WsDeflate`,
 /// which the engine implements with zlib.
-module andaime.http.websocket;
+module andaime.http.websocket 2025;
 
 @safe:
 

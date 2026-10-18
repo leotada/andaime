@@ -1,3 +1,4 @@
+module ws_hot_path 2025;
 /// Guarantees a WebSocket's message path does not allocate on the GC once warm: frame parsing, unmasking, UTF-8 check,
 /// echo and framing, with and without permessage-deflate (zlib's memory is its own, freed by `release`), and over an
 /// HTTP/2 stream (RFC 8441: DATA frames in, the session's tunnel input, DATA frames out, WINDOW_UPDATEs).

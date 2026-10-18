@@ -2,7 +2,7 @@
 /// target): the server side of `WsConn` never crashes, never consumes more than it was given, delivers only messages
 /// within the size limit (text ones valid UTF-8), always ends with a close, and only ever writes well-formed, unmasked
 /// frames with at most one close frame, last.
-module ws_invariants;
+module ws_invariants 2025;
 
 import andaime.http;
 import core.time : Duration;

@@ -1,5 +1,5 @@
 /// In-memory client: exercises App + handlers without sockets.
-module andaime.web.testing;
+module andaime.web.testing 2025;
 
 @safe:
 

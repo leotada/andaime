@@ -1,7 +1,7 @@
 /// The one place a response is checked before it goes on the wire: andaime-owned headers are dropped, every name and value
 /// is validated, `Date` is added. Used when a normal response is finished (`App.handle`) and when a streamed one is
 /// committed (`andaime.web.stream`), so both obey the same rules.
-module andaime.web.response_check;
+module andaime.web.response_check 2025;
 
 @safe:
 

@@ -1,6 +1,6 @@
 /// Incremental, zero-copy parser for the head of an HTTP/1.1 request.
 /// Pure (no I/O): takes bytes, returns slices. Fuzzing target since M3.
-module andaime.http.parser;
+module andaime.http.parser 2025;
 
 import andaime.http.types;
 

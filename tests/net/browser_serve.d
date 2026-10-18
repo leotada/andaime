@@ -2,7 +2,7 @@
 /// assets (including a 2 MiB script), calls a JSON API with GET and POST, over HTTPS with the
 /// cleartext redirect port, and opens a WebSocket. Usage: browser_serve <port> <redirectPort> <cert.pem> <key.pem>
 /// <publicDir> [no-h2-websockets]
-module browser_serve;
+module browser_serve 2025;
 
 import andaime;
 

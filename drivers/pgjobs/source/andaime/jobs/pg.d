@@ -16,7 +16,7 @@
 /// Supervisor, on worker 0: `startServices` spawns `listen` and the reaper. `waitIdle` returns when a
 /// notification arrives or after 5 seconds. `claimCron` inserts the cron slot; the supervisor enqueues
 /// only when that returns true. `hooks.extra` is not required for either.
-module andaime.jobs.pg;
+module andaime.jobs.pg 2025;
 
 @safe:
 

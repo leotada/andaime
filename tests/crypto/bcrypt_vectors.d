@@ -1,7 +1,7 @@
 /// bcrypt against hashes made by Python's bcrypt 4.3 (passlib's backend), including a `$2a$` one, plus new hashes,
 /// wrong passwords, malformed hashes, the 72-byte limit and the offload helpers. Exits 77 (skip) when libxcrypt is
 /// missing.
-module bcrypt_vectors;
+module bcrypt_vectors 2025;
 
 import andaime.crypto;
 import core.stdc.stdio : fprintf, printf, stderr;

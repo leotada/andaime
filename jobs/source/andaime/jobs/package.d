@@ -1,5 +1,5 @@
 /// Background jobs: the compile-time contract, in-memory queues, cron, and `--role` / `--queues`.
-module andaime.jobs;
+module andaime.jobs 2025;
 
 @safe:
 

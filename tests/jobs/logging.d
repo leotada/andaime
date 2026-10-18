@@ -1,5 +1,5 @@
 /// andaime.log lines written inside `perform` carry `job`, `job_id` and `attempt`, like a request's lines carry its id.
-module job_logging;
+module job_logging 2025;
 
 import andaime.jobs;
 import andaime.log;

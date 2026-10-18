@@ -1,7 +1,7 @@
 /// Mutation fuzzer for the WebSocket message layer (runs in check.sh, deterministic per seed): starts from valid client
 /// frame sequences and breaks them at the byte and at the frame level.
 /// Usage: fuzz_ws [iterations] [seed]
-module fuzz_ws;
+module fuzz_ws 2025;
 
 import ws_invariants;
 import andaime.http;

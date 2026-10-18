@@ -12,7 +12,7 @@
 ///
 /// Nothing is registered anywhere: the compiler checks the shape. The core never needs `std.datetime` or any other
 /// library; an application type may use whatever it likes inside `fromString`/`toString`.
-module andaime.http.texttype;
+module andaime.http.texttype 2025;
 
 @safe:
 

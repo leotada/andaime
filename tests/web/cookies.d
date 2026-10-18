@@ -1,5 +1,5 @@
 /// Cookies: `Cookie!"name"` parameters, `ctx.cookie`, `ctx.setCookie`, `ctx.deleteCookie`.
-module cookies_test;
+module cookies_test 2025;
 
 @safe:
 

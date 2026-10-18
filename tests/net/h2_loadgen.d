@@ -2,7 +2,7 @@
 /// starts `streams` concurrent `GET /slow` on each, and checks every one is answered once.
 /// Usage: h2_loadgen <port> <connections> <streams per connection> <expected wait in ms>
 /// Exits with code 1 on any failure.
-module h2_loadgen;
+module h2_loadgen 2025;
 
 import core.time;
 import core.stdc.stdio : printf;

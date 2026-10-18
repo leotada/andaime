@@ -1,6 +1,6 @@
 /// andaime's WebSocket client against another implementation's server (tools/ws_interop.sh runs python's `websockets` echo
 /// server, which negotiates permessage-deflate). Runs outside a request fiber, so every wait blocks. Usage: ws_client_check <port>
-module ws_client_check;
+module ws_client_check 2025;
 
 import andaime;
 import std.conv : to;

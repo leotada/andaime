@@ -1,5 +1,5 @@
 /// {{PluralWords}}: the entity and its rules. Plain D: no framework, no database.
-module domain.{{plural}};
+module domain.{{plural}} 2025;
 
 @safe:
 

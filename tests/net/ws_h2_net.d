@@ -2,7 +2,7 @@
 /// WebSockets and requests multiplexed on one connection, a broadcast between streams and connections, a stream reset by
 /// the peer (its handler sees 1006, the connection lives on), a connection that drops, a reader that stops reading, the
 /// server closing first, a WsConn kept after its stream ended, pings, a graceful stop (1001) and `http2WebSockets = false`.
-module ws_h2_net;
+module ws_h2_net 2025;
 
 version (linux):
 

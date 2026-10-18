@@ -13,7 +13,7 @@
 /// - total deadline per request (`timeout`); cancelling the incoming request
 ///   closes the outgoing connection;
 /// - does not follow redirects (3xx comes back as a response; read `Location`).
-module andaime.engine.httpclient;
+module andaime.engine.httpclient 2025;
 
 import core.stdc.string : memchr, memcmp, memcpy, memmove, strlen;
 import core.time : Duration, MonoTime, seconds, msecs;

@@ -1,3 +1,4 @@
+module log_hot_path 2025;
 /// andaime.log on the hot path: a line below the level allocates nothing, and neither does an emitted `kv` or `json` line
 /// (the access log, a handler's own line with the request id) once the per-thread buffer has grown.
 import andaime;

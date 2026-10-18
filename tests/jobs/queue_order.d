@@ -1,5 +1,5 @@
 /// Claim order: priority ascending, then runAt, then id. A future runAt stays scheduled.
-module queue_order;
+module queue_order 2025;
 
 @safe:
 

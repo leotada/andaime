@@ -1,7 +1,7 @@
 /// Mutation fuzzer for the JSON reader (runs in check.sh, deterministic per seed): starts from valid documents (deep
 /// nesting, escapes, numbers at the edges, repeated keys) and breaks them at the byte and token level.
 /// Usage: fuzz_json [iterations] [seed]
-module fuzz_json;
+module fuzz_json 2025;
 
 import json_invariants;
 import core.stdc.stdio : printf;

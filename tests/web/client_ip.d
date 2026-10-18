@@ -1,5 +1,5 @@
 /// The client's address: the TCP peer, and the real client behind trusted proxies.
-module client_ip;
+module client_ip 2025;
 
 @safe:
 

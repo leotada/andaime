@@ -1,5 +1,5 @@
 /// `App`: route registration, middlewares and the per-request entry point.
-module andaime.web.application;
+module andaime.web.application 2025;
 
 @safe:
 

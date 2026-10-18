@@ -1,5 +1,5 @@
 /// The app as a whole.
-module tests.app;
+module tests.app 2025;
 
 @safe:
 

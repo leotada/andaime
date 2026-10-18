@@ -9,7 +9,7 @@
 /// Growing therefore allocates a new block, copies, and drops the old one; the old one is never freed explicitly because
 /// a slice of it may still be in use. Buffers are reused (`clear`), so after warm-up requests do not grow them and the
 /// hot path stays free of GC allocation (tests/alloc).
-module andaime.http.buffer;
+module andaime.http.buffer 2025;
 
 @safe:
 

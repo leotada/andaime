@@ -1,5 +1,5 @@
 /// Multipart form bodies: text parts and `UploadedFile` fields on `Form!T`.
-module uploads_test;
+module uploads_test 2025;
 
 @safe:
 

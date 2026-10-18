@@ -3,7 +3,7 @@
 ///
 /// Hashing is deliberately slow (cost 12 is ~250 ms of CPU): never call `bcryptHash`/`bcryptVerify` on the event loop.
 /// From a handler use `bcryptHashOffload`/`bcryptVerifyOffload`, which run on the offload pool.
-module andaime.crypto.bcrypt;
+module andaime.crypto.bcrypt 2025;
 
 @safe:
 

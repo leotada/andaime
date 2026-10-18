@@ -1,6 +1,6 @@
 /// Validation errors as the client sees them: FastAPI/Pydantic v2 shape with type codes, array indexes in loc,
 /// UTF-8 checks, character-based lengths and the cap on listed errors.
-module validation;
+module validation 2025;
 
 @safe:
 

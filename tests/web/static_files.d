@@ -1,5 +1,5 @@
 /// Static files: content, ETag/304, index, traversal and symlinks.
-module static_files;
+module static_files 2025;
 
 @safe:
 

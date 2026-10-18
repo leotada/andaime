@@ -1,6 +1,6 @@
 /// `Optional!T`: a value that may be absent. One type for everything that can be missing: an optional query
 /// parameter or header, a JSON field, a database column that may be NULL.
-module andaime.http.optional;
+module andaime.http.optional 2025;
 
 @safe:
 

@@ -1,6 +1,6 @@
 /// zlib loaded at run time (dlopen) for WebSocket compression (permessage-deflate, RFC 7692). No `-lz` at build time:
 /// without libz.so.1 WebSockets simply are not compressed.
-module andaime.engine.zlib;
+module andaime.engine.zlib 2025;
 
 @safe:
 

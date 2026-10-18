@@ -13,7 +13,7 @@
 ///
 /// What is deliberately absent: server push (disabled by RFC 9113 clients anyway), priorities
 /// (parsed and ignored, as RFC 9113 allows), the HPACK dynamic table on the encoding side.
-module andaime.http.h2;
+module andaime.http.h2 2025;
 
 @safe:
 

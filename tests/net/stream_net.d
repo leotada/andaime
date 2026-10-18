@@ -1,7 +1,7 @@
 /// Streamed responses over HTTP/1.1 on real sockets: exact chunked framing, early delivery, backpressure with a slow
 /// reader (bounded memory), a client that disappears or stops reading, HTTP/1.0, HEAD, a failure after the head, keep-alive
 /// and pipelining behind a stream.
-module stream_net;
+module stream_net 2025;
 
 version (linux):
 

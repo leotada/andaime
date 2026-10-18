@@ -1,6 +1,6 @@
 /// Mutation fuzzer for the parser (runs in CI, deterministic per seed).
 /// Usage: fuzz_parse [iterations] [seed]
-module fuzz_parse;
+module fuzz_parse 2025;
 
 import invariants;
 import andaime.http.parser;

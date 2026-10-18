@@ -1,5 +1,5 @@
 /// Repeated query parameters as lists: `?tag=a&tag=b` -> `string[] tag`.
-module query_lists;
+module query_lists 2025;
 
 @safe:
 

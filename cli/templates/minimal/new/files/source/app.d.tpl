@@ -1,5 +1,5 @@
 /// {{app}}: the routes, their handlers and their tests.
-module app;
+module app 2025;
 
 @safe:
 

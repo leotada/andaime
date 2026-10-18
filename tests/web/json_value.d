@@ -1,6 +1,6 @@
 /// `JsonValue` through real routes: as the whole body, as a DTO field, in a map with mixed values, as a return value; its
 /// errors (syntax, depth, UTF-8) as 422 entries; OpenAPI's "any value".
-module json_value_test;
+module json_value_test 2025;
 
 @safe:
 

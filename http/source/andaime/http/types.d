@@ -1,6 +1,6 @@
 /// HTTP vocabulary shared between `andaime:engine` and `andaime:web`.
 /// Nothing here makes syscalls or allocates on the GC.
-module andaime.http.types;
+module andaime.http.types 2025;
 
 @safe:
 

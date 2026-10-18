@@ -4,7 +4,7 @@
 ///
 /// Usage: bench <port> <path> [connections=64] [seconds=5] [threads=4] [depth=1]
 /// Prints requests per second and the latency percentiles (depth 1 only). Exits with 1 if a response is not a 200.
-module bench;
+module bench 2025;
 
 import core.thread, core.time, core.atomic;
 import core.stdc.stdio, core.stdc.stdlib, core.stdc.string, core.stdc.errno;

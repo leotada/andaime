@@ -5,7 +5,7 @@
 ///
 /// Runs before routing (use `app.use`), so it also answers the preflight
 /// `OPTIONS` of routes that only exist for GET/POST. Without `Origin` on the request, it does nothing.
-module andaime.web.cors;
+module andaime.web.cors 2025;
 
 @safe:
 

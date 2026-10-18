@@ -1,5 +1,5 @@
 /// Ready-made everyday middlewares: access log, request id and Bearer token.
-module andaime.web.middleware;
+module andaime.web.middleware 2025;
 
 @safe:
 

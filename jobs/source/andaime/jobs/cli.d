@@ -5,7 +5,7 @@
 /// `--queues name:concurrency` (the value in the next argument) are the same flags. Anything else
 /// throws. An application that has its own flags strips them before calling `parseStartup`, or
 /// passes only these.
-module andaime.jobs.cli;
+module andaime.jobs.cli 2025;
 
 @safe:
 

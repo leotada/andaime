@@ -1,3 +1,4 @@
+module h2_hot_path 2025;
 /// The HTTP/2 hot path does not allocate on the GC either: frames in, HPACK decoding, the
 /// request handed to the app through the server's callback, the response transcoded and framed.
 import andaime;

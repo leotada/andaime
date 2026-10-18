@@ -1,6 +1,6 @@
 /// `PatchField!T` through a real PATCH route: absent leaves a field alone, null clears it, a value sets it; errors keep
 /// their `loc`; the OpenAPI schema says "nullable, not required"; a response omits absent fields.
-module patchfield_test;
+module patchfield_test 2025;
 
 @safe:
 

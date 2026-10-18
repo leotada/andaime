@@ -3,7 +3,7 @@
 ///   GET /json               a struct serialized to JSON
 ///   GET /users/{id}?full=1  a path parameter, a query parameter and a header, behind an app middleware
 /// Usage: bench_serve [port=18100] [workers=1]
-module bench_serve;
+module bench_serve 2025;
 
 import andaime;
 

@@ -7,7 +7,7 @@
 /// request, which is exactly what the engine's `compact` expects.
 ///
 ///     auto st = dec.feed(region, avail, maxBody, maxTrailerBytes);   // call again when more bytes arrive
-module andaime.http.chunked;
+module andaime.http.chunked 2025;
 
 @safe:
 

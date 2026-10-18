@@ -7,7 +7,7 @@
 /// The module sits in the `andaime.engine` package only to reach the raw OpenSSL table, which is
 /// package-protected (`andaime.engine.tls`); nothing outside tests does this.
 /// Skips itself (prints `skip: <reason>` and exits 77) when OpenSSL 3 or the `openssl` command is missing.
-module andaime.engine.tls_net;
+module andaime.engine.tls_net 2025;
 
 version (linux):
 

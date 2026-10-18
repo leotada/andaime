@@ -1,5 +1,5 @@
 /// What every `andaime:crypto` module shares: the error type, loading libcrypto on first use, the random source.
-module andaime.crypto.common;
+module andaime.crypto.common 2025;
 
 @safe:
 

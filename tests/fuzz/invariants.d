@@ -1,6 +1,6 @@
 /// Invariants the request parser must respect for ANY input.
 /// Used by the mutation fuzzer (CI) and by libFuzzer (tools/fuzz.sh).
-module invariants;
+module invariants 2025;
 
 @safe:
 

@@ -11,7 +11,7 @@
 ///
 /// Parsing from outside a request: `auto v = parseJson(text);` (throws `JsonError`), or the non-throwing
 /// `parseJson(text, v, error)`.
-module andaime.web.jsonvalue;
+module andaime.web.jsonvalue 2025;
 
 @safe:
 

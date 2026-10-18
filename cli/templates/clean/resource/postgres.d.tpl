@@ -1,5 +1,5 @@
 /// {{PluralWords}} in PostgreSQL (andaime:pg). The table comes from `migrations/{{migration}}_{{plural}}.sql`.
-module adapters.postgres.{{plural}};
+module adapters.postgres.{{plural}} 2025;
 
 @safe:
 

@@ -1,5 +1,5 @@
 /// libFuzzer target (LDC: -fsanitize=fuzzer,address). See tools/fuzz.sh.
-module libfuzzer_parse;
+module libfuzzer_parse 2025;
 
 import invariants;
 

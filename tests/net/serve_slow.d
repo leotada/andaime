@@ -1,6 +1,6 @@
 /// Load server: a route that "waits for an external API" for N ms (default 3000).
 /// Usage: serve_slow [port] [waitMs] [cert.pem key.pem] — see the memory test in tools/check.sh.
-module serve_slow;
+module serve_slow 2025;
 
 import andaime;
 import core.time : msecs;

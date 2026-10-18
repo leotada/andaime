@@ -1,5 +1,5 @@
 /// {{PluralWords}} over HTTP: the routes, the JSON a client sends and receives, and the calls to the use cases.
-module adapters.http.{{plural}};
+module adapters.http.{{plural}} 2025;
 
 @safe:
 

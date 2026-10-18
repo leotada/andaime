@@ -1,7 +1,7 @@
 /// The use cases the jobs call. andaime:jobs builds a job from its JSON payload, so a job has no constructor to receive
 /// them: `jobs.d` registers how to build each use case before serving, and every thread that runs jobs builds its own
 /// on first use, with its own database pool and no locks.
-module adapters.jobs.provider;
+module adapters.jobs.provider 2025;
 
 @safe:
 

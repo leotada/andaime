@@ -1,7 +1,7 @@
 /// What must hold for any bytes given to the JSON reader (shared by the mutation fuzzer and the libFuzzer target):
 /// `parseJson` never crashes and never recurses past its depth limit; whatever it accepts writes back as JSON that parses
 /// to an equal value and writes the same text again; a typed decode of the same bytes never crashes either.
-module json_invariants;
+module json_invariants 2025;
 
 import andaime.web.jsonvalue;
 import andaime.web.json : decodeJson;

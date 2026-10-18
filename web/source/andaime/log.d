@@ -16,7 +16,7 @@
 ///
 /// `setLogSink` sends the lines somewhere else, as a `LogRecord` (level, message, request id, fields, and the rendered
 /// line); `andaime.web.testing.captureLog` collects them in tests.
-module andaime.log;
+module andaime.log 2025;
 
 @safe:
 

@@ -1,5 +1,5 @@
 /// DTO UDAs and the validation error accumulator (FastAPI format).
-module andaime.web.dto;
+module andaime.web.dto 2025;
 
 @safe:
 

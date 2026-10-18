@@ -7,7 +7,7 @@
 ///   API_TOKEN      Bearer token accepted on /api/v1 (required)
 ///   RATES_URL      base of the exchange-rates API (default https://api.exchangerate.host)
 ///   CORS_ORIGINS   allowed origins, comma-separated (default: none)
-module app;
+module app 2025;
 
 @safe:
 

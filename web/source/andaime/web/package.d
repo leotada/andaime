@@ -1,6 +1,6 @@
 /// `andaime:web` — high-level API. Knows nothing about sockets: operates on
 /// `Request` (slices) and writes into a response buffer.
-module andaime.web;
+module andaime.web 2025;
 
 @safe:
 

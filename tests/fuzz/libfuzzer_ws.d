@@ -1,5 +1,5 @@
 /// libFuzzer target for the WebSocket message layer (LDC: -fsanitize=fuzzer,address). See tools/fuzz.sh.
-module libfuzzer_ws;
+module libfuzzer_ws 2025;
 
 import ws_invariants;
 

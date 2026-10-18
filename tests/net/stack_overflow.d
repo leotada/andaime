@@ -1,6 +1,6 @@
 /// Server for tools/crash_check.sh: a handler that overflows its fiber stack, to check what the process says when it
 /// dies. Usage: stack_overflow <port>
-module stack_overflow;
+module stack_overflow 2025;
 
 import andaime;
 import std.conv : to;

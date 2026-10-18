@@ -1,7 +1,7 @@
 /// WebSocket routes through TestClient: the handshake and its refusals, messages both ways, fragments, pings, the close
 /// handshake, the protocol checks (masking, UTF-8, sizes, close codes), errors in the body, middleware, controllers and
 /// the OpenAPI document.
-module websocket_test;
+module websocket_test 2025;
 
 @safe:
 

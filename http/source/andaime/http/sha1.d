@@ -1,7 +1,7 @@
 /// SHA-1 (RFC 3174) and standard base64, by hand (no std.digest or std.base64 in the core).
 /// Only the WebSocket handshake uses them (`Sec-WebSocket-Accept`), where SHA-1 is a fixed part of the protocol, not a
 /// security measure.
-module andaime.http.sha1;
+module andaime.http.sha1 2025;
 
 @safe:
 

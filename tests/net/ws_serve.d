@@ -1,6 +1,6 @@
 /// Server for tools/ws_interop.sh: WebSocket echo routes for other implementations to talk to, over HTTP/1.1 and HTTP/2
 /// (RFC 8441). Usage: ws_serve <port> [cert.pem key.pem]
-module ws_serve;
+module ws_serve 2025;
 
 import andaime;
 import std.conv : to;

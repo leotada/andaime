@@ -1,6 +1,6 @@
 /// What the application does with users. One class per use case, with one `execute`; its constructor takes the
 /// ports it needs. Imports the domain only: no framework, no database.
-module usecases.users;
+module usecases.users 2025;
 
 @safe:
 

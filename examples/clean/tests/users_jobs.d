@@ -1,5 +1,5 @@
 /// The jobs of users, run through a test store, with their use cases over in-memory adapters.
-module tests.users_jobs;
+module tests.users_jobs 2025;
 
 @safe:
 

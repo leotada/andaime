@@ -1,6 +1,6 @@
 /// The errors of the business rules. Use cases throw them; `app.d` maps each one to an HTTP status, so the core never
 /// mentions one.
-module domain.errors;
+module domain.errors 2025;
 
 @safe:
 

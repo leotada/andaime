@@ -1,5 +1,5 @@
 /// drainJobs runs due jobs and leaves the rest. assertEnqueued checks name, queue and payload.
-module drain;
+module drain 2025;
 
 @safe:
 

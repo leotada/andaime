@@ -11,7 +11,7 @@
 /// Golden rule: every I/O wait in a handler goes through here (or through a
 /// library built on top of this). Any blocking call (a real
 /// `sleep`, a synchronous C lib) stalls the whole worker.
-module andaime.engine.fiberio;
+module andaime.engine.fiberio 2025;
 
 @safe:
 

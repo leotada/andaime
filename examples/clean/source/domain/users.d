@@ -1,5 +1,5 @@
 /// Users: the entity and its rules. Plain D: no framework, no database.
-module domain.users;
+module domain.users 2025;
 
 @safe:
 

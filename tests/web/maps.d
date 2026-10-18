@@ -1,5 +1,5 @@
 /// JSON objects as `V[string]`: read, written, validated and described.
-module maps;
+module maps 2025;
 
 @safe:
 

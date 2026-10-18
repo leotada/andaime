@@ -1,5 +1,5 @@
 /// `Query!T` (a struct from the query string) and `Form!T` (from a urlencoded body).
-module models_test;
+module models_test 2025;
 
 @safe:
 

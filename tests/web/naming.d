@@ -1,5 +1,5 @@
 /// Wire names: `@naming` on a struct (JSON, `Query!T`, `Form!T`, OpenAPI) and on an enum, `@wireName` on an enum member.
-module naming_test;
+module naming_test 2025;
 
 @safe:
 

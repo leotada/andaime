@@ -11,7 +11,7 @@
 /// work finishes by itself and the result is discarded.
 ///
 /// Outside an andaime fiber (tests, dev server) the delegate runs inline.
-module andaime.engine.offload;
+module andaime.engine.offload 2025;
 
 @safe:
 

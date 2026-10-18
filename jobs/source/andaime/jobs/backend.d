@@ -6,7 +6,7 @@
 ///
 /// Time is microseconds since the Unix epoch. `InMemoryJobStore` is one thread: its methods never wait,
 /// so fibers of that thread can share it. Another thread needs a different store.
-module andaime.jobs.backend;
+module andaime.jobs.backend 2025;
 
 @safe:
 

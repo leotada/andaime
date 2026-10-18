@@ -21,7 +21,7 @@
 /// `@Offload` is unchanged. `runClaimed` waits for the pool. If shutdown cancels the fiber while
 /// it is inside `offload`, the pool thread can still finish that work; the row has been released
 /// (`RequestCancelled` is not an `Exception`) and the result is discarded.
-module andaime.jobs.worker;
+module andaime.jobs.worker 2025;
 
 @safe:
 

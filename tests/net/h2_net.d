@@ -3,7 +3,7 @@
 /// (multiplexing), cancellation by RST_STREAM and by disconnect, per-stream deadlines, the
 /// in-flight ceiling, flow control with large bodies, h2c upgrade, idle and header timeouts,
 /// graceful stop, and HTTP/1.1 still served on the same port.
-module h2_net;
+module h2_net 2025;
 
 version (linux):
 

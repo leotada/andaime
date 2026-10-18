@@ -19,7 +19,7 @@
 /// throws before writing anything still gets an ordinary error response. After the commit status and headers are final,
 /// an error aborts the response (HTTP/1.1: the connection is closed without the terminating chunk; HTTP/2: the stream is
 /// reset) and is logged. A streaming handler holds its fiber and counts toward `ServerConfig.maxInFlight` until it ends.
-module andaime.web.stream;
+module andaime.web.stream 2025;
 
 @safe:
 

@@ -1,6 +1,6 @@
 /// `Group.mount` (a controller under a group's prefix, with the group's middleware) and `App.routeTable` (method, path
 /// and handler name of every route, in registration order).
-module route_table;
+module route_table 2025;
 
 @safe:
 

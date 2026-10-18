@@ -1,6 +1,6 @@
 /// OpenAPI details: schema names (collisions, templates, @schemaName), @status and @responds, unique operationIds and the
 /// docs page (escaping, integrity).
-module openapi_names;
+module openapi_names 2025;
 
 import andaime;
 import andaime.web.testing;

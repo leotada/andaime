@@ -1,5 +1,5 @@
 /// Server for tools/stream_interop.sh: streamed responses for curl to read. Usage: stream_serve <port>
-module stream_serve;
+module stream_serve 2025;
 
 import andaime;
 import std.conv : to;

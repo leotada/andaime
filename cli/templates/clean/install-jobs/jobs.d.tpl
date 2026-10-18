@@ -1,6 +1,6 @@
 /// Background jobs: the process roles, the job store, the jobs of the application and the use cases they call. `main`
 /// calls `serveWithJobs` instead of `serve`.
-module jobs;
+module jobs 2025;
 
 @safe:
 

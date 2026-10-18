@@ -1,7 +1,7 @@
 /// Parser request corpus: each file `name.<result>.http` holds the
 /// bytes of a request and the expected result (`ok`, `incomplete` or the error
 /// status: 400, 413...). To cover a new attack, just drop a file in here.
-module corpus_test;
+module corpus_test 2025;
 
 import andaime.http.parser;
 import andaime.http.types;

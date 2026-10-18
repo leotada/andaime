@@ -1,6 +1,6 @@
 /// andaime.log on the real server: requests whose fibers interleave on one worker thread each log with their own request id
 /// (the id lives in the request fiber's slot, not in a per-thread variable that the next fiber would overwrite).
-module log_net;
+module log_net 2025;
 
 version (linux):
 

@@ -26,7 +26,7 @@
 /// TLS (`ServerConfig.tls`): an accepted connection starts in `Phase.handshake`; once the
 /// handshake completes, ALPN decides between HTTP/2 and HTTP/1.1, and every read and write goes
 /// through `ioRead`/`ioSend`, which hide OpenSSL behind read(2)/send(2) semantics.
-module andaime.engine.epoll;
+module andaime.engine.epoll 2025;
 
 import core.thread : Fiber, Thread;
 import core.time : MonoTime;

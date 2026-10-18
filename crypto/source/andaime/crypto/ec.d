@@ -1,6 +1,6 @@
 /// ECDSA and ECDH on P-256 (prime256v1, secp256r1): keys, JWS ES256 signatures (raw `r||s`), and the ECDH shared
 /// secret of Web Push (RFC 8291).
-module andaime.crypto.ec;
+module andaime.crypto.ec 2025;
 
 @safe:
 

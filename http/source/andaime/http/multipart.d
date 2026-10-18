@@ -4,7 +4,7 @@
 /// Part names, filenames and content types are copies. `MultipartPart.data` is a slice of the input body. A part is
 /// rejected when the body is truncated, the framing is wrong, or a limit is exceeded: 128 parts, 8 KiB of headers per
 /// part, a name of 256 bytes, a filename of 1024 bytes.
-module andaime.http.multipart;
+module andaime.http.multipart 2025;
 
 @safe:
 

@@ -1,6 +1,6 @@
 /// IP addresses without sockets: parsing, formatting and CIDR matching. IPv6-ready even though the server listens on
 /// IPv4 only. No allocation (formatting writes into a caller's buffer).
-module andaime.http.ip;
+module andaime.http.ip 2025;
 
 @safe:
 

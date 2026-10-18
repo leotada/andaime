@@ -1,7 +1,7 @@
 /// andaime ergonomics example: in-memory CRUD of users.
 /// The signature of each function IS the HTTP contract: andaime reads the types and
 /// parameter names at compile time and generates the extraction and validation.
-module app;
+module app 2025;
 
 @safe:
 

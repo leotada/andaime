@@ -1,6 +1,6 @@
 /// Tests of the Postgres driver against a real server (ANDAIME_PG = conninfo).
 /// Without ANDAIME_PG the test declares itself skipped (prints `skip: <reason>` and exits 77).
-module pg_net;
+module pg_net 2025;
 
 version (linux):
 

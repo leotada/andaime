@@ -14,7 +14,7 @@
 ///  - fields are numbers, bool, enums, text, text types (`andaime.http.texttype`), `Optional`/lists of those, or (on a
 ///    form) `UploadedFile`;
 ///  - `@minLength` / `@maxLength` on one `UploadedFile` count bytes; on a list they count items.
-module andaime.web.models;
+module andaime.web.models 2025;
 
 @safe:
 

@@ -1,6 +1,6 @@
 /// The background jobs of {{feature}}. A job is an entry point, like a controller: its fields are the payload, and
 /// `perform` hands them to a use case.
-module adapters.jobs.{{feature}};
+module adapters.jobs.{{feature}} 2025;
 
 @safe:
 

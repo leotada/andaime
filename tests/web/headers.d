@@ -1,6 +1,6 @@
 /// Response headers: validation (response splitting), several values, replace vs add, Vary merging, the 32-header
 /// limit and the headers andaime owns.
-module headers;
+module headers 2025;
 
 @safe:
 

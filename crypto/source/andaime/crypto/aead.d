@@ -1,5 +1,5 @@
 /// AES-128-GCM authenticated encryption (the `aes128gcm` content coding of RFC 8188, Web Push).
-module andaime.crypto.aead;
+module andaime.crypto.aead 2025;
 
 @safe:
 

@@ -1,6 +1,6 @@
 /// `App.mapError!E(status)`: an exception type answered like `HttpError(status, msg)`, without a log line; subclasses
 /// match, the first mapping wins, `onError` receives the `HttpError`, and a bad status or a late call throws.
-module map_error;
+module map_error 2025;
 
 @safe:
 

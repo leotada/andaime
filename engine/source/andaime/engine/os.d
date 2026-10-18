@@ -1,6 +1,6 @@
 /// Internal OS abstraction for andaime.engine: dynamic loading, notification descriptors,
 /// portable non-blocking socket operations, and CPU count.
-module andaime.engine.os;
+module andaime.engine.os 2025;
 
 @safe:
 

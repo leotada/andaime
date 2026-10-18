@@ -1,5 +1,5 @@
 /// libFuzzer target for the HTTP/2 session (LDC: -fsanitize=fuzzer,address). See tools/fuzz.sh.
-module libfuzzer_h2;
+module libfuzzer_h2 2025;
 
 import h2_invariants;
 

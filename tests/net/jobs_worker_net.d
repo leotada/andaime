@@ -1,6 +1,6 @@
 /// Supervisor on the epoll loop: one claimed job, GET /health, and a shutdown that releases
 /// a job still inside `perform`. Run from `s_net` in tools/check.sh.
-module jobs_worker_net;
+module jobs_worker_net 2025;
 
 version (linux):
 

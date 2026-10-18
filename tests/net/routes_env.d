@@ -1,7 +1,7 @@
 /// `ANDAIME_ROUTES=1`: `tryServe` calls the build function once on the calling thread, prints `App.routeTable` to stdout
 /// and returns true without opening a port (`andaime routes` relies on it). Serving would block until a signal, so
 /// returning at all shows nothing was served.
-module routes_env;
+module routes_env 2025;
 
 version (linux):
 

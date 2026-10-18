@@ -1,5 +1,5 @@
 /// Number -> text without std.conv/std.format. Works at compile time (messages built in CTFE) and at run time.
-module andaime.web.numtext;
+module andaime.web.numtext 2025;
 
 @safe:
 

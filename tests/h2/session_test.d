@@ -1,7 +1,7 @@
 /// HTTP/2 session tests without sockets: a tiny client builds frames, feeds `H2Session` and
 /// reads back what it would have sent. Covers the request/response cycle, flow control,
 /// stream and connection errors, limits and abuse protection.
-module session_test;
+module session_test 2025;
 
 import andaime.http;
 import andaime.http.hpack : encodeField, encodeStatus, encodeInt;

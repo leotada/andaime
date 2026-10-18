@@ -1,6 +1,6 @@
 /// `andaime:http` — HTTP types and wire formats (HTTP/1.1 parser and writer, HTTP/2 session and
 /// HPACK). No I/O, no GC on the hot path.
-module andaime.http;
+module andaime.http 2025;
 
 public import andaime.http.types;
 public import andaime.http.optional;

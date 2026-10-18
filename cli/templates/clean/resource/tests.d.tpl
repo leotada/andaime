@@ -1,5 +1,5 @@
 /// {{PluralWords}}: the API end to end over in-memory adapters, and the repository contract on each adapter.
-module tests.{{plural}};
+module tests.{{plural}} 2025;
 
 @safe:
 

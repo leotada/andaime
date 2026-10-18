@@ -2,7 +2,7 @@
 {{#pg}}
 /// It behaves like the Postgres repository: `tests/{{plural}}.d` runs the same contract on both.
 {{/pg}}
-module adapters.memory.{{plural}};
+module adapters.memory.{{plural}} 2025;
 
 @safe:
 

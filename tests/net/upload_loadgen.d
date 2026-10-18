@@ -1,7 +1,7 @@
 /// Upload load for the memory test (tools/check.sh): N connections POST a body of K KiB at the same time to /len and
 /// check the answer. Bodies above 64 KiB use the buffer pool's exact-size path. Exit code 1 if any upload fails.
 /// Usage: upload_loadgen <port> <connections> <KiB>
-module upload_loadgen;
+module upload_loadgen 2025;
 
 import core.atomic : atomicLoad, atomicOp, atomicStore;
 import core.thread : Thread;

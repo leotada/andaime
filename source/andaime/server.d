@@ -1,6 +1,6 @@
 /// Glue between `andaime:web` (App) and `andaime:engine` (transport).
 /// It is the only module that knows both layers.
-module andaime.server;
+module andaime.server 2025;
 
 @safe:
 

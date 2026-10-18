@@ -1,6 +1,6 @@
 /// andaime.log through real requests: the default `text` format keeps andaime's lines as they were; `kv` and `json` add time,
 /// level, the request id and structured fields; levels filter; the environment overrides the code.
-module logging_test;
+module logging_test 2025;
 
 import andaime;
 import andaime.web.testing;

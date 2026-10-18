@@ -2,7 +2,7 @@
 /// No headers and no `-lpq` at build time: andaime builds on any
 /// machine, and only whoever uses the driver needs libpq installed
 /// (`libpq5` on Debian/Ubuntu, `libpq` on Alpine).
-module andaime.db.libpq;
+module andaime.db.libpq 2025;
 
 @safe:
 

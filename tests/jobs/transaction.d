@@ -1,6 +1,6 @@
 /// `JobTransaction` without a database: `TestJobStore.transaction()` publishes on commit and drops on rollback, so code
 /// that enqueues "after commit" is tested the same way it runs on Postgres (`PgJobStore.within(tx)`).
-module transaction;
+module transaction 2025;
 
 @safe:
 

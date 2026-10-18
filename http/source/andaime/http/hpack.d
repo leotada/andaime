@@ -7,7 +7,7 @@
 ///   "without indexing", never the dynamic table. Each stream's fiber can then encode its own
 ///   response head without coordinating with the connection, at the cost of a few bytes per
 ///   header. Strings are sent raw (no Huffman): encoding is a copy.
-module andaime.http.hpack;
+module andaime.http.hpack 2025;
 
 @safe:
 

@@ -1,5 +1,5 @@
 /// The process: reads the configuration, then serves what `app.d` builds. `dub test` leaves this module out.
-module main;
+module main 2025;
 
 @safe:
 

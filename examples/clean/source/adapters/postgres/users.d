@@ -1,5 +1,5 @@
 /// Users in PostgreSQL (andaime:pg). The table comes from `migrations/0001_users.sql`.
-module adapters.postgres.users;
+module adapters.postgres.users 2025;
 
 @safe:
 

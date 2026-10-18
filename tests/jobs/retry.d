@@ -1,6 +1,6 @@
 /// A failure is retried with backoff, then discarded. JobDiscard skips the retry.
 /// An Error is returned to the queue without spending the attempt, and it propagates.
-module retry;
+module retry 2025;
 
 @safe:
 

@@ -1,5 +1,5 @@
 /// The job contract: UDAs, `perform`, and a JSON payload. One `jobError` line, asserted by `JobSet`.
-module andaime.jobs.job;
+module andaime.jobs.job 2025;
 
 @safe:
 

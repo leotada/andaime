@@ -1,5 +1,5 @@
 /// User code may be @system (C calls, raw pointers) without ceremony; @safe code stays checked.
-module system_code;
+module system_code 2025;
 
 // NOTE: no `@safe:` here on purpose. These are plain (@system) functions.
 

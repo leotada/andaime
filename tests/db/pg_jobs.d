@@ -2,7 +2,7 @@
 /// LISTEN wakes a fiber, a cron slot inserts once, and a lease returns an abandoned `running` row.
 /// Without ANDAIME_PG the test prints `skip: ...` and exits 77. Build it, then run the binary:
 /// `dmd -run` turns that 77 into 1.
-module pg_jobs;
+module pg_jobs 2025;
 
 version (linux):
 

@@ -1,6 +1,6 @@
 /// `tlsAvailable`, `zlibAvailable` and `pgAvailable` (with their `*LoadError`) agree with each other, whether or not the
 /// native library is installed here, and the reason names the library.
-module runtime_libs;
+module runtime_libs 2025;
 
 import andaime;
 import andaime.db : pgAvailable, pgLoadError;

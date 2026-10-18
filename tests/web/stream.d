@@ -1,7 +1,7 @@
 /// Streamed responses through TestClient: chunks in order, Server-Sent Events formatting, the lazy commit (an error before
 /// the first write is an ordinary error response, after it the response is aborted), headers locked after the commit,
 /// HEAD, status control and the OpenAPI description.
-module stream_test;
+module stream_test 2025;
 
 @safe:
 

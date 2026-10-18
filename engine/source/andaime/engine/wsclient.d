@@ -12,7 +12,7 @@
 /// - `ws://` and `wss://` (OpenSSL at run time, certificates and host names verified by `httpClient()`'s settings);
 /// - permessage-deflate when `WsClientOptions.compression` is set and the server agrees;
 /// - the connection belongs to the fiber that opened it (it receives); other fibers of the worker may `send`.
-module andaime.engine.wsclient;
+module andaime.engine.wsclient 2025;
 
 version (Posix)
     import core.stdc.errno : errno, EAGAIN, EINTR, EWOULDBLOCK;

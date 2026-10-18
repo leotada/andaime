@@ -16,7 +16,7 @@
 /// A URL ending in `*` matches by prefix. Expectations are tried in the order they were added; each one answers as many
 /// requests as it has replies (one, `200` with no body, when it has none), unless `always()` makes its last reply repeat.
 /// The real client pays one thread-local null check per request for this.
-module andaime.engine.httpfake;
+module andaime.engine.httpfake 2025;
 
 @safe:
 

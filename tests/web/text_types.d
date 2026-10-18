@@ -1,5 +1,5 @@
 /// Text types (`fromString` + `toString`): a Uuid and an ISO date travel through path, query, header, JSON and OpenAPI.
-module text_types;
+module text_types 2025;
 
 @safe:
 

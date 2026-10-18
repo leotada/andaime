@@ -1,5 +1,5 @@
 /// @UniqueJob: one row per payload per window. A discarded row does not hold the window.
-module unique;
+module unique 2025;
 
 @safe:
 

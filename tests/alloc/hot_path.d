@@ -1,3 +1,4 @@
+module hot_path 2025;
 /// Guarantees the framework's hot path does not allocate on the GC:
 /// routing + path/query extraction + middleware + response JSON.
 import andaime;

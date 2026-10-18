@@ -13,7 +13,7 @@
 ///   4. Header!"Name"                                  -> required header
 ///   5. Optional!X (X = escalar, Header, JsonBody)     -> optional
 ///   6. scalar outside the route                       -> query (default => optional)
-module andaime.web.handler_traits;
+module andaime.web.handler_traits 2025;
 
 @safe:
 

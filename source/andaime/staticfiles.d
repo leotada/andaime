@@ -9,7 +9,7 @@
 /// - small files are read into the response memory; files above `offloadAbove` (256 KiB) are streamed in 64 KiB pieces
 ///   read on a pool thread (`offload`), with a Content-Length, so memory does not grow with the file and a slow client
 ///   only makes the write wait.
-module andaime.staticfiles;
+module andaime.staticfiles 2025;
 
 @safe:
 

@@ -1,5 +1,5 @@
 /// Text -> scalar conversions without std.conv (compiles fast, does not allocate).
-module andaime.web.convert;
+module andaime.web.convert 2025;
 
 import andaime.web.params : isCharType;
 import andaime.web.numtext : ctNum, itoa;

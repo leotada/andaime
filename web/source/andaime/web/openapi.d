@@ -13,7 +13,7 @@
 ///  - structs become `components/schemas`; `@minLength`, `@maxLength`, `@inRange`,
 ///    `@jsonKey`, `@naming`, `@optional` and `@jsonIgnore` are honored; enums list their wire names;
 ///  - `@summary("text")` on the handler fills in the operation summary.
-module andaime.web.openapi;
+module andaime.web.openapi 2025;
 
 @safe:
 

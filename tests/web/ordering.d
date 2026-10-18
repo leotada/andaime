@@ -1,6 +1,6 @@
 /// Middleware ordering and freezing: a middleware applies to every route of its App/Group whenever it is registered,
 /// runs in the order of the `use` calls (outermost first), and nothing can be registered once the app is serving.
-module ordering;
+module ordering 2025;
 
 @safe:
 

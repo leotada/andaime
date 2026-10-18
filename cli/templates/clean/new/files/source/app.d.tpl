@@ -1,6 +1,6 @@
 /// The composition root: which adapter implements each port, and which routes the app serves. `buildApp` runs once per
 /// worker (andaime's model), so everything it creates belongs to that worker and needs no locks.
-module app;
+module app 2025;
 
 @safe:
 

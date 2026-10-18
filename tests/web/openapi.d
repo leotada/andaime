@@ -1,5 +1,5 @@
 /// openapi.json generated from the signatures.
-module openapi_test;
+module openapi_test 2025;
 
 @safe:
 

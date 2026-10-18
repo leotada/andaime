@@ -1,6 +1,6 @@
 /// `Json!T` through routes: plain JSON in a body and in a response (never a string holding JSON), JSON text in a query
 /// parameter, and the schema of `T` in OpenAPI.
-module json_text_test;
+module json_text_test 2025;
 
 @safe:
 

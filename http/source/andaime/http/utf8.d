@@ -1,5 +1,5 @@
 /// UTF-8 validation and counting, by hand (no std.utf in the core).
-module andaime.http.utf8;
+module andaime.http.utf8 2025;
 
 @safe:
 

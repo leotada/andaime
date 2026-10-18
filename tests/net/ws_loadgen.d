@@ -3,7 +3,7 @@
 /// WebSockets are HTTP/2 streams (RFC 8441), `perConn` of them on each connection.
 /// Usage: ws_loadgen <port> <websockets> <holdMs> [h2 <perConn>]
 /// Exits with code 1 if any WebSocket fails.
-module ws_loadgen;
+module ws_loadgen 2025;
 
 import core.thread, core.time;
 import core.stdc.stdio, core.stdc.string;

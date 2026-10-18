@@ -1,5 +1,5 @@
 /// `import andaime;` brings in everything an application needs.
-module andaime;
+module andaime 2025;
 
 public import andaime.http.types : Method, HeaderField, Request, Protocol;
 public import andaime.web;

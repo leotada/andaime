@@ -1,7 +1,7 @@
 /// RFC 8291 Appendix A end to end: ECDH with the fixed keys, HKDF for every intermediate value, AES-128-GCM, the header;
 /// the body must match the RFC byte for byte, and the receiver's side must decrypt it.
 /// Exits 77 (skip) when OpenSSL 3 cannot be loaded.
-module webpush_rfc8291;
+module webpush_rfc8291 2025;
 
 import andaime.crypto;
 import andaime.crypto.hash : hkdfExtract, hkdfExpand;

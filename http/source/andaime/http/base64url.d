@@ -1,6 +1,6 @@
 /// base64url (RFC 4648 §5) without padding: the HTTP2-Settings header, JWS/JWT, Web Push keys, URL-safe tokens.
 /// Standard base64 (with padding) is in `andaime.http.sha1`.
-module andaime.http.base64url;
+module andaime.http.base64url 2025;
 
 @safe:
 

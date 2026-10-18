@@ -1,6 +1,6 @@
 /// `PatchField!T`: a field with three states -- absent, `null`, or a value -- for PATCH-style updates, where an absent
 /// field means "leave it alone" and `null` means "clear it". `Optional!T` cannot tell the first two apart.
-module andaime.http.patchfield;
+module andaime.http.patchfield 2025;
 
 @safe:
 

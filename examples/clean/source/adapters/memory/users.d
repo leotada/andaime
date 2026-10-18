@@ -1,6 +1,6 @@
 /// Users in memory, in one thread: for tests, and for `STORE=memory`.
 /// It behaves like the Postgres repository: `tests/users.d` runs the same contract on both.
-module adapters.memory.users;
+module adapters.memory.users 2025;
 
 @safe:
 

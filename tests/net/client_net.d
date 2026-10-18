@@ -1,6 +1,6 @@
 /// Tests of the outgoing HTTP client against a Python upstream (tests/net/upstream.py).
 /// Variables: ANDAIME_UP_PLAIN, ANDAIME_UP_TLS (ports) and ANDAIME_UP_CERT (the upstream's certificate).
-module client_net;
+module client_net 2025;
 
 version (linux):
 

@@ -1,6 +1,6 @@
 /// Server for the HTTP/2 interoperability checks (h2spec, curl, python-h2): `tools/h2_interop.sh`.
 /// Usage: h2_serve <port> [cert.pem key.pem]   (with a certificate: HTTPS, ALPN h2/http1.1)
-module h2_serve;
+module h2_serve 2025;
 
 import andaime;
 import andaime.engine : ServerConfig;

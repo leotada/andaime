@@ -1,5 +1,5 @@
 /// libFuzzer target for the JSON reader: `JsonValue` and a typed decode (LDC: -fsanitize=fuzzer,address). See tools/fuzz.sh.
-module libfuzzer_json;
+module libfuzzer_json 2025;
 
 import json_invariants;
 

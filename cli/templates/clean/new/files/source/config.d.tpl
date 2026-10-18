@@ -1,5 +1,5 @@
 /// The configuration: read from the environment once, in `main`, and read-only afterwards.
-module config;
+module config 2025;
 
 @safe:
 {{#pg}}

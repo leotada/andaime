@@ -7,7 +7,7 @@
 ///
 /// A field's own `@jsonKey` (or, for a database row, `@column`) wins over the struct's `@naming`. A policy is not
 /// inherited: a nested struct declares its own.
-module andaime.http.naming;
+module andaime.http.naming 2025;
 
 @safe:
 

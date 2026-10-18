@@ -1,6 +1,6 @@
 /// TestClient's helpers: multipart bodies, JSON requests and `json!T` responses, and the cookie jar (paths, replacement,
 /// deletion by Max-Age and by Expires, merged with a Cookie header of the test's own).
-module test_client;
+module test_client 2025;
 
 @safe:
 

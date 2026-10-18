@@ -5,7 +5,7 @@
 /// listening socket (SO_REUSEPORT). No mutable state shared between
 /// workers. Each request runs in a fiber of its own worker: waiting for I/O
 /// (`andaime.engine.fiberio`) suspends the fiber and the loop serves other connections.
-module andaime.engine.loop;
+module andaime.engine.loop 2025;
 
 @safe:
 

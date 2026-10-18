@@ -11,7 +11,7 @@
 /// renegotiation. OpenSSL's per-connection read/write buffers are released while a connection
 /// is idle (SSL_MODE_RELEASE_BUFFERS). The server-side session cache is off (it can hold 20,480
 /// sessions per context); resumption uses stateless tickets whose keys are shared by all workers.
-module andaime.engine.tlsserver;
+module andaime.engine.tlsserver 2025;
 
 @safe:
 

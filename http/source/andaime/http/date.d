@@ -1,6 +1,6 @@
 /// `Date` header (IMF-fixdate, RFC 9110 §5.6.7) with a one-second cache.
 /// Formatting once per second per thread is cheaper than once per response.
-module andaime.http.date;
+module andaime.http.date 2025;
 
 @safe:
 

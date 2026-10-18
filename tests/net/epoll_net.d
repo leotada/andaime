@@ -2,7 +2,7 @@
 /// HTTP over blocking sockets. Covers what M2 promises: a fiber per
 /// request, cancellation, the in-flight ceiling, deadlines, partial writes,
 /// pool shrinking and graceful stop.
-module epoll_net;
+module epoll_net 2025;
 
 version (linux):
 

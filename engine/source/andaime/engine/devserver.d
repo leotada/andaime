@@ -1,7 +1,7 @@
 /// DEVELOPMENT server: blocking, one connection at a time.
 /// It exists so you can `curl` the example before M2. It was replaced by
 /// EpollLoop, but it already uses the final pieces: parser, BufferPool, Limits.
-module andaime.engine.devserver;
+module andaime.engine.devserver 2025;
 
 import andaime.http;
 import andaime.engine.bufferpool;

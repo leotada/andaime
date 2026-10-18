@@ -1,5 +1,5 @@
 /// The query of a list endpoint: `?limit=20&offset=40`.
-module adapters.http.paging;
+module adapters.http.paging 2025;
 
 @safe:
 

@@ -10,7 +10,7 @@
 /// Larger requests (a body up to `Limits.maxBodyBytes`) get an exact-size buffer that is never cached: it becomes garbage
 /// as soon as the request is done and no slice of it survives.
 /// Single-threaded by design (one pool per worker), hence no locks.
-module andaime.engine.bufferpool;
+module andaime.engine.bufferpool 2025;
 
 @safe:
 

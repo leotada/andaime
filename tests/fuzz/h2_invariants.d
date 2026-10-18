@@ -2,7 +2,7 @@
 /// and the libFuzzer target): the session never crashes, consumes no more than it was given,
 /// only ever emits well-formed frames, answers every request it hands out, and ends with a
 /// GOAWAY when it gives up on the connection.
-module h2_invariants;
+module h2_invariants 2025;
 
 import andaime.http;
 

@@ -2,7 +2,7 @@
 /// Opens N connections over `rampMs`, sends `GET /slow` on each and measures latency.
 /// Usage: loadgen <port> <connections> <rampMs> <expected wait in ms>
 /// Exits with code 1 if any connection fails.
-module loadgen;
+module loadgen 2025;
 
 import core.thread, core.time;
 import core.stdc.stdio, core.stdc.stdlib, core.stdc.string, core.stdc.errno;

@@ -1,6 +1,6 @@
 /// Minimal reflection-driven JSON: writes straight into the response buffer
 /// and reads without an intermediate DOM. Light Phobos only; no std.json.
-module andaime.web.json;
+module andaime.web.json 2025;
 
 @safe:
 

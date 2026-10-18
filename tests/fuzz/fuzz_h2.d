@@ -2,7 +2,7 @@
 /// valid frame sequences and breaks them at the byte and at the frame level.
 /// Usage: fuzz_h2 [iterations] [seed]
 ///        fuzz_h2 --seeds <dir>   writes the seed inputs there (libFuzzer's starting corpus, see tools/fuzz.sh)
-module fuzz_h2;
+module fuzz_h2 2025;
 
 import h2_invariants;
 import andaime.http;

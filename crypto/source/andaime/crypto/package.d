@@ -9,7 +9,7 @@
 /// - P-256: `EcKeyP256`, `es256Sign`/`es256Verify` (JWS ES256, raw `r||s`), `ecdhP256`
 /// - Web Push (RFC 8291): `webPushEncrypt`, `webPushDecrypt`
 /// - passwords: `bcryptHash`, `bcryptVerify` (CPU-heavy: from a handler use `bcryptHashOffload`, `bcryptVerifyOffload`)
-module andaime.crypto;
+module andaime.crypto 2025;
 
 public import andaime.crypto.common : CryptoError, cryptoAvailable, randomBytes, constantTimeEquals;
 public import andaime.http.base64url : base64UrlEncode, base64UrlDecode;

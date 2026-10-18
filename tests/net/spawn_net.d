@@ -2,7 +2,7 @@
 /// One fiber sleeps until stop, a second is spawned from the first (so the wake-up is deferred to the
 /// loop), then SIGTERM: the process must return once they notice the stop, without waiting out the grace
 /// period. A second run sleeps past the grace period and must be cancelled.
-module spawn_net;
+module spawn_net 2025;
 
 version (linux):
 

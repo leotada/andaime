@@ -1,6 +1,6 @@
 /// One App per worker: `serve(build)` calls the build function once per worker, each on its own thread; the Apps are
 /// never shared, a build that returns the same App twice or throws is reported, and startup fails cleanly.
-module workers_net;
+module workers_net 2025;
 
 version (linux):
 

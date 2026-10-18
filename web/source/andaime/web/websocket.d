@@ -17,7 +17,7 @@
 /// chain (middleware sees the whole session). When the body returns the connection is closed with 1000; when it throws,
 /// with 1011 (and the error is logged). Headers the handler set (`Sec-WebSocket-Protocol`, `Set-Cookie`) go out with
 /// that answer.
-module andaime.web.websocket;
+module andaime.web.websocket 2025;
 
 @safe:
 

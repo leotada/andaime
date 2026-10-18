@@ -1,6 +1,6 @@
 /// The response contract between the web layer and the engine: a structured head and a sink the body goes into.
 /// No I/O here; the engine implements `ResponseSink` (one per request in flight) and so does `TestClient`.
-module andaime.http.response;
+module andaime.http.response 2025;
 
 @safe:
 

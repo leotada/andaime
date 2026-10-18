@@ -1,6 +1,6 @@
 /// `onValidationError`: a custom answer for every way binding can fail, group overrides, controllers, the OpenAPI
 /// document, and the default 422 left unchanged when no handler is set.
-module validation_handler;
+module validation_handler 2025;
 
 @safe:
 

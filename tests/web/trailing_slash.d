@@ -1,5 +1,5 @@
 /// `TrailingSlash.matchBoth` on the app and on groups: `/x/` and `/x` reach the same route, with no redirect.
-module trailing_slash_test;
+module trailing_slash_test 2025;
 
 @safe:
 

@@ -5,7 +5,7 @@
 /// Exits with code 1 on any failure.
 ///
 /// In the `andaime.engine` package only to reach the raw OpenSSL table (package-protected).
-module andaime.engine.tls_loadgen;
+module andaime.engine.tls_loadgen 2025;
 
 import andaime.engine.tls;
 import core.time;

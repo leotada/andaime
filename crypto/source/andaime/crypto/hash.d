@@ -1,5 +1,5 @@
 /// SHA-256, HMAC-SHA256 and HKDF-SHA256 (RFC 5869).
-module andaime.crypto.hash;
+module andaime.crypto.hash 2025;
 
 @safe:
 

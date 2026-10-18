@@ -1,5 +1,5 @@
 /// Users: the API end to end over in-memory adapters, and the repository contract on each adapter.
-module tests.users;
+module tests.users 2025;
 
 @safe:
 

@@ -1,7 +1,7 @@
 /// Web Push message encryption (RFC 8291) in the `aes128gcm` content coding (RFC 8188): what a push service expects in
 /// the body of a push message, with `Content-Encoding: aes128gcm`. The VAPID `Authorization` header (RFC 8292) is a
 /// JWT signed with `es256Sign`.
-module andaime.crypto.webpush;
+module andaime.crypto.webpush 2025;
 
 @safe:
 

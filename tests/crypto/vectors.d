@@ -2,7 +2,7 @@
 /// 1-3), AES-128-GCM (the GCM specification's test cases 2-4, used by NIST's validation), P-256 keys, ES256 signatures
 /// checked against the `openssl` command in both directions (skipped when it is not installed), and ECDH.
 /// Exits 77 (skip) when OpenSSL 3 cannot be loaded.
-module crypto_vectors;
+module crypto_vectors 2025;
 
 import andaime.crypto;
 import core.stdc.stdio : fprintf, printf, stderr;

@@ -1,6 +1,6 @@
 /// The background jobs of users. A job is an entry point, like a controller: its fields are the payload, and
 /// `perform` hands them to a use case.
-module adapters.jobs.users;
+module adapters.jobs.users 2025;
 
 @safe:
 

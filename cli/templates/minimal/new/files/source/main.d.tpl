@@ -1,5 +1,5 @@
 /// The process: serves what `app.d` builds. `dub test` leaves this module out.
-module main;
+module main 2025;
 
 import andaime;
 import app : buildApp;

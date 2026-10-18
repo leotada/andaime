@@ -4,7 +4,7 @@
 /// weigh on compilation. Matching does not allocate and is O(depth).
 /// Priority per segment: static > `{param}` > `{*rest}`, with
 /// backtracking, so `/users/me` and `/users/{id}` coexist.
-module andaime.web.router;
+module andaime.web.router 2025;
 
 @safe:
 

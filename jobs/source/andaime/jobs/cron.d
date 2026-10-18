@@ -8,7 +8,7 @@
 /// When both day-of-month and day-of-week are restricted (neither field is a bare `*`), a date
 /// matches if either field matches. A bare `*` on either field means "every" and the other field
 /// decides. The slot is the start of that civil minute in the `SysTime`'s time zone.
-module andaime.jobs.cron;
+module andaime.jobs.cron 2025;
 
 @safe:
 

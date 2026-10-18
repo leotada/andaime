@@ -8,7 +8,7 @@
 /// `setCookie` is secure by default (`Secure; HttpOnly; SameSite=Lax; Path=/`). For local development over plain HTTP set
 /// `secure: false` (browsers refuse `Secure` cookies on http:// origins other than localhost). An invalid name or value is a
 /// programming error and throws (so the response is a 500).
-module andaime.web.cookies;
+module andaime.web.cookies 2025;
 
 @safe:
 

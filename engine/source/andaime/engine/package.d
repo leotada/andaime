@@ -1,5 +1,5 @@
 /// `andaime:engine` — transport. Knows sockets and bytes, never routes or DTOs.
-module andaime.engine;
+module andaime.engine 2025;
 
 public import andaime.engine.loop;
 public import andaime.engine.bufferpool;

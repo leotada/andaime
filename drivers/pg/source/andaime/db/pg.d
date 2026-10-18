@@ -19,7 +19,7 @@
 ///    returns it to the pool with a response pending);
 ///  - parameters go in text format ($1, $2...), so there is no SQL injection
 ///    by concatenation: never build SQL with user-supplied values.
-module andaime.db.pg;
+module andaime.db.pg 2025;
 
 @safe:
 

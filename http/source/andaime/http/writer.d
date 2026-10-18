@@ -1,5 +1,5 @@
 /// Serializes the HTTP/1.1 response head straight into a ByteBuffer (the structured form lives in `andaime.http.response`).
-module andaime.http.writer;
+module andaime.http.writer 2025;
 
 @safe:
 

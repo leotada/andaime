@@ -1,7 +1,7 @@
 /// WebSockets on real sockets: the handshake on the wire, echo, frames that arrive with the handshake, a message split over
 /// many reads, an upgrade behind pipelined responses, a broadcast from another fiber, a peer that vanishes, a reader that
 /// stops reading, pings and the idle limit, the server closing first, a graceful stop (1001) and the counters.
-module ws_net;
+module ws_net 2025;
 
 version (linux):
 

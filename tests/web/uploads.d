@@ -3,8 +3,8 @@ module uploads_test;
 
 @safe:
 
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 import std.conv : to;
 import std.json : parseJSON;
 

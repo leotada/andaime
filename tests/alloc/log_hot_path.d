@@ -1,7 +1,7 @@
-/// vela.log on the hot path: a line below the level allocates nothing, and neither does an emitted `kv` or `json` line
+/// andaime.log on the hot path: a line below the level allocates nothing, and neither does an emitted `kv` or `json` line
 /// (the access log, a handler's own line with the request id) once the per-thread buffer has grown.
-import vela;
-import vela.http : splitTarget;
+import andaime;
+import andaime.http : splitTarget;
 import core.memory : GC;
 import core.stdc.stdio : printf;
 

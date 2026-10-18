@@ -1,6 +1,6 @@
 name "engine"
 description "Transport: event loop, buffers and connections. Knows nothing about routes or DTOs."
 targetType "library"
-dependency "vela:http" version="*"
+dependency "andaime:http" version="*"
 
 toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

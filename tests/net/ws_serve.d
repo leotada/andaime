@@ -2,7 +2,7 @@
 /// (RFC 8441). Usage: ws_serve <port> [cert.pem key.pem]
 module ws_serve;
 
-import vela;
+import andaime;
 import std.conv : to;
 
 @safe:

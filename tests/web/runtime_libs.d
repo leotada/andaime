@@ -2,8 +2,8 @@
 /// native library is installed here, and the reason names the library.
 module runtime_libs;
 
-import vela;
-import vela.db : pgAvailable, pgLoadError;
+import andaime;
+import andaime.db : pgAvailable, pgLoadError;
 
 @safe:
 
@@ -13,7 +13,7 @@ unittest
     if (!tlsAvailable)
     {
         auto why = tlsLoadError.get;
-        assert(why.length > 20 && why[0 .. 11] == "vela.http: ", why);
+        assert(why.length > 20 && why[0 .. 11] == "andaime.http: ", why);
         assert(why == tlsLoadError.get, "the reason is stable between calls");
     }
 }
@@ -24,7 +24,7 @@ unittest
     if (!zlibAvailable)
     {
         auto why = zlibLoadError.get;
-        assert(why.length > 20 && why[0 .. 6] == "vela: ", why);
+        assert(why.length > 20 && why[0 .. 6] == "andaime: ", why);
     }
 }
 
@@ -34,6 +34,6 @@ unittest
     if (!pgAvailable)
     {
         auto why = pgLoadError.get;
-        assert(why.length > 20 && why[0 .. 9] == "vela.db: ", why);
+        assert(why.length > 20 && why[0 .. 9] == "andaime.db: ", why);
     }
 }

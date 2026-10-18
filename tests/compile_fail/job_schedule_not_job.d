@@ -1,6 +1,6 @@
 // FLAGS: -Ijobs/source
-// EXPECT: vela.jobs: job 'job_schedule_not_job.Plain' is missing @Job("queue"); every job names its queue
-import vela.jobs;
+// EXPECT: andaime.jobs: job 'job_schedule_not_job.Plain' is missing @Job("queue"); every job names its queue
+import andaime.jobs;
 import core.time : minutes;
 @safe:
 struct Plain

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# A fiber stack overflow kills the whole process with SIGSEGV. vela must at least say which request was running and
+# A fiber stack overflow kills the whole process with SIGSEGV. andaime must at least say which request was running and
 # what to change, then die as usual (exit status 139). Builds tests/net/stack_overflow.d and checks both.
 # Skips (exit 77) without curl.
 set -euo pipefail
@@ -21,4 +21,4 @@ if (( rc != 139 )); then echo "FAILED: expected the server to die with SIGSEGV (
 if ! grep -q "segmentation fault .* while running GET /recurse/100000.*raise ServerConfig.fiberStackBytes (now 256 KiB)" "$tmp/err"; then
     echo "FAILED: the crash message is missing"; cat "$tmp/err"; exit 1
 fi
-echo "ok  fiber stack overflow: $(grep -o 'vela: segmentation fault.*while running GET [^.]*' "$tmp/err"), exit status $rc"
+echo "ok  fiber stack overflow: $(grep -o 'andaime: segmentation fault.*while running GET [^.]*' "$tmp/err"), exit status $rc"

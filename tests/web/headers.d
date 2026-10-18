@@ -1,11 +1,11 @@
 /// Response headers: validation (response splitting), several values, replace vs add, Vary merging, the 32-header
-/// limit and the headers vela owns.
+/// limit and the headers andaime owns.
 module headers;
 
 @safe:
 
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 
 Response redirect(string to) => Response.redirect(to);
 
@@ -105,7 +105,7 @@ unittest
 {
     auto c = TestClient(build());
 
-    // headers vela owns are dropped, the others stay
+    // headers andaime owns are dropped, the others stay
     auto r = c.get("/owned");
     assert(r.status == 200 && r.body == "hello");
     assert(r.header("Content-Length") is null && r.header("Connection") is null && r.header("Transfer-Encoding") is null);

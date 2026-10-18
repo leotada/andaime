@@ -3,7 +3,7 @@
 This guide takes an application from `dub build` to serving browsers over HTTPS and HTTP/2 on
 ports 443 and 80, with a Let's Encrypt certificate that renews without restarts. It assumes a
 Linux server (Debian/Ubuntu commands), a domain `example.com` pointing at it, and an application
-user `vela`. Everything here is what `tools/check.sh` exercises, except the Let's Encrypt part,
+user `andaime`. Everything here is what `tools/check.sh` exercises, except the Let's Encrypt part,
 which needs a real domain.
 
 ## 1. Build
@@ -17,13 +17,13 @@ sudo apt install libssl3                  # OpenSSL 3, loaded at run time
 The native libraries (OpenSSL, zlib, libpq) are loaded with `dlopen` the first time something needs them, so a
 container image without `libssl3` builds fine and fails on the first HTTPS call. To fail at build time instead, give the
 binary a `--check-runtime` switch that asks the library and run it in the image build (`RUN ./myapp --check-runtime`).
-`tlsAvailable`, `zlibAvailable` (and `pgAvailable` from `vela.db`) say whether a library loaded; `tlsLoadError`,
+`tlsAvailable`, `zlibAvailable` (and `pgAvailable` from `andaime.db`) say whether a library loaded; `tlsLoadError`,
 `zlibLoadError` and `pgLoadError` return the reason (an `Optional!string` with the library name and the dynamic loader's
 message). Asking prints nothing and changes no signal handling.
 
 ```d
 // check
-import vela;
+import andaime;
 import core.stdc.stdio : fprintf, stderr;
 
 int main(string[] args)
@@ -48,7 +48,7 @@ int main(string[] args)
 
 ```d
 // check
-import vela;
+import andaime;
 
 string home() => "hello";
 
@@ -70,8 +70,8 @@ void main()
 {
     ServerConfig cfg;
     cfg.port = 443;
-    cfg.tls.certFile = "/etc/vela/tls/cert.pem";   // copied there by certbot's deploy hook (below)
-    cfg.tls.keyFile = "/etc/vela/tls/key.pem";
+    cfg.tls.certFile = "/etc/andaime/tls/cert.pem";   // copied there by certbot's deploy hook (below)
+    cfg.tls.keyFile = "/etc/andaime/tls/key.pem";
     cfg.tls.redirectPort = 80;                      // ACME challenges + 308 to https
     cfg.tls.acmeWebroot = "/var/www/acme";
     serve(&buildApp, cfg);
@@ -90,35 +90,35 @@ Without `tls.certFile`, the same binary serves cleartext HTTP/1.1 and h2c, for r
 ## 3. Certificates
 
 The server will not start without its certificate, and port 80 is the server's. So the first
-certificate comes from certbot's own web server, before vela runs; renewals then go through
-vela's port 80.
+certificate comes from certbot's own web server, before andaime runs; renewals then go through
+andaime's port 80.
 
 ```sh
 sudo apt install certbot
-sudo mkdir -p /var/www/acme /etc/vela/tls
+sudo mkdir -p /var/www/acme /etc/andaime/tls
 
-# first certificate: certbot listens on port 80 itself (vela is not running yet)
+# first certificate: certbot listens on port 80 itself (andaime is not running yet)
 sudo certbot certonly --standalone -d example.com
 ```
 
 A deploy hook copies the files where the application user can read them. It writes temporary
-files and renames them, so vela never reads a half-written key:
+files and renames them, so andaime never reads a half-written key:
 
 ```sh
-sudo tee /etc/letsencrypt/renewal-hooks/deploy/vela.sh > /dev/null <<'EOF'
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/andaime.sh > /dev/null <<'EOF'
 #!/bin/sh
 set -e
-d=/etc/vela/tls
-install -m 0640 -o root -g vela "$RENEWED_LINEAGE/privkey.pem" "$d/key.pem.new"
-install -m 0644 -o root -g vela "$RENEWED_LINEAGE/fullchain.pem" "$d/cert.pem.new"
+d=/etc/andaime/tls
+install -m 0640 -o root -g andaime "$RENEWED_LINEAGE/privkey.pem" "$d/key.pem.new"
+install -m 0644 -o root -g andaime "$RENEWED_LINEAGE/fullchain.pem" "$d/cert.pem.new"
 mv "$d/key.pem.new" "$d/key.pem"
 mv "$d/cert.pem.new" "$d/cert.pem"
 EOF
-sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/vela.sh
-sudo RENEWED_LINEAGE=/etc/letsencrypt/live/example.com /etc/letsencrypt/renewal-hooks/deploy/vela.sh
+sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/andaime.sh
+sudo RENEWED_LINEAGE=/etc/letsencrypt/live/example.com /etc/letsencrypt/renewal-hooks/deploy/andaime.sh
 ```
 
-Start vela (section 4), then switch renewals to the webroot it serves (certbot 2.3 or newer; this
+Start andaime (section 4), then switch renewals to the webroot it serves (certbot 2.3 or newer; this
 also runs a test renewal against your server):
 
 ```sh
@@ -128,8 +128,8 @@ sudo certbot renew --dry-run
 
 From now on certbot's timer renews the certificate, the hook replaces the two files, and every
 worker notices within `tls.reloadCheckMs` (10 s) and loads them. Open connections keep the old
-certificate; new ones get the new one. If a file fails to load, vela logs
-`vela: TLS: ... (keeping the previous certificate)` and keeps serving.
+certificate; new ones get the new one. If a file fails to load, andaime logs
+`andaime: TLS: ... (keeping the previous certificate)` and keeps serving.
 
 ## 4. systemd
 
@@ -141,8 +141,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=vela
-Group=vela
+User=andaime
+Group=andaime
 WorkingDirectory=/opt/myapp
 ExecStart=/opt/myapp/myapp
 # ports 80 and 443 without running as root
@@ -156,7 +156,7 @@ Restart=on-failure
 LimitNOFILE=65536
 # hardening: a read-only system; add ReadWritePaths= for anything your application writes
 ProtectSystem=strict
-ReadOnlyPaths=/etc/vela /var/www/acme
+ReadOnlyPaths=/etc/andaime /var/www/acme
 PrivateTmp=true
 
 [Install]
@@ -164,7 +164,7 @@ WantedBy=multi-user.target
 ```
 
 ```sh
-sudo useradd --system --no-create-home vela
+sudo useradd --system --no-create-home andaime
 sudo systemctl daemon-reload && sudo systemctl enable --now myapp
 sudo ufw allow 80,443/tcp
 curl -I http://example.com/          # 308 to https://example.com/
@@ -176,7 +176,7 @@ ports below 1024 as an ordinary user (redo it after each new build).
 
 ## 5. Logs and limits
 
-- `vela: TLS handshake failed from <ip>: <reason>` and `vela: HTTP/2 connection error from <ip>: <code>`
+- `andaime: TLS handshake failed from <ip>: <reason>` and `andaime: HTTP/2 connection error from <ip>: <code>`
   appear at most once per second per worker, with a count of the lines skipped. Clients that just
   disconnect mid-handshake (port scanners, health checks) are counted (`LoopStats.tlsFailures`), not
   logged. `cfg.logConnectionErrors = false` silences them.
@@ -198,7 +198,7 @@ The TCP peer is the proxy. List it in `cfg.trustedProxies = ["127.0.0.1", "10.0.
 `ClientIp` / `ctx.clientIp()` (the first address in `X-Forwarded-For`, from the right, that is not a trusted proxy). The header
 from any other peer is ignored, because anyone can send it. `accessLog()` prints `ip=`.
 
-Server-Sent Events and other streamed responses need the proxy not to buffer them. vela already sends `X-Accel-Buffering: no`
+Server-Sent Events and other streamed responses need the proxy not to buffer them. andaime already sends `X-Accel-Buffering: no`
 (nginx honors it per response) and `Cache-Control: no-cache` on an `EventStream`. Other proxies have their own switch for
 response buffering or flushing (Caddy's `reverse_proxy` has `flush_interval -1`); check yours. Idle SSE connections should send
 a heartbeat (`w.comment()`) more often than the proxy's idle timeout.
@@ -206,7 +206,7 @@ a heartbeat (`w.comment()`) more often than the proxy's idle timeout.
 ## Known limits
 
 - **IPv4 only**: the listeners bind IPv4 addresses (`cfg.host`, default `0.0.0.0`). An AAAA record
-  pointing at the server will not reach vela yet; publish only an A record.
+  pointing at the server will not reach andaime yet; publish only an A record.
 - No OCSP stapling and no client certificates (mutual TLS).
 - The redirect port is for `redirectPort` only; serving the application itself in cleartext next to
   HTTPS is not supported (run a second process if you need it).

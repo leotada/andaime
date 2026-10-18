@@ -4,7 +4,7 @@
 /// <publicDir> [no-h2-websockets]
 module browser_serve;
 
-import vela;
+import andaime;
 
 @safe:
 
@@ -26,7 +26,7 @@ WithStatus!Item createItem(JsonBody!NewItem body) => WithStatus!Item(201, Item(9
 string proto(Context c) => c.request.protocol == Protocol.http2 ? "h2" : "http/1.1";
 
 Response page() => Response.html(`<!doctype html>
-<html><head><meta charset="utf-8"><title>vela</title>
+<html><head><meta charset="utf-8"><title>andaime</title>
 <link rel="stylesheet" href="/static/style.css">
 </head><body>
 <h1 id="title">loading</h1>

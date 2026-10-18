@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Starts a throwaway PostgreSQL, exports VELA_PG and runs the given command.
+# Starts a throwaway PostgreSQL, exports ANDAIME_PG and runs the given command.
 # Usage: tools/with_postgres.sh command args...
-# - VELA_PG already set: uses that database and starts nothing.
-# - no PostgreSQL server installed (initdb not found): runs the command without VELA_PG (the test declares
+# - ANDAIME_PG already set: uses that database and starts nothing.
+# - no PostgreSQL server installed (initdb not found): runs the command without ANDAIME_PG (the test declares
 #   itself skipped with exit 77).
 # initdb is looked up in `pg_config --bindir`, on PATH and in the usual per-distribution locations
 # (Debian/Ubuntu /usr/lib/postgresql/N/bin, openSUSE /usr/lib/postgresqlN/bin, Fedora/RHEL /usr/pgsql-N/bin).
 set -euo pipefail
-if [ -n "${VELA_PG:-}" ]; then exec "$@"; fi
+if [ -n "${ANDAIME_PG:-}" ]; then exec "$@"; fi
 
 find_bin() {
     local d
@@ -33,5 +33,5 @@ trap cleanup EXIT
 chmod 755 "$dir"
 run_as "$bin/initdb -D $dir/data -A trust >/dev/null"
 run_as "$bin/pg_ctl -D $dir/data -o '-p $port -k $dir -c listen_addresses=127.0.0.1 -c fsync=off' -l $dir/log -w start >/dev/null"
-export VELA_PG="host=127.0.0.1 port=$port user=postgres dbname=postgres"
+export ANDAIME_PG="host=127.0.0.1 port=$port user=postgres dbname=postgres"
 "$@"

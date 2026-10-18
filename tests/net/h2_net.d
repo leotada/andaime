@@ -7,11 +7,11 @@ module h2_net;
 
 version (linux):
 
-import vela;
-import vela.engine;
-import vela.http;
-import vela.http.hpack : encodeField, encodeInt;
-import vela.server : handlerFactory;
+import andaime;
+import andaime.engine;
+import andaime.http;
+import andaime.http.hpack : encodeField, encodeInt;
+import andaime.server : handlerFactory;
 
 import core.atomic : atomicOp, atomicLoad;
 import core.thread : Thread;

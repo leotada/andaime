@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Real browser against vela (Chromium through Playwright): loads a page over HTTPS with 26 static
+"""Real browser against andaime (Chromium through Playwright): loads a page over HTTPS with 26 static
 assets and three API calls, checks the protocol Chromium negotiated for every resource (h2 by
 default, http/1.1 with HTTP/2 disabled), follows the redirect from the cleartext port, checks a
 2 MiB script arrives intact, and opens a wss:// WebSocket (echo, 140 KB message, permessage-deflate). Usage: browser_test.py <server binary>. Prints "skip: <reason>" and exits 77
@@ -31,7 +31,7 @@ except ImportError:
     print("skip: python playwright not installed", file=sys.stderr)
     sys.exit(77)
 
-work = tempfile.mkdtemp(prefix="vela_browser_")
+work = tempfile.mkdtemp(prefix="andaime_browser_")
 pub = os.path.join(work, "public")
 os.makedirs(pub)
 with open(os.path.join(pub, "style.css"), "w") as f:
@@ -154,7 +154,7 @@ finally:
         err = ""
     # Chromium rejects the self-signed certificate on its side connections before honoring
     # ignore_https_errors: those lines are expected here; anything else is worth showing
-    unexpected = [l for l in err.splitlines() if l.startswith("vela:") and "certificate unknown" not in l
+    unexpected = [l for l in err.splitlines() if l.startswith("andaime:") and "certificate unknown" not in l
                   and "warning: a handler held the worker" not in l]
     if unexpected:
         print("server log:\n" + "\n".join(unexpected))

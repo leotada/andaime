@@ -4,13 +4,13 @@ A job is a struct: the fields are the JSON payload, `perform` is the body, and `
 drive retries, uniqueness, cron and the OpenAPI-free compile-time checks. Enqueue from a handler; a separate process (or
 the same one in development) claims and runs the work on the epoll loop.
 
-The package is `vela:jobs` (`import vela.jobs;`). It does not talk to Postgres. The durable queue is
-`vela-pg-jobs` (`import vela.jobs.pg;`), covered at the end. The root `vela` package depends on neither, so
-`import vela;` does not pull jobs in. Background jobs need the Linux epoll loop; `runJobs` refuses the blocking
+The package is `andaime:jobs` (`import andaime.jobs;`). It does not talk to Postgres. The durable queue is
+`andaime-pg-jobs` (`import andaime.jobs.pg;`), covered at the end. The root `andaime` package depends on neither, so
+`import andaime;` does not pull jobs in. Background jobs need the Linux epoll loop; `runJobs` refuses the blocking
 development server.
 
 ```sdl
-dependency "vela:jobs" path="../dapi"
+dependency "andaime:jobs" path="../dapi"
 ```
 
 ## Declaring a job
@@ -19,7 +19,7 @@ dependency "vela:jobs" path="../dapi"
 // check
 @safe:
 
-import vela.jobs;
+import andaime.jobs;
 
 @Job("mail")
 struct SendMail
@@ -50,7 +50,7 @@ void main()
 - `void perform(ref JobContext ctx) @safe`. There is no dependency injection: a pool or an HTTP client stays
   thread-local, as `db()` does in [database.md](database.md).
 - The payload is the JSON of the struct fields: bool, numbers, string, enum, arrays, string-keyed maps, structs,
-  `Optional!T`. A pointer, class, delegate or interface is a one-line compile error (`vela.jobs:`).
+  `Optional!T`. A pointer, class, delegate or interface is a one-line compile error (`andaime.jobs:`).
 - `TestJobStore` never runs by itself. `assertEnqueued!T(substring)` checks the job name, the queue and a payload
   substring; it does not call `perform`. `drainJobs!T()` claims due rows and runs them. A row whose `run_at` is still
   in the future stays queued: `drainJobs` does not move the clock.
@@ -61,7 +61,7 @@ void main()
 // check
 @safe:
 
-import vela.jobs;
+import andaime.jobs;
 
 @Job("mail")
 struct NotifyOnce
@@ -115,7 +115,7 @@ void main()
 // check
 @safe:
 
-import vela.jobs;
+import andaime.jobs;
 
 import core.time : minutes;
 
@@ -174,7 +174,7 @@ slot is the start of the window that contains now. A second insert in that windo
 // check
 @safe:
 
-import vela.jobs;
+import andaime.jobs;
 
 import core.time : minutes;
 
@@ -217,7 +217,7 @@ In memory, the supervisor enqueues a due slot once per process. `TestJobStore` d
 by hand, and `drainJobs` runs the row.
 
 On Postgres the supervisor calls `claimCron` first. Only the process that inserts `(job_name, scheduled_slot)` into
-`vela_cron_executions` enqueues the job. See [Postgres](#postgres-vela-pg-jobs) below.
+`andaime_cron_executions` enqueues the job. See [Postgres](#postgres-andaime-pg-jobs) below.
 
 ### Schedules from configuration: `JobSchedule`
 
@@ -227,8 +227,8 @@ When a period comes from the environment, set it at startup instead of in the UD
 // check
 @safe:
 
-import vela.jobs;
-import vela.engine.loop : ServerConfig;
+import andaime.jobs;
+import andaime.engine.loop : ServerConfig;
 
 import core.time : seconds;
 import std.conv : to;
@@ -261,7 +261,7 @@ void main(string[] args)
 - `every!J(period)` replaces the `@Every` period, `cron!J(expr)` replaces the `@Cron` expression (the other half stays),
   `disable!J()` removes both. A job with neither UDA can be scheduled here alone.
 - `runJobs` and `supervisorHook` check the schedule before anything starts: a period that is not positive, a bad cron
-  expression or a job that is not in their list throws one `vela.jobs:` line. A type that is not a job is a compile error.
+  expression or a job that is not in their list throws one `andaime.jobs:` line. A type that is not a job is a compile error.
 - **Every process must use the same values.** Slots are still deduplicated across processes (`claimCron`), but an `@Every`
   slot is a multiple of its period: processes with different periods enqueue different slots.
 
@@ -279,15 +279,15 @@ With `InMemoryJobStore` and `--role=all`, set `ServerConfig.workers = 1` yoursel
 ## Process roles
 
 `parseStartup(args)` reads `--role=api|worker|all` (default `api`) and `--queues=name:concurrency,...` (default
-`default:5`). `args[0]` is the program name. Anything else throws with a message starting `vela.jobs:`. Strip your own
+`default:5`). `args[0]` is the program name. Anything else throws with a message starting `andaime.jobs:`. Strip your own
 flags first if you have them.
 
 ```d
 // check
 @safe:
 
-import vela;
-import vela.jobs;
+import andaime;
+import andaime.jobs;
 
 import core.time : minutes;
 
@@ -359,7 +359,7 @@ void main(string[] args)
 | `--role=all` | `applyJobGrace(cfg)`, then `serve(..., supervisorHook!(Jobs)(...))`. HTTP is yours. Worker 0 runs claim, cron, and (for Postgres) listen and the reaper. |
 
 On an empty queue, `PgJobStore` waits for `NOTIFY` or 5 seconds. An in-memory store waits `defaultIdleBackoff` (200 ms). A
-failed claim, listen, reap or cron tick is one `vela.jobs:` line on stderr; the fiber waits and tries again.
+failed claim, listen, reap or cron tick is one `andaime.jobs:` line on stderr; the fiber waits and tries again.
 
 `WorkerHooks.extra` runs at the end of worker 0's init, after those fibers have been `spawn`ed and before the loop polls.
 `spawn` from `extra` is queued; do not call `sleep` or `awaitFd` inside `extra` itself. `PgJobStore` already starts
@@ -378,20 +378,20 @@ When `shutdownGraceMs` is still the 10 second default, `--role=worker` (`runJobs
 before `serve`) raise it to 30 seconds so a running job can finish or be released. A value you already set, including 0,
 is kept. `--role=api` leaves the API's grace alone.
 
-## Postgres (`vela-pg-jobs`)
+## Postgres (`andaime-pg-jobs`)
 
 ```sdl
-dependency "vela:jobs" path="../dapi"
-dependency "vela-pg" path="../dapi/drivers/pg"
-dependency "vela-pg-jobs" path="../dapi/drivers/pgjobs"
+dependency "andaime:jobs" path="../dapi"
+dependency "andaime-pg" path="../dapi/drivers/pg"
+dependency "andaime-pg-jobs" path="../dapi/drivers/pgjobs"
 ```
 
-`PgJobStore` (`import vela.jobs.pg;`) is the durable `JobStore`. One store per worker thread: it uses that thread's
+`PgJobStore` (`import andaime.jobs.pg;`) is the durable `JobStore`. One store per worker thread: it uses that thread's
 `pgPool`, and must not be handed to another thread. Worker 0 is the thread that called `serve` or `runJobs`. A
 thread-local helper gives every worker its own store; the one created on the main thread is worker 0's:
 
 ```d
-import vela.jobs.pg;
+import andaime.jobs.pg;
 
 PgJobStore jobs()
 {
@@ -404,12 +404,12 @@ PgJobStore jobs()
 
 ### Schema and transactional enqueue
 
-`ensureSchema` creates `vela_jobs` and `vela_cron_executions` if they are missing. Call it on a connection that is not
+`ensureSchema` creates `andaime_jobs` and `andaime_cron_executions` if they are missing. Call it on a connection that is not
 already inside a transaction, before a caller opens one. `enqueue(JobSpec)`, `claimBatch`, `listen`, `reap` and
 `claimCronSlot` do that on first use. `enqueue(PgConn, JobSpec)` does not.
 
 ```d
-import vela.db;
+import andaime.db;
 import core.time : seconds;
 
 auto c = PgConn.connect("host=db.example.com dbname=app user=app", 10.seconds, 30.seconds);
@@ -421,11 +421,11 @@ pgPool("host=db.example.com dbname=app user=app").transaction((PgConn tx) {
 });
 ```
 
-`enqueue(PgConn, JobSpec)` inserts the row and runs `pg_notify('vela_jobs_notify', '')` inside the caller's transaction.
+`enqueue(PgConn, JobSpec)` inserts the row and runs `pg_notify('andaime_jobs_notify', '')` inside the caller's transaction.
 It does not `BEGIN` or `COMMIT`. `COMMIT` publishes both; `ROLLBACK` drops both. `enqueueJob(tx, store, job)` is that
 insert with the typed payload. `store.enqueue(spec)` borrows a pooled connection and commits.
 
-To test that code without a database, write it against `JobTransaction` (in `vela.jobs`), which both stores provide:
+To test that code without a database, write it against `JobTransaction` (in `andaime.jobs`), which both stores provide:
 
 ```d
 void signUp(JobTransaction jobs, string email)
@@ -452,9 +452,9 @@ unique windows applied then.
 A claim is one statement; the transaction commits **before** `perform`, so the row lock is not held across the work:
 
 ```sql
-update vela_jobs set state = 'running', attempt = attempt + 1, attempted_at = now()
+update andaime_jobs set state = 'running', attempt = attempt + 1, attempted_at = now()
 where id in (
-    select id from vela_jobs
+    select id from andaime_jobs
     where state in ('available', 'scheduled', 'retryable') and run_at <= now()
     order by priority, run_at, id
     for update skip locked
@@ -463,7 +463,7 @@ where id in (
 ```
 
 The supervisor starts `listen` and the reaper on worker 0 (`JobRuntime.startServices`). `listen` uses a connection that
-is not from the pool, runs `LISTEN vela_jobs_notify`, and waits on libpq's socket. A notification wakes the claim fiber;
+is not from the pool, runs `LISTEN andaime_jobs_notify`, and waits on libpq's socket. A notification wakes the claim fiber;
 so does a 5 second fallback (a scheduled job does not notify). Do not claim from the listen callback: leave that to the
 claim fiber.
 

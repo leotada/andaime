@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Starts the HTTP/HTTPS test upstream (tests/net/upstream.py), exports
-# VELA_UP_PLAIN / VELA_UP_TLS / VELA_UP_CERT and runs the given command.
+# ANDAIME_UP_PLAIN / ANDAIME_UP_TLS / ANDAIME_UP_CERT and runs the given command.
 # Without python3 or openssl, runs the command without the variables (the test declares itself skipped, exit 77).
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -15,5 +15,5 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout "$dir/key.pem" -out "$dir/cert
 python3 tests/net/upstream.py "$dir/cert.pem" "$dir/key.pem" > "$dir/out" 2>/dev/null &
 up=$!
 for _ in $(seq 1 50); do [ -s "$dir/out" ] && break; sleep 0.1; done
-export VELA_UP_PLAIN=$(awk '{print $2}' "$dir/out") VELA_UP_TLS=$(awk '{print $4}' "$dir/out") VELA_UP_CERT="$dir/cert.pem"
+export ANDAIME_UP_PLAIN=$(awk '{print $2}' "$dir/out") ANDAIME_UP_TLS=$(awk '{print $4}' "$dir/out") ANDAIME_UP_CERT="$dir/cert.pem"
 "$@"

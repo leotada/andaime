@@ -1,4 +1,4 @@
-# vela improvement plan
+# andaime improvement plan
 
 Written on 2026-10-13, at commit `365cae1`, from a full review of the repository (code, tests, tools, docs,
 `AGENTS.md`) and the owner's answers to the open design questions.
@@ -12,7 +12,7 @@ conversation. Every item says why it exists, what to change, how to test it, and
 
 Phases 0 to 6 were implemented in one working session on top of commit `365cae1` (nothing is committed yet). Every item is
 ticked below with a short "Done" note where reality differed from the text. Phase 7 and the open owner decisions were not
-touched. Verified at the end: `VELA_STRICT=1 tools/check.sh` is green on DMD 2.109.1 and on LDC 1.40.1 (23 sections), with
+touched. Verified at the end: `ANDAIME_STRICT=1 tools/check.sh` is green on DMD 2.109.1 and on LDC 1.40.1 (23 sections), with
 Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/fuzz.sh 300 h2` and `300 parse` ran clean.
 
 **Not verified, so check these first:**
@@ -24,7 +24,7 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 - DMD "latest" and LDC "latest" (newer than 2.109/1.40) were not available here.
 
 **Calls that loosened a number or changed a default (veto any of them):**
-- The HTTPS memory ceiling went from 56 MB to **80 MB** (`VELA_TLS_RSS_MB`): OpenSSL 3.5 alone needs 55-65 MB at 1,000
+- The HTTPS memory ceiling went from 56 MB to **80 MB** (`ANDAIME_TLS_RSS_MB`): OpenSSL 3.5 alone needs 55-65 MB at 1,000
   connections (the 56 MB figure was measured on OpenSSL 3.0), and moving the network buffers to the GC (decision D2) costs
   about 3 MB more there. HTTP/1.1 and h2 in cleartext stay under 30 MB.
 - The compile-time guard fails above **440 ms** and warns between 400 and 440: on this laptop the same unchanged tree measured
@@ -91,7 +91,7 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
      `tests/compile_fail/` case;
    - no heavy Phobos (`std.format`, `std.conv`, `std.json`, `std.regex`, `std.algorithm`, `std.range`) in `http/`,
      `web/` or `engine/`;
-   - library messages start with `vela:`;
+   - library messages start with `andaime:`;
    - the core never depends on a driver;
    - a new `Request` field must be set by every producer: the HTTP/1 parser and the HTTP/2 session.
 2. **Commands**: `tools/check.sh` (everything, DMD), `DC=ldmd2 tools/check.sh` (LDC), `tools/fuzz.sh [seconds] [parse|h2]`
@@ -132,12 +132,12 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 |---|----------|-----|
 | P1 | Group middleware applies to every route of the group, whatever the registration order. The app is frozen when it starts serving. | Today `App.use` and `Group.use` follow two different ordering rules (item 1.7). Order-independence is what FastAPI users expect. |
 | P2 | `serve(buildFn)` replaces `app.serve(...)`. The `App` overloads are removed, not deprecated. | Keeping them keeps the shared-App footgun. It is a prototype, so breaking changes are fine. |
-| P3 | `Optional!T` moves to `vela:http`, and `Maybe!T` is removed from `vela-pg` with no deprecation period. | One concept, one type. `vela-pg` already depends on `vela:http` through `vela:engine`. |
+| P3 | `Optional!T` moves to `andaime:http`, and `Maybe!T` is removed from `andaime-pg` with no deprecation period. | One concept, one type. `andaime-pg` already depends on `andaime:http` through `andaime:engine`. |
 | P4 | Validation errors follow a subset of Pydantic v2: `type`, `loc` (strings and integers), `msg`. No `input` field. | Matches what FastAPI clients parse. Leaving out `input` avoids echoing user data back. |
-| P5 | An invalid response header turns the response into a 500 plus a log line. CR/LF are never stripped silently. Hop-by-hop headers are dropped, and `Content-Length` is always computed by vela. | Silent stripping hides bugs. A 500 is loud and safe. |
+| P5 | An invalid response header turns the response into a 500 plus a log line. CR/LF are never stripped silently. Hop-by-hop headers are dropped, and `Content-Length` is always computed by andaime. | Silent stripping hides bugs. A 500 is loud and safe. |
 | P6 | Streaming API: handlers return `Stream` or `EventStream`. The stream body runs inside the middleware chain. The head is committed lazily (on the first write). After the commit, errors abort the response. | Middleware sees the real duration and outcome. An exception before the first write still gets a normal error response. |
 | P7 | OpenAPI status codes come from `@status(201)`; error responses from `@responds(404, "...")`. | FastAPI's `status_code=` and `responses=`, expressed as D attributes. |
-| P8 | A test that cannot run exits with code 77 ("skipped"). `check.sh` reports skips at the end; `VELA_STRICT=1` (used by CI) makes a skip fail the run. | Today a green run may have skipped Postgres, TLS, the browser test and h2spec without anyone noticing. |
+| P8 | A test that cannot run exits with code 77 ("skipped"). `check.sh` reports skips at the end; `ANDAIME_STRICT=1` (used by CI) makes a skip fail the run. | Today a green run may have skipped Postgres, TLS, the browser test and h2spec without anyone noticing. |
 | P9 | Try to support the distro compilers (DMD 2.109, LDC 1.40) if a few small fixes are enough. Otherwise require 2.113 / 1.43. | Contributors on openSUSE, Debian and others get those versions from their package manager. |
 
 ## Order and overview
@@ -178,9 +178,9 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 
 **Why.** `dub.sdl` states no minimum compiler. On DMD 2.109.1 and LDC 1.40.1 the build fails with:
 
-- `source/vela/staticfiles.d:103,113`: ``@safe function ... cannot call @system function `S_ISDIR` `` (and `S_ISREG`).
+- `source/andaime/staticfiles.d:103,113`: ``@safe function ... cannot call @system function `S_ISDIR` `` (and `S_ISREG`).
   Older druntime marks them `@system`.
-- `engine/source/vela/engine/httpclient.d:297,305`: `` `_aaApply2` is not `nothrow` `` inside the `nothrow` functions
+- `engine/source/andaime/engine/httpclient.d:297,305`: `` `_aaApply2` is not `nothrow` `` inside the `nothrow` functions
   `closeIdle` and `idleCount`, which iterate an associative array.
 
 **Change.**
@@ -201,11 +201,11 @@ Postgres (a `postgres:16` container), h2spec 2.6.0, curl and python-h2; `tools/f
 
 ### [x] 0.2 Count and report skipped tests — S
 
-> **Done.** Beyond the plan: `VELA_ONLY="<text>"` runs only matching sections, `VELA_ALLOW_SKIP="<words>"` lets
+> **Done.** Beyond the plan: `ANDAIME_ONLY="<text>"` runs only matching sections, `ANDAIME_ALLOW_SKIP="<words>"` lets
 > chosen skips pass in strict mode, and tests that can skip are built then run (`dmd -run` turns exit 77 into 1).
 > `ldconfig` is in `/sbin`, outside the normal user's `PATH` on openSUSE, which had silently skipped the HTTPS memory
 > test. Once it ran, the 56 MB HTTPS ceiling failed with OpenSSL 3.5 (55–65 MB; ~44 MB was measured on 3.0), so the
-> default is now 72 MB (`VELA_TLS_RSS_MB`). **Owner: veto this if you prefer to keep 56 MB.**
+> default is now 72 MB (`ANDAIME_TLS_RSS_MB`). **Owner: veto this if you prefer to keep 56 MB.**
 > Found while testing: h2spec 7/1 failed about 1 run in 20 (RST instead of a clean close after the peer's GOAWAY);
 > fixed with a lingering close in `epoll.d` (`lingerClose`), 0 failures in 80 runs afterwards.
 
@@ -223,16 +223,16 @@ So a green run may have tested much less than it seems. Also, `with_postgres.sh`
    every place listed above. Find any others with `grep -rn -i "skip\|warning" tools tests`.
 2. `check.sh`: run each section through a `section "<name>" <command...>` helper that records ok, failed or skipped
    from the exit code. At the end, print a summary like `passed 23, failed 0, skipped 3: postgres, h2spec, browser`.
-   Exit non-zero on any failure. With `VELA_STRICT=1`, a skip also fails the run.
+   Exit non-zero on any failure. With `ANDAIME_STRICT=1`, a skip also fails the run.
 3. `with_postgres.sh`: also find `initdb` through `pg_config --bindir` and `PATH`.
 
-**Done when.** Running without Postgres lists `postgres` among the skips in the summary, and `VELA_STRICT=1` turns that
+**Done when.** Running without Postgres lists `postgres` among the skips in the summary, and `ANDAIME_STRICT=1` turns that
 into a failure.
 
 ### [x] 0.3 Build through DUB — S
 
 **Why.** `check.sh` compiles almost everything with `$DC -i -run`. The DUB packaging is barely exercised: sub-package
-dependencies, `vela:web` not depending on `vela:engine`, the `vela-pg` path dependency. Only `api_e2e` builds through
+dependencies, `andaime:web` not depending on `andaime:engine`, the `andaime-pg` path dependency. Only `api_e2e` builds through
 DUB, and it skips without Postgres.
 
 **Change.** Add a `dub builds` section to `check.sh`:
@@ -242,7 +242,7 @@ DUB, and it skips without Postgres.
 - `cd drivers/pg && dub build`;
 - `cd examples/hello && dub build`, `cd examples/api && dub build`.
 
-Also add a grep guard: `! grep -rn "import vela\.db" http web engine source` (the core must never import a driver).
+Also add a grep guard: `! grep -rn "import andaime\.db" http web engine source` (the core must never import a driver).
 
 **Done when.** The section passes on both compilers, and breaking the layering on purpose fails it.
 
@@ -278,12 +278,12 @@ a local green run proves little.
 - Matrix: DMD and LDC, each at the minimum and latest versions from 0.1, installed with
   `dlang-community/setup-dlang` (check its current major version).
 - Postgres: a `postgres:16` service with a health check. Export
-  `VELA_PG="host=localhost port=5432 user=postgres password=postgres dbname=postgres"`; `with_postgres.sh` already
-  uses `VELA_PG` when it is set.
+  `ANDAIME_PG="host=localhost port=5432 user=postgres password=postgres dbname=postgres"`; `with_postgres.sh` already
+  uses `ANDAIME_PG` when it is set.
 - Packages: `libpq5`, `libssl3`, `python3`, `pip install h2`. curl on Ubuntu runners already supports HTTP/2. Download
   h2spec at a pinned version and verify its checksum.
-- Run `VELA_STRICT=1 tools/check.sh` with `DC` from the matrix.
-- Shared runners make timings noisy. With `VELA_CI=1`, the compile-time budget is printed but does not fail the run.
+- Run `ANDAIME_STRICT=1 tools/check.sh` with `DC` from the matrix.
+- Shared runners make timings noisy. With `ANDAIME_CI=1`, the compile-time budget is printed but does not fail the run.
   Keep the memory assertions, since RSS does not depend on timing; if they turn out flaky, record it in this plan.
 - A separate job, weekly or manual, for the Chromium test (`pip install playwright && playwright install --with-deps chromium`).
 - A nightly job on LDC: `tools/fuzz.sh 600 parse` and `tools/fuzz.sh 600 h2`.
@@ -302,7 +302,7 @@ a local green run proves little.
 
 **Why.**
 - **Response splitting (verified, see Appendix A).** `Response.redirect(to)` with `?to=/x%0d%0aSet-Cookie:%20pwned=1`
-  produced the header value `"/x\r\nSet-Cookie: pwned=1"`. `writeResponseHead` (`http/source/vela/http/writer.d`, the
+  produced the header value `"/x\r\nSet-Cookie: pwned=1"`. `writeResponseHead` (`http/source/andaime/http/writer.d`, the
   `foreach (ref h; extra)` loop) writes names and values verbatim. The HTTP/2 path re-parses that text
   (`h2.d`, `queueResponse`), so the injected line would become a real header there too.
 - **Two `Set-Cookie` headers are impossible (found while planning).** `ResponseState.setHeader`
@@ -312,7 +312,7 @@ a local green run proves little.
   and leaves an out-of-bounds `RangeError` and a confusing 500.
 
 **Change.**
-1. `vela.http.types`:
+1. `andaime.http.types`:
    - `bool isValidHeaderName(scope const(char)[])`: non-empty, token characters only. Reuse the parser's `isTchar`
      (make it package-visible).
    - `bool isValidHeaderValue(scope const(char)[])`: only HTAB, 0x20–0x7E and 0x80–0xFF. This rejects CR, LF, NUL and
@@ -328,12 +328,12 @@ a local green run proves little.
 4. One validation point in the web layer, at the end of `App.handle` after the middleware has unwound. Both
    `server.d` and `TestClient` go through it, so tests see the same behavior. `checkResponse(ctx)` validates the
    `contentType` value, every header name and value, and the overflow flag. On a violation:
-   - log `vela: response to GET /path has an invalid header 'Location' (CR, LF, NUL or a control character); answering 500`
+   - log `andaime: response to GET /path has an invalid header 'Location' (CR, LF, NUL or a control character); answering 500`
      with the header **name only**, never the value (avoids log injection);
    - clear the headers and render the standard 500.
-5. Headers vela owns (P5): when serializing for either protocol, drop user-set `Connection`, `Keep-Alive`,
+5. Headers andaime owns (P5): when serializing for either protocol, drop user-set `Connection`, `Keep-Alive`,
    `Transfer-Encoding`, `Upgrade`, `Proxy-Connection` and `TE`, and ignore a user-set `Content-Length`. `Date` keeps
-   being set by vela. Document all of this in the `ResponseState` doc comment.
+   being set by andaime. Document all of this in the `ResponseState` doc comment.
 6. Leave the HTTP/2 transcoder alone in this item. Validation upstream guarantees well-formed lines, and item 4.2
    removes the transcoder.
 
@@ -358,23 +358,23 @@ a local green run proves little.
 
 ### [x] 1.3 One `Optional` type — S/M
 
-> **Done.** `Optional` lives in `vela.http.optional`; `Maybe` is gone. Gotcha: a module that imports the same selective name twice (once private, once `public import`) makes `is(T == Optional!U, U)` evaluate false on DMD 2.109; keep a single import.
+> **Done.** `Optional` lives in `andaime.http.optional`; `Maybe` is gone. Gotcha: a module that imports the same selective name twice (once private, once `public import`) makes `is(T == Optional!U, U)` evaluate false on DMD 2.109; keep a single import.
 
-**Why (verified).** `vela-pg` has `Maybe!T` (fields `value` and `has`) and the web layer has `Optional!T`. A database
+**Why (verified).** `andaime-pg` has `Maybe!T` (fields `value` and `has`) and the web layer has `Optional!T`. A database
 row with a `Maybe!string` field serializes as `{"email":{"value":"a@b.c","has":true}}`, with no error. The README's
 database example (`README.md:88`) uses `Maybe`.
 
 **Change (P3).**
-1. Create `http/source/vela/http/optional.d` containing `Optional(T)` moved unchanged from `web/.../params.d`
+1. Create `http/source/andaime/http/optional.d` containing `Optional(T)` moved unchanged from `web/.../params.d`
    (`has`, `get`, `getOr`, the constructor). Add `static Optional none()` for parity with `Maybe`.
-2. `vela.web.params` does `public import vela.http.optional : Optional;`, so user imports keep working. `isOptional`
+2. `andaime.web.params` does `public import andaime.http.optional : Optional;`, so user imports keep working. `isOptional`
    stays in the web layer.
-3. `vela-pg`:
+3. `andaime-pg`:
    - `parseCell`: NULL becomes `Optional.init`, anything else `Optional(value)`;
    - `Encoded`: an empty `Optional` is sent as SQL NULL;
    - error messages say "use Optional!X";
    - remove `Maybe`;
-   - `vela.db` does `public import vela.http.optional : Optional;`.
+   - `andaime.db` does `public import andaime.http.optional : Optional;`.
 4. Update `README.md:88`, the driver's doc comments, `tests/db/pg_net.d` and `examples/api`.
 
 **Tests.** `pg_net.d`: select a NULL and a non-NULL value into a struct with `Optional!string`, return it from a
@@ -429,9 +429,9 @@ handler, and check `{"email":null}` and `{"email":"a@b.c"}`.
    | `@inRange` below / above | `greater_than_equal` / `less_than_equal` | `must be >= MIN` / `must be <= MAX` |
    | JSON syntax error, extra content after the value | `json_invalid` | `invalid JSON at byte N` (use `JsonReader.errorPos`) |
    | invalid UTF-8 | `string_unicode` | `invalid UTF-8` |
-   | invalid `%` encoding | `percent_encoding` (vela-specific; document it) | `invalid percent-encoding` |
+   | invalid `%` encoding | `percent_encoding` (andaime-specific; document it) | `invalid percent-encoding` |
 
-5. UTF-8: add `bool validUtf8(scope const(char)[])` and `size_t codePoints(scope const(char)[])` to `vela.http`
+5. UTF-8: add `bool validUtf8(scope const(char)[])` and `size_t codePoints(scope const(char)[])` to `andaime.http`
    (written by hand, no `std.utf`). Validate in `decodeJsonString`, and in `parseScalarText` for `string` and for
    `const(char)[]`. String `@minLength`/`@maxLength` count code points; array lengths count elements.
 6. Build messages at compile time where possible. Move `num`/`itoa` from `openapi.d` and `ctNum` from `dto.d` into one
@@ -481,7 +481,7 @@ and without requested headers, and the `["*"]` case.
 
 ### [x] 1.7 Middleware order, and freezing the app — M
 
-> **Done.** `RouteError` is now exported from `vela.web`. `Group` keeps a `parent`; chains are built in `App.freeze`. `serve` will call `freeze` per worker in Phase 2; until then `handle` freezes on the first request.
+> **Done.** `RouteError` is now exported from `andaime.web`. `Group` keeps a `parent`; chains are built in `App.freeze`. `serve` will call `freeze` per worker in Phase 2; until then `handle` freezes on the first request.
 
 **Why.** Two different rules for the same verb:
 - `App.use` takes effect for every request whenever it is called; the list is read at request time (`runFrom`,
@@ -509,7 +509,7 @@ A misordered call silently does something different in each case.
   Phase 2's `serve` calls it in each worker. `App.handle` calls it once if the app is not frozen yet, which covers
   `TestClient`.
 - After the freeze, `use`, `register`, `group`, `mount`, `serveStatic`, `serveOpenApi`, `onError` and `onNotFound`
-  throw `RouteError("vela: the app is already serving; register routes and middleware before serve (in the build function)")`.
+  throw `RouteError("andaime: the app is already serving; register routes and middleware before serve (in the build function)")`.
 - `serveOpenApi` now documents every route, including those registered after the call. Fix its comment
   (`application.d:179`).
 - Update `AGENTS.md` ("Group middleware only applies to routes registered after `use`") and the README pitfalls.
@@ -587,7 +587,7 @@ document with `openapi-spec-validator` (exit 77 when it is not installed).
    - set `failed = true`, and `poisoned = true` when it is not an `Exception`;
    - log `t.toString()` (message, file:line and stack trace) together with the method and path;
    - rate-limit: at most 5 full traces per second per worker. The rest are counted and reported in the next line, e.g.
-     `vela: 37 more handler failures in the last second (traces suppressed)`.
+     `andaime: 37 more handler failures in the last second (traces suppressed)`.
 2. `releaseWorker`: a poisoned worker is always retired, the same way as the `maxIdleWorkers` branch
    (`retiring = true; call(); destroy`), and is never put back in the idle pool. Its `Context` goes with it.
    `finishH2` follows the same path. Add `handlerErrors` and `fibersPoisoned` to `LoopStats`.
@@ -604,7 +604,7 @@ document with `openapi-spec-validator` (exit 77 when it is not installed).
    each worker thread):
    - it reads a thread-local pointer to the current Worker, set in `resume`;
    - it writes, with `write(2)` only and no allocation, a line like
-     `vela: segmentation fault while running GET /path; if the handler recurses deeply or keeps large arrays on the stack, raise ServerConfig.fiberStackBytes (now N KiB)`;
+     `andaime: segmentation fault while running GET /path; if the handler recurses deeply or keeps large arrays on the stack, raise ServerConfig.fiberStackBytes (now N KiB)`;
    - then it restores the default action and re-raises, so a core dump still happens.
 
 **Tests.**
@@ -642,7 +642,7 @@ Full parity with what the server sends comes in 4.6.
 ## Phase 2 — One App per worker
 
 **Background.**
-- Today `serve(app, cfg)` passes a single `App` to `handlerFactory(app)` (`source/vela/server.d:36–52`), and every
+- Today `serve(app, cfg)` passes a single `App` to `handlerFactory(app)` (`source/andaime/server.d:36–52`), and every
   worker thread's fibers call into that same object.
 - Anything a handler captures (closures, controllers) runs on all threads at once with no synchronization. The hello
   example's `StatsController.hits++` (`examples/hello/source/app.d:113`) only works because `main` sets
@@ -662,7 +662,7 @@ alternative, parked in Phase 7.
 > **Done.** Also added `tryServe` (same arguments, returns false instead of exiting), which the tests use; `serve` calls it and exits with 1 on failure. Lambdas without captures resolve to the `function` overloads, with captures to the `delegate` ones.
 
 ```d
-// source/vela/server.d
+// source/andaime/server.d
 void serve(App delegate() @system build, ServerConfig cfg);
 void serve(App delegate() @system build, ushort port = 8080);
 void serve(App function() @system build, ServerConfig cfg);
@@ -685,13 +685,13 @@ void main() { serve(&buildApp, 8080); }
 - Remove the `serve(App, ...)` overloads (P2).
 - If the build function returns an `App` it already returned for another worker (for example `serve(() => app)`),
   startup fails with
-  `vela: the build function must create a new App for each worker (it returned the same object twice); move \`new App\` and the route registration inside it`.
+  `andaime: the build function must create a new App for each worker (it returned the same object twice); move \`new App\` and the route registration inside it`.
 
 ### [x] 2.2 Engine: per-worker initialization — M
 
 > **Done.** `runEpollServer(cfg, WorkerInit)` returns a flag: false for a bad TLS config, a build that threw, or a listener that could not bind (`EpollLoop.everListened`). A later worker's failed build stops all loops. `App.freeze` is called in `server.d` right after each build.
 
-- Add `alias WorkerInit = HandlerFactory delegate() @safe;` in `vela.engine.loop`. `runEpollServer(ServerConfig, WorkerInit)`
+- Add `alias WorkerInit = HandlerFactory delegate() @safe;` in `andaime.engine.loop`. `runEpollServer(ServerConfig, WorkerInit)`
   calls `init()` **on each worker's own thread**, before that worker opens its listener. That way the App's
   thread-local state, `pgPool` and `httpClient` all belong to that thread. The simplest place is the thread lambda in
   `startWorker` (`epoll.d`, around line 1880): `{ auto f = init(); lp.run(cfg, f); }`. The `EventLoop.run` interface
@@ -699,7 +699,7 @@ void main() { serve(&buildApp, 8080); }
 - Startup order and failures:
   - Worker 0 runs on the main thread (`gLoops[0].run(...)`). Call its `init()` **before** starting the other threads.
     If the build function throws (a `RouteError`, for example), print one line,
-    `vela: building the app failed: <msg> (<file>:<line>)`, and start nothing.
+    `andaime: building the app failed: <msg> (<file>:<line>)`, and start nothing.
   - If a later worker's build throws, log one line, stop all loops through the existing stop path, and report failure.
   - `runEpollServer` returns a success flag; only `server.d` turns a failure into `exit(1)`, so tests can drive the
     engine without the process exiting.
@@ -724,7 +724,7 @@ with a real database you leave `workers = 0`.
 
 ### [x] 2.4 Docs and tests — S/M
 
-> **Done.** `tests/net/workers_net.d` (run by `check.sh`). The duplicate-App message reaches stderr as `vela: building the app failed: vela: the build function must create a new App ...`.
+> **Done.** `tests/net/workers_net.d` (run by `check.sh`). The duplicate-App message reaches stderr as `andaime: building the app failed: andaime: the build function must create a new App ...`.
 
 - Add a "Workers and state" section to `docs/quickstart.md`:
   - the per-worker rule;
@@ -755,7 +755,7 @@ compiles. Reading it later is a use-after-free. The response side has the same p
 slice into malloc'd memory that a later `realloc` invalidates.
 
 **Target model (D2).**
-- Every slice vela hands to user code points into **GC-owned** memory. A slice kept after the request is memory-safe:
+- Every slice andaime hands to user code points into **GC-owned** memory. A slice kept after the request is memory-safe:
   it keeps its memory block alive. It may show bytes from a later request on the same connection or stream. That is
   documented, and it is a logic bug in user code, not memory corruption.
 - `Header!"X"` holds a **copied `string`**, so the common case (keeping a token or another header value) is correct,
@@ -766,7 +766,7 @@ slice into malloc'd memory that a later `realloc` invalidates.
 
 ### [x] 3.1 `BufferPool` on the GC — S
 
-> **Done.** `allocBlock` in `vela.http.buffer` is the one place that calls `GC.malloc(NO_SCAN)` (through a function-pointer cast that adds `@nogc`; `GC.malloc` is `extern (C)`, and a cast without that fails at run time on DMD).
+> **Done.** `allocBlock` in `andaime.http.buffer` is the one place that calls `GC.malloc(NO_SCAN)` (through a function-pointer cast that adds `@nogc`; `GC.malloc` is `extern (C)`, and a cast without that fails at run time on DMD).
 
 - `acquire`: `GC.malloc(size, GC.BlkAttr.NO_SCAN)`, wrapped in a small `@trusted` helper that returns `ubyte[]`.
   **Never** use `NO_INTERIOR`: user slices point into the middle of the block.
@@ -843,7 +843,7 @@ slice into malloc'd memory that a later `realloc` invalidates.
 **Background.**
 - The engine contract `RequestCallback = void delegate(ref Request req, ref ByteBuffer output)`
   (`engine/.../loop.d:21`) requires the whole response, serialized as HTTP/1.1 text, before anything is sent.
-- `server.d` builds that text (`source/vela/server.d:40–51`), and for HTTP/2 the session parses it back into `:status`
+- `server.d` builds that text (`source/andaime/server.d:40–51`), and for HTTP/2 the session parses it back into `:status`
   and fields (`h2.d`, `queueResponse`).
 
 Consequences:
@@ -855,7 +855,7 @@ Consequences:
 **Target design.**
 
 ```d
-// vela.http.response — no I/O; shared by the web layer and the engine
+// andaime.http.response — no I/O; shared by the web layer and the engine
 struct ResponseHead
 {
     int status = 200;
@@ -879,7 +879,7 @@ interface ResponseSink
     void end();
 }
 
-// vela.engine.loop
+// andaime.engine.loop
 alias RequestCallback = void delegate(ref Request req, ResponseSink sink) @safe;
 ```
 
@@ -913,9 +913,9 @@ one worker's default limit. Document this. A separate limit for streams belongs 
 
 ### [x] 4.1 Structured head and sink, buffered only (no behavior change) — M
 
-> **Done.** `vela.http.response` has `ResponseHead`, `ResponseSink`, `BufferedSink`, `isHopByHop`, `statusHasNoBody` and `ResponseAborted`; the old six-argument `writeResponseHead` stays as a thin wrapper for the engine's own error responses. `Request.http11` is new (set by the parser, true for HTTP/2) so HTTP/1.0 clients get close-delimited bodies. Starting a response disarms `requestTimeoutMs`; each blocked write has `writeTimeoutMs`, and `ServerConfig.streamTimeoutMs`/`streamHighWaterBytes` are new.
+> **Done.** `andaime.http.response` has `ResponseHead`, `ResponseSink`, `BufferedSink`, `isHopByHop`, `statusHasNoBody` and `ResponseAborted`; the old six-argument `writeResponseHead` stays as a thin wrapper for the engine's own error responses. `Request.http11` is new (set by the parser, true for HTTP/2) so HTTP/1.0 clients get close-delimited bodies. Starting a response disarms `requestTimeoutMs`; each blocked write has `writeTimeoutMs`, and `ServerConfig.streamTimeoutMs`/`streamHighWaterBytes` are new.
 
-- Add `vela.http.response` with `ResponseHead`, `ResponseSink`, and an HTTP/1 serializer
+- Add `andaime.http.response` with `ResponseHead`, `ResponseSink`, and an HTTP/1 serializer
   `writeResponseHead(ref ByteBuffer, ref const ResponseHead, bool keepAlive, bool chunked)`.
 - `RequestCallback` takes `(ref Request, ResponseSink)`. `server.d`, after `app.handle(ctx)`:
   - builds a `ResponseHead` from `ctx.response`, with `contentLength = body.length`;
@@ -1029,7 +1029,7 @@ struct EventWriter
   - At commit time: validate the headers (1.1), call `ctx.sink.start` with `contentLength = -1`, and set
     `ctx.response.committed = true`.
   - `EventStream` adds `Content-Type: text/event-stream`, `Cache-Control: no-cache` and `X-Accel-Buffering: no`.
-  - After the commit, `setHeader`/`addHeader` log once (`vela: header 'X' set after the response started; ignored`)
+  - After the commit, `setHeader`/`addHeader` log once (`andaime: header 'X' set after the response started; ignored`)
     and do nothing, and `App.fail` aborts the response (see "Errors after `start`") instead of rendering an error.
 - `EventWriter`: an event name or id containing CR or LF is a programming error, so abort the stream.
 - The user's body delegate is called from one new `@trusted` site, `callStream`. Add it to `AGENTS.md`'s list.
@@ -1080,13 +1080,13 @@ reader, whose RSS must stay bounded.
 
 ### [x] 5.1 The client's address — M
 
-> **Done.** `vela.http.ip` (parse, format, CIDR; IPv6-ready). `Request.peer` is set by the engine for both protocols. `ServerConfig.trustedProxies` is validated in `tryServe` and handed to each worker's App (`App.trustProxies`). An invalid entry in the header returns the peer; all hops trusted returns the leftmost. `TestClient.from("ip")` sets the peer. `accessLog` prints `ip=`.
+> **Done.** `andaime.http.ip` (parse, format, CIDR; IPv6-ready). `Request.peer` is set by the engine for both protocols. `ServerConfig.trustedProxies` is validated in `tryServe` and handed to each worker's App (`App.trustProxies`). An invalid entry in the header returns the peer; all hops trusted returns the leftmost. `TestClient.from("ip")` sets the peer. `accessLog` prints `ip=`.
 
 **Why.** `Conn.peerIp` (IPv4, recorded at accept in `epoll.d`) is only used for connection logs. Handlers cannot see the
 client's address (the README says so), which blocks rate limiting, audit logs and abuse handling.
 
 **Change.**
-- Add `Request.peer`, of type `IpAddress`: a `vela.http` struct holding the family, `ubyte[16]` and the port, with a
+- Add `Request.peer`, of type `IpAddress`: a `andaime.http` struct holding the family, `ubyte[16]` and the port, with a
   `toString` that formats into a caller-supplied buffer (no allocation). It is IPv6-ready even though IPv6 listeners
   stay out of scope.
 - The engine sets it for HTTP/1 (`startRequest`) and for HTTP/2 (when a stream is handed to a worker). This follows the
@@ -1110,7 +1110,7 @@ client's address (the README says so), which blocks rate limiting, audit logs an
 
 ### [x] 5.2 Chunked request bodies — M/L
 
-> **Done.** `vela.http.chunked.ChunkedDecoder` decodes in place and compacts, so the pipelined request after the body sits right behind it and the engine's `compact(c.total)` works unchanged. A second `Transfer-Encoding`, any coding but a lone `chunked`, or HTTP/1.0 are refused (400/501); Content-Length next to TE stays 400 (decided after all headers, so obfuscated TE + CL is still 400). Fuzz invariants include split-independence of the decoder; `tools/fuzz.sh 300 parse` ran clean.
+> **Done.** `andaime.http.chunked.ChunkedDecoder` decodes in place and compacts, so the pipelined request after the body sits right behind it and the engine's `compact(c.total)` works unchanged. A second `Transfer-Encoding`, any coding but a lone `chunked`, or HTTP/1.0 are refused (400/501); Content-Length next to TE stays 400 (decided after all headers, so obfuscated TE + CL is still 400). Fuzz invariants include split-independence of the decoder; `tools/fuzz.sh 300 parse` ran clean.
 
 **Why.** The parser answers 501 to any `Transfer-Encoding` (`http/.../parser.d`, `if (sawTE) return fail(501)`). Many
 clients send chunked uploads when they do not know the length in advance: `curl -T -` from stdin, some HTTP libraries
@@ -1121,7 +1121,7 @@ and proxies.
   - accept `Transfer-Encoding: chunked` only (case-insensitive, as the only coding);
   - any other coding → 501; `Transfer-Encoding` together with `Content-Length` → 400 (unchanged);
   - add `HeadResult.chunked`.
-- New pure, fuzzable decoder `vela.http.chunked.ChunkedDecoder`:
+- New pure, fuzzable decoder `andaime.http.chunked.ChunkedDecoder`:
   - incremental and in place: it moves chunk payloads toward the start of the body region, so the decoded body ends up
     contiguous in the same buffer;
   - hex chunk sizes with an overflow check; extensions are ignored (with a length bound); trailer fields are parsed
@@ -1159,7 +1159,7 @@ and proxies.
 
 ### [x] 5.4 Custom text types (UUID, dates, money...) — M
 
-> **Done.** Protocol and helpers are in `vela.http.texttype` (shared with the Postgres driver). Text types may be `@system`: the framework calls them through `textFromString`/`textToString` (`@trusted`, added to the call-site list).
+> **Done.** Protocol and helpers are in `andaime.http.texttype` (shared with the Postgres driver). Text types may be `@system`: the framework calls them through `textFromString`/`textToString` (`@trusted`, added to the call-site list).
 
 A compile-time-checked protocol, using D's usual `toString` convention:
 
@@ -1220,7 +1220,7 @@ struct Uuid
 - `ctx.cookie("name")`: scans the `Cookie` headers without allocating. HTTP/2 may split cookies across several
   `cookie` fields, so read all of them.
 - `ctx.setCookie(name, value, CookieOptions opts)`: builds a `Set-Cookie` through `addHeader`, supporting `Path`,
-  `Domain`, `Max-Age`, `Expires` (use `vela.http.date`), `Secure`, `HttpOnly` and `SameSite`. Defaults: `HttpOnly` on,
+  `Domain`, `Max-Age`, `Expires` (use `andaime.http.date`), `Secure`, `HttpOnly` and `SameSite`. Defaults: `HttpOnly` on,
   `SameSite=Lax`, `Secure` on (document how to turn it off for local development). An invalid cookie name (not a token)
   or value (not cookie-octets) throws, which is a programming error and so a 500.
 - OpenAPI: `in: cookie`.
@@ -1270,7 +1270,7 @@ State the `@safe` guarantee precisely, as true after Phase 3: request data you k
   - the error policy (D4);
   - the `ResponseSink` engine contract;
   - the call-site list (`callBuild`, `callStream`);
-  - `Optional` living in `vela:http`;
+  - `Optional` living in `andaime:http`;
   - the `@trusted` accessor rule (1.10);
   - the exit-code-77 convention and CI.
 
@@ -1351,14 +1351,14 @@ response.
 - `EPOLLOUT` is always in the interest set (edge-triggered): count the events per request and try adding it only after a send
   hits `EAGAIN`.
 - The read buffer goes back to the pool after every response and is taken again for the next request.
-- `resume` reads the clock twice; `checkResponse` scans the headers once per vela-owned name (8 scans).
+- `resume` reads the clock twice; `checkResponse` scans the headers once per andaime-owned name (8 scans).
 - SIMD search for the end of the head, GC tuning, `sendfile` for static files (the rest of M4).
 - No profiler was available on the machine where 8.1-8.3 were done (`perf` missing): get one before going further, the
   estimates above are guesses.
 
 ## Phase 9 — Evidence for "HTTP/2 compatible"
 
-Started on 2026-10-13 at the owner's request ("finish HTTP/2" -> what does it take to call vela HTTP/2 compatible). The server
+Started on 2026-10-13 at the owner's request ("finish HTTP/2" -> what does it take to call andaime HTTP/2 compatible). The server
 already covered RFC 9113; what was missing was evidence, not features. HTTP/2 code untouched (D3 still holds).
 
 ### [x] 9.1 Run the real-browser test and h2spec locally — S
@@ -1369,7 +1369,7 @@ already covered RFC 9113; what was missing was evidence, not features. HTTP/2 co
 ### [x] 9.2 Behind a real h2c reverse proxy — S
 
 > **Done.** `tools/proxy_interop.sh` (new `check.sh` section, skips with 77 without Caddy; CI downloads Caddy 2.11.7, pinned by
-> SHA-512): curl -> Caddy (HTTP/1.1) -> vela (h2c). Handlers see HTTP/2; upload, 4 MiB download, 404, 40 concurrent 300 ms
+> SHA-512): curl -> Caddy (HTTP/1.1) -> andaime (h2c). Handlers see HTTP/2; upload, 4 MiB download, 404, 40 concurrent 300 ms
 > requests in ~325 ms, SSE events arrive one at a time, a 20 MiB stream intact.
 
 ### [ ] 9.3 Candidates, not started
@@ -1386,15 +1386,15 @@ response), and the first version includes **a client** and **permessage-deflate*
 (D3) at first; RFC 8441 came later, in 10.7.
 Reference: `docs/websocket.md`; rules for contributors: `AGENTS.md`, "WebSockets".
 
-### [x] 10.1 Protocol, no I/O (`vela:http`) — M
+### [x] 10.1 Protocol, no I/O (`andaime:http`) — M
 
-> **Done.** `vela.http.sha1` (SHA-1, standard base64), `vela.http.websocket`: frame codec (8-byte unmasking, every length class),
+> **Done.** `andaime.http.sha1` (SHA-1, standard base64), `andaime.http.websocket`: frame codec (8-byte unmasking, every length class),
 > handshake check and accept key, permessage-deflate negotiation, and `WsConn`, the whole message layer (fragments, pings, the
 > close handshake with a 1 s timeout, 1002/1007/1009, ping/idle timing, shutdown 1001, deflate through a `WsDeflate`
-> interface) over an `UpgradedConn` (`vela.http.response`). `ResponseSink.upgrade` hands a connection over after a 101;
+> interface) over an `UpgradedConn` (`andaime.http.response`). `ResponseSink.upgrade` hands a connection over after a 101;
 > `writeResponseHead` no longer writes `Content-Length` on 1xx; `statusText(101)`.
 
-### [x] 10.2 Routes and dispatch (`vela:web`) — M
+### [x] 10.2 Routes and dispatch (`andaime:web`) — M
 
 > **Done.** `app.ws!(path, fn)` / `@Ws` (a GET, not in OpenAPI), `WebSocket` (`maxMessageBytes`, `pingInterval`,
 > `compression`), `runWebSocket` (426/400 refusals, the 101 through `checkResponse`, a new `WsConn` per connection, close 1000
@@ -1411,14 +1411,14 @@ Reference: `docs/websocket.md`; rules for contributors: `AGENTS.md`, "WebSockets
 
 ### [x] 10.4 Compression and the client — M
 
-> **Done.** `vela.engine.zlib` (dlopen `libz.so.1`, raw deflate with the 00 00 FF FF tail stripped, inflate with a size limit,
-> context takeover; messages under 64 bytes uncompressed; an 8-bit window is never compressed). `vela.engine.wsclient`:
+> **Done.** `andaime.engine.zlib` (dlopen `libz.so.1`, raw deflate with the 00 00 FF FF tail stripped, inflate with a size limit,
+> context takeover; messages under 64 bytes uncompressed; an 8-bit window is never compressed). `andaime.engine.wsclient`:
 > `wsConnect` (`ws://`, `wss://`, deflate offer, getrandom masking keys) on `HttpClient`'s DNS/TCP/TLS (`openConn` and a few
 > helpers became `package`); cooperative inside a fiber, blocking outside.
 
 ### [x] 10.5 Evidence — S
 
-> **Done.** `tools/ws_interop.sh` (new `check.sh` section): python `websockets` 16 as a client against vela (with and without
+> **Done.** `tools/ws_interop.sh` (new `check.sh` section): python `websockets` 16 as a client against andaime (with and without
 > deflate, 3 MiB, ordering, ping, close codes) and as a server for `wsConnect`; CI installs `websockets>=13` with pip. The
 > browser test opens a compressed `wss://` WebSocket from Chromium 156. `tests/alloc/ws_hot_path.d`: 0 GC bytes in 100k echoes,
 > compressed or not. `tools/fuzz.sh ws` (3M runs clean) and `tests/fuzz/fuzz_ws.d` in `check.sh`. Memory: 1,000 open
@@ -1431,7 +1431,7 @@ Reference: `docs/websocket.md`; rules for contributors: `AGENTS.md`, "WebSockets
 - A subprotocol helper (`WebSocket.protocols`), if setting the header by hand proves error-prone.
 - A client send that finds the socket full while its owner waits stays queued until the owner's next wait; a per-connection
   writer wait (as on the server) would fix it if it matters.
-- Fan-out across workers (a hub over `LISTEN/NOTIFY` in `vela-pg`, say).
+- Fan-out across workers (a hub over `LISTEN/NOTIFY` in `andaime-pg`, say).
 - `wsConnect` over HTTP/2 (the client stays HTTP/1.1).
 
 ### [x] 10.7 WebSockets over HTTP/2 (RFC 8441) — L
@@ -1439,13 +1439,13 @@ Reference: `docs/websocket.md`; rules for contributors: `AGENTS.md`, "WebSockets
 Requested by the owner on 2026-10-14 ("implement the websocket via HTTP 2"), which lifts D3 for this item only. Branch
 `websocket-h2`.
 
-> **Done.** `vela:http`: `Request.connectProtocol`; `H2Session` announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`
+> **Done.** `andaime:http`: `Request.connectProtocol`; `H2Session` announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`
 > (`H2Config.enableConnectProtocol`), accepts `:protocol`, hands an extended CONNECT out at its HEADERS as a GET
 > (`H2Stream.tunnel`), keeps its DATA without a body limit and credits the stream window only as the engine consumes
 > (`popInput`, `tunnelInput`, `tunnelConsume`, `tunnelEnded`); ending our side half-closes the stream (reset after 1 s in
-> `tick`); other `:protocol` values get 501. `ByteBuffer.dropFront`. `vela:web`: `checkUpgradeRequest` for HTTP/2,
+> `tick`); other `:protocol` values get 501. `ByteBuffer.dropFront`. `andaime:web`: `checkUpgradeRequest` for HTTP/2,
 > `runWebSocket` answers 200 without an accept key, `dispatch` refuses an extended CONNECT on a non-WebSocket route with 400,
-> `TestClient.http2`. `vela:engine`: `H2Tunnel` (`upgradeStream`, `tunnelFill/Write/Break`, `finishTunnel`), graceful stop
+> `TestClient.http2`. `andaime:engine`: `H2Tunnel` (`upgradeStream`, `tunnelFill/Write/Break`, `finishTunnel`), graceful stop
 > (1001), `ServerConfig.http2WebSockets`.
 > Evidence: 10 session tests, `tests/web/websocket.d` (h2 mode), `tests/net/ws_h2_net.d` (9 socket tests, 3/3 runs green),
 > `tests/net/ws_h2_interop.py` (python-h2 + the `websockets` frame codec and permessage-deflate, h2c and TLS) in
@@ -1457,7 +1457,7 @@ Requested by the owner on 2026-10-14 ("implement the websocket via HTTP 2"), whi
 ## Phase 11 — Features for real applications
 
 Started on 2026-10-14, branch `real-app-features`. A production app (Visto) is moving its backend from Python/Sanic to
-vela and must keep its HTTP contract exactly. Checking what it uses against vela gave the items below. Each is a general
+andaime and must keep its HTTP contract exactly. Checking what it uses against andaime gave the items below. Each is a general
 feature with docs and tests, and every default stays what it was. Out of scope (stop and ask if an item seems to need
 one): per-route body limits, unbuffered request bodies, streaming responses in the HTTP client, per-route request
 timeouts, any HTTP/2 or TLS feature (D3).
@@ -1467,8 +1467,8 @@ timeouts, any HTTP/2 or TLS feature (D3).
 snapshot taken as `inFlight` reaches 0) and six reruns of that section passed on both compilers. The `pg_net.d`
 `testNonBlocking` 50 ms check also failed once in three runs under the podman port forward. `tools/fuzz.sh 300 h2`: 14.2M
 runs clean after the base64url move; `tools/fuzz.sh 400 json`: 6M runs clean. Not run here: the latest DMD/LDC (CI covers
-them), h2spec, Caddy and Playwright (not installed), so `VELA_STRICT=1` cannot pass on this machine. The compile budget
-moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the rest).
+them), h2spec, Caddy and Playwright (not installed), so `ANDAIME_STRICT=1` cannot pass on this machine. The compile budget
+moved within noise (interleaved measurements: +5 ms for `andaime.log`, 0 for the rest).
 
 ### Decision log
 
@@ -1480,7 +1480,7 @@ moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the re
 | F4 | 11.1 | 415 (wrong form content type) and 400 (malformed multipart) stay `HttpError`s for `onError`. | Turning them into validation errors. | They are about the framing, not a field; routing them through validation would change which hook sees them for existing apps. Documented, with the statuses unchanged. |
 | F5 | 11.1 | OpenAPI: the default documents the 422 as before; `onValidationError!Body(status, h, description)` documents `status` with `Body`'s schema; a handler without a declaration documents a generic `4XX` without a schema. | Keeping the 422 entry; an OpenAPI-only attribute per route. | A 422 that the app never sends would lie. `4XX` says only what is known. Other statuses the handler picks (a 404 for a path) go on routes with `@responds`. |
 | F6 | 11.1 | The user handler is called through a new `callUser` overload (the existing call site name); `dispatch` reaches it through `Context.onValidation`, a framework `@safe` delegate. | A new call-site function in `handler_traits.d`. | Keeps the list of places that call user code the same. |
-| F8 | 11.2 | The tri-state type is `PatchField!T` (owner's pick), in `vela:http` next to `Optional`. | `Patch!T` (clashes with the `@Patch` route UDA under `import vela;`); `Nullable!T` (clashes with `std.typecons`); `Tristate!T`. | Names the use (PATCH bodies) and clashes with nothing. In `vela:http` so the database driver can share it later. |
+| F8 | 11.2 | The tri-state type is `PatchField!T` (owner's pick), in `andaime:http` next to `Optional`. | `Patch!T` (clashes with the `@Patch` route UDA under `import andaime;`); `Nullable!T` (clashes with `std.typecons`); `Tristate!T`. | Names the use (PATCH bodies) and clashes with nothing. In `andaime:http` so the database driver can share it later. |
 | F9 | 11.2 | `writeJson` omits an absent `PatchField` from its object; `null` for a null one; outside an object absent is `null`. | Writing `null` for absent everywhere. | Round-trips the three states through a struct; an array has no way to leave an element out. |
 | F10 | 11.2 | JSON bodies only: `PatchField` in `Form!T`, `Query!T` or as a handler parameter is a one-line compile error pointing to `Optional!T`. | Mapping an empty form value to `null`. | Forms and query strings have no `null`; guessing from an empty string would make `""` impossible to send. |
 | F11 | 11.3 | `JsonValue` is a plain struct with one field per kind (no union); objects are a member array in input order; a repeated key keeps its first position and last value, with a hash index past 8 members. | A tagged union (pointer overlap is `@system`); an AA for objects (loses order); linear duplicate search (quadratic on hostile input). | `@safe` without `@trusted`; order is part of the requirement; the index keeps a 1 MiB body of repeated keys linear. |
@@ -1488,29 +1488,29 @@ moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the re
 | F13 | 11.3 | Depth limit 64 (the same as `skipValue`), counted inside the `JsonValue`; `parseJson` also has `maxBytes` (16 MiB). Limit errors are `json_invalid` with their own message (`JsonReader.fail`). | One shared depth counter for typed and dynamic decoding. | Typed nesting is bounded by the type; only `JsonValue` recursion depends on the input. |
 | F14 | 11.3 | Public `parseJson`, `fromJson!T`, `toJson`, `writeJson` for JSON outside a request. | Only `parseJson`. | Reading an upstream response into a DTO is the common case and reuses the body decoder's rules and errors. |
 | F15 | 11.3 | Fuzzing: `tests/fuzz/json_invariants.d` (round trip, depth, a typed decode), `fuzz_json.d` in `check.sh`, `tools/fuzz.sh … json`. `fuzz.sh` now sets `detect_stack_use_after_return=0` for every target. | Leaving ASan's default. | ASan's fake stack hides locals from the conservative GC: after ~700k runs a collection freed live objects and the round trip "changed" a value. With it off: 6M runs clean. |
-| F16 | 11.4 | `vela:crypto` is a subpackage (`crypto/`) depending on `vela:http` and `vela:engine`; its own libcrypto table (`CryptoApi`, OpenSSL 3 API only, `RTLD_LOCAL`), loading `libcrypto.so.3` first and rejecting a library without `EVP_PKEY_fromdata`. | Extending `tls.d`'s table; a separate package under `drivers/`. | `tls.d` is frozen (D3) and loads libssl too; a separate table keeps both independent. On this machine `libcrypto.so` is LibreSSL, so the version check matters. |
-| F17 | 11.4 | `randomBytes` moved from `wsclient.d` to `vela.engine.random` (public, getrandom); base64url to `vela.http.base64url` (`decodeBase64Url` for HTTP2-Settings kept lenient, `base64UrlDecode` strict); `h2.d` re-exports the old name. | Copies in `vela:crypto`. | One implementation each, as the task asked; `h2.d` change is a pure move (session tests and `fuzz_h2` in `check.sh` cover it). |
+| F16 | 11.4 | `andaime:crypto` is a subpackage (`crypto/`) depending on `andaime:http` and `andaime:engine`; its own libcrypto table (`CryptoApi`, OpenSSL 3 API only, `RTLD_LOCAL`), loading `libcrypto.so.3` first and rejecting a library without `EVP_PKEY_fromdata`. | Extending `tls.d`'s table; a separate package under `drivers/`. | `tls.d` is frozen (D3) and loads libssl too; a separate table keeps both independent. On this machine `libcrypto.so` is LibreSSL, so the version check matters. |
+| F17 | 11.4 | `randomBytes` moved from `wsclient.d` to `andaime.engine.random` (public, getrandom); base64url to `andaime.http.base64url` (`decodeBase64Url` for HTTP2-Settings kept lenient, `base64UrlDecode` strict); `h2.d` re-exports the old name. | Copies in `andaime:crypto`. | One implementation each, as the task asked; `h2.d` change is a pure move (session tests and `fuzz_h2` in `check.sh` cover it). |
 | F18 | 11.4 | SHA-256, HMAC, AES-GCM, P-256 through libcrypto; HKDF written over HMAC (20 lines, RFC 5869); constant-time compare and randomness in D (no library needed). | `EVP_KDF` for HKDF; pure-D SHA-256. | Fewer symbols to load; the D parts work even without OpenSSL. |
 | F19 | 11.4 | `EcKeyP256` is a class owning its `EVP_PKEY` (freed in the destructor); public keys are 65-byte uncompressed points checked with `EVP_PKEY_public_check`; a private key must be 1 <= d < n; ES256 signatures are raw `r||s` (DER only inside). | A struct with a pointer (copies would double-free). | Raw pointers never leave the module; an off-curve peer point is rejected before ECDH (invalid-curve attacks). |
 | F20 | 11.4 | bcrypt via libxcrypt `crypt_rn`/`crypt_gensalt_rn` (32 KiB scratch, zeroed after), `$2b$`, cost 4..31 (default 12), NUL in a password is an error (verify: false), 72-byte truncation documented; `bcryptHashOffload`/`bcryptVerifyOffload` wrap `offload`. | glibc `crypt_r` only; our own bcrypt. | libxcrypt is the system's bcrypt everywhere glibc dropped its own; `crypt_rn` returns null instead of a magic string. |
 | F21 | 11.4 | Web Push: `webPushEncrypt` (fresh key and salt; an overload takes them for known-answer tests), one 4096-byte record, payload <= 3993 bytes; `webPushDecrypt` for the receiver. The VAPID JWT is left to the app (`es256Sign` + `base64UrlEncode`, shown in the guide). | A full Web Push client (HTTP POST, VAPID header building). | The task asked for the primitives; sending is a few lines with `httpClient`, and VAPID claims are app policy. |
 | F22 | 11.5 | `T[]` parameters become a text array literal with every element quoted and `"`/`\` escaped, elements encoded exactly as a single parameter of that type would be; an empty `Optional` element is `NULL`; `ubyte[]`/`byte[]` and nested arrays are compile errors. | Binary array format; quoting only when needed. | Text keeps one encoding path for scalars and elements; always quoting makes `NULL`, commas, braces and spaces data with no special cases. `ubyte[]` could mean bytea. |
-| F23 | 11.6 | `@prefix("author_")` (in `vela.db`) on a struct or `Optional!struct` field; prefixes compose when nested; column indexes resolved once per result; an `Optional` is empty only when all its columns are NULL; misuse is a one-line `vela.db:` static assert. | Inferring nesting from `author_` names without an attribute; empty when the first (id) column is NULL. | Explicit is predictable; "all NULL" is what a LEFT JOIN with no match produces, and does not depend on which column is the key. |
-| F24 | 11.7 | `PgConn.savepoint` (`vela_sp_N` by depth; `RELEASE` on success, `ROLLBACK TO` on throw), `PgConn.transaction` that becomes a savepoint inside an open transaction (`PQtransactionStatus`), `PgPool.transaction` delegating to it; tests pin the pool to one connection (`pin`/`unpin`, `rollbackAfter`). | A separate "test mode" flag in `PgConfig`; a fake pool. | Nesting through the transaction status makes app code unchanged under a harness; pinning is two lines in `acquire`/`release` and touches no hot path. |
-| F25 | 11.8 | Module `vela.log` lives in `vela:web` (`web/source/vela/log.d`), not `vela:http` (no I/O there) nor `engine` (web cannot see it); exported by `import vela;`. | A `vela:log` subpackage. | `App`, `accessLog` and `vela:jobs` must use it, and they all depend on `vela:web`. Engine messages (stalls, crashes) stay raw stderr. |
+| F23 | 11.6 | `@prefix("author_")` (in `andaime.db`) on a struct or `Optional!struct` field; prefixes compose when nested; column indexes resolved once per result; an `Optional` is empty only when all its columns are NULL; misuse is a one-line `andaime.db:` static assert. | Inferring nesting from `author_` names without an attribute; empty when the first (id) column is NULL. | Explicit is predictable; "all NULL" is what a LEFT JOIN with no match produces, and does not depend on which column is the key. |
+| F24 | 11.7 | `PgConn.savepoint` (`andaime_sp_N` by depth; `RELEASE` on success, `ROLLBACK TO` on throw), `PgConn.transaction` that becomes a savepoint inside an open transaction (`PQtransactionStatus`), `PgPool.transaction` delegating to it; tests pin the pool to one connection (`pin`/`unpin`, `rollbackAfter`). | A separate "test mode" flag in `PgConfig`; a fake pool. | Nesting through the transaction status makes app code unchanged under a harness; pinning is two lines in `acquire`/`release` and touches no hot path. |
+| F25 | 11.8 | Module `andaime.log` lives in `andaime:web` (`web/source/andaime/log.d`), not `andaime:http` (no I/O there) nor `engine` (web cannot see it); exported by `import andaime;`. | A `andaime:log` subpackage. | `App`, `accessLog` and `andaime:jobs` must use it, and they all depend on `andaime:web`. Engine messages (stalls, crashes) stay raw stderr. |
 | F26 | 11.8 | The request id is read from the running fiber: `LocalFiber` (engine) has one `Object` slot, `server.d` stores the `Context`, a per-thread function asks the fiber; `App.handle` sets a per-thread source for the no-fiber case. | A thread-local "current request" (wrong after any fiber switch); a fiber-keyed table (grows with retired fibers); passing `Context` to every log call. | Correct under interleaving (`tests/net/log_net.d` proves it), one pointer store per request, no allocation. |
-| F27 | 11.8 | Formats `text` (default), `kv`, `json`; in `text` vela's own lines are byte-identical to before and user lines are `msg k=v`; level and format by `configureLog` and `VELA_LOG_LEVEL`/`VELA_LOG_FORMAT`, the environment winning; atomics instead of `__gshared` (no `@trusted` accessor needed). | Making `kv` the default; code winning over the environment. | Defaults stay backward compatible; an operator can turn on `debug` without a rebuild. |
-| F28 | 11.8 | The generic call is `logAt(level, ...)`, not `log`; misuse of fields is a one-line compile error in each `log*` function. | `log(level, ...)`. | `import vela;` would export `log`, which hides an app's own `log` helper (the `get`/`put` pitfall). |
+| F27 | 11.8 | Formats `text` (default), `kv`, `json`; in `text` andaime's own lines are byte-identical to before and user lines are `msg k=v`; level and format by `configureLog` and `ANDAIME_LOG_LEVEL`/`ANDAIME_LOG_FORMAT`, the environment winning; atomics instead of `__gshared` (no `@trusted` accessor needed). | Making `kv` the default; code winning over the environment. | Defaults stay backward compatible; an operator can turn on `debug` without a rebuild. |
+| F28 | 11.8 | The generic call is `logAt(level, ...)`, not `log`; misuse of fields is a one-line compile error in each `log*` function. | `log(level, ...)`. | `import andaime;` would export `log`, which hides an app's own `log` helper (the `get`/`put` pitfall). |
 | F29 | 11.9 | The cookie jar is a flag on `TestClient` (`cookies = true`, off by default), RFC 6265 path matching and default path, replacement by name+path, deletion by `Max-Age<=0` or a past `Expires` (IMF-fixdate), no domains; a caller's `Cookie` header is merged. Multipart and JSON helpers are methods; `json!T` uses `fromJson`. Overloads instead of a default argument before the variadic headers. | A separate `TestSession` type. | One client type to learn; the default stays stateless, as before. DMD 2.109 crashes on a default argument before a variadic parameter. |
 | F30 | 11.10 | `const(ubyte)[]` overloads of `post`/`put`/`request`, plus `typeof(null)` overloads so an existing `post(url, null)` is not ambiguous; an optional trailing `Duration timeout` on every method (zero: the configured one), which may be shorter or longer than `HttpClientConfig.timeout`. | A `RequestOptions` struct; a template on the body type. | Additive and source compatible; a struct is worth it only when there are more per-request options. |
 | F7 | 11.1 | `Context.json(value, status = 200)` added, for error and validation handlers. `writeValidationErrors` is renamed `writeDefaultValidationErrors` (public; the old name stays as an alias). | Asking handlers to build JSON by hand. | A custom error body is almost always a small struct. |
 
 ### [x] 11.1 Custom validation error responses: `onValidationError` — M
 
-> **Done.** `vela.web.application`: `ValidationErrorHandler`, `App/Group.onValidationError(h)` and `!Body(status, h,
+> **Done.** `andaime.web.application`: `ValidationErrorHandler`, `App/Group.onValidationError(h)` and `!Body(status, h,
 > description)` (one-line compile errors for a wrong handler type and a non-struct body; a bad status throws `RouteError`),
-> resolution at `freeze`; `vela.web.dto`: `ErrorSource`, `LocPart`, `FieldError.source/path/dotted`, `ValidationErrors`
-> (`has`), `FieldErrors.view`; `vela.web.openapi`: `ValidationDoc`, `Components.validation`, `OpRecord.validation`;
+> resolution at `freeze`; `andaime.web.dto`: `ErrorSource`, `LocPart`, `FieldError.source/path/dotted`, `ValidationErrors`
+> (`has`), `FieldErrors.view`; `andaime.web.openapi`: `ValidationDoc`, `Components.validation`, `OpRecord.validation`;
 > `Context.json`. Tests: `tests/web/validation_handler.d` (every failure kind, path -> 404, framing errors unchanged, dropped
 > count, default byte-identical, a handler that writes only a body / falls back / throws, nested group override, a mounted
 > controller with a `@system` function, the three OpenAPI cases, a bad status, registration after freeze), `dto.d`
@@ -1519,8 +1519,8 @@ moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the re
 
 ### [x] 11.2 Tri-state JSON fields: `PatchField!T` — M
 
-> **Done.** `vela.http.patchfield`: `PatchField!T` (`isAbsent`, `isNull`, `hasValue`, `isPresent`, `value`, `valueOr`,
-> `null_`, `absent`), `isPatchField`; re-exported by `vela.web.params`. `json.d`: read (`null` -> null, a value -> decoded
+> **Done.** `andaime.http.patchfield`: `PatchField!T` (`isAbsent`, `isNull`, `hasValue`, `isPresent`, `value`, `valueOr`,
+> `null_`, `absent`), `isPatchField`; re-exported by `andaime.web.params`. `json.d`: read (`null` -> null, a value -> decoded
 > with the usual errors, never `missing`), written (absent left out of its object). `validateField` checks the value only.
 > OpenAPI: `nullable`, not required, constraints on the value. `modelError` and `handlerError` reject it outside a JSON body.
 > Tests: `json.d` unittest (three states, nested, arrays of structs, validation, writing), `tests/web/patchfield.d` (a PATCH
@@ -1529,7 +1529,7 @@ moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the re
 
 ### [x] 11.3 Dynamic JSON value: `JsonValue` — M
 
-> **Done.** `vela.web.jsonvalue`: `JsonValue` (kinds, accessors, `get`, `opIndex`, building, `opEquals`, `toString`),
+> **Done.** `andaime.web.jsonvalue`: `JsonValue` (kinds, accessors, `get`, `opIndex`, building, `opEquals`, `toString`),
 > `JsonMember`, `JsonType`, `JsonError`, `JsonLimits`, `parseJson` (throwing and not), `fromJson!T`, `toJson`,
 > `readJsonValue`/`writeJsonValue`; `JsonReader.fail`/`errorText`. Wired into `readJson`/`writeJson` (body, DTO field, maps,
 > arrays, return value) and OpenAPI (`{}`). Tests: module unittests (kinds, order, repeated keys past the index, errors,
@@ -1537,20 +1537,20 @@ moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the re
 > `fuzz_json.d` (300k inputs in `check.sh`), `tools/fuzz.sh 400 json`: 5.98M runs clean. Docs: `requests.md` and
 > `http-client.md` (`// check` examples), the index.
 
-### [x] 11.4 `vela:crypto` — L
+### [x] 11.4 `andaime:crypto` — L
 
 > **Done.** Spike first: RFC 8291 Appendix A end to end matched byte for byte on the first run, with every intermediate value
 > (ECDH secret, PRK_key, key_info, IKM, PRK, CEK, nonce) checked (the RFC's example says `Content-Length: 145`; its body is
 > 144 bytes). Then: `crypto/` with `libcrypto.d`, `common.d` (`CryptoError`, `randomBytes`, `constantTimeEquals`), `hash.d`,
-> `aead.d`, `ec.d`, `webpush.d`, `bcrypt.d`; `vela.engine.random`; `vela.http.base64url`. Tests (`check.sh` section
-> "vela:crypto", exit 77 without the libraries): `tests/crypto/vectors.d` (FIPS 180-2 SHA-256, RFC 4231 cases 1-7, RFC 5869
+> `aead.d`, `ec.d`, `webpush.d`, `bcrypt.d`; `andaime.engine.random`; `andaime.http.base64url`. Tests (`check.sh` section
+> "andaime:crypto", exit 77 without the libraries): `tests/crypto/vectors.d` (FIPS 180-2 SHA-256, RFC 4231 cases 1-7, RFC 5869
 > cases 1-3, GCM cases 1-4 cross-checked with python `cryptography`, P-256 key import/export and rejection of bad keys, ES256
 > verified by `openssl dgst` and `openssl`'s signatures verified by us, ECDH), `webpush_rfc8291.d`, `bcrypt_vectors.d` (6
 > hashes from python bcrypt 4.3 incl. `$2a$`, 72-byte limit, malformed hashes, offload helpers). `check.sh` builds `:crypto`
 > and fails if the core imports it. Docs: `docs/crypto.md` (a `// check` example: signup/login with bcrypt, a VAPID JWT, a
 > push body), the index; `AGENTS.md` layout, dependencies, FFI list, "Adding things".
 
-### [x] 11.5 Array parameters in `vela-pg` — S
+### [x] 11.5 Array parameters in `andaime-pg` — S
 
 > **Done.** `Encoded.put` handles `E[]` (integers, bool, floats, strings, text types, `Optional` elements) through
 > `arrayElement`. Tests: `tests/db/pg_features.d` (new file in the PostgreSQL section): `= any($1::uuid[])`, `int[]`, empty,
@@ -1564,7 +1564,7 @@ moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the re
 > Tests (`tests/db/pg_features.d`): LEFT JOIN with and without a match, a required nested struct, composed prefixes, the
 > missing-column message, a NULL in a required nested field. Docs: `database.md`.
 
-### [x] 11.7 Savepoints in `vela-pg` — S
+### [x] 11.7 Savepoints in `andaime-pg` — S
 
 > **Done.** `PgConn.inTransaction`, `transaction`, `savepoint`, `finishBlock` (utility statements through `exec_`, never the
 > statement cache); `PgPool.pin`, `unpin`, `rollbackAfter`; `PQtransactionStatus` in the libpq table. Tests
@@ -1572,10 +1572,10 @@ moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the re
 > `transaction` inside `transaction`, return values, the error outside a transaction, and `rollbackAfter` with the app's
 > own commits and rollbacks inside it. Docs: `database.md`.
 
-### [x] 11.8 Structured logger `vela.log` — M
+### [x] 11.8 Structured logger `andaime.log` — M
 
-> **Done.** `vela.log`: `LogLevel`, `LogFormat`, `configureLog`, `logLevel`, `logFormat`, `logEnabled`, `logAt`,
-> `logDebug/Info/Warn/Error`, `logVela` (vela's own lines), the request-id sources. Engine: `LocalFiber`,
+> **Done.** `andaime.log`: `LogLevel`, `LogFormat`, `configureLog`, `logLevel`, `logFormat`, `logEnabled`, `logAt`,
+> `logDebug/Info/Warn/Error`, `logAndaime` (andaime's own lines), the request-id sources. Engine: `LocalFiber`,
 > `currentFiberLocal`, `setCurrentFiberLocal` (`Worker` extends `LocalFiber`). `Context.requestIdForLog` (set by
 > `requestId()`), `App.handle` and `server.d` wiring; `accessLog`, `App.logError` and `logJobFailure` go through it. Tests:
 > module unittests (three formats, values, request id, levels), `tests/web/logging.d` (text lines unchanged, json/kv fields,
@@ -1599,13 +1599,13 @@ moved within noise (interleaved measurements: +5 ms for `vela.log`, 0 for the re
 
 ## Phase 12 — What the Visto migration still worked around
 
-Started on 2026-10-15 on `main`. The migration plan of the same app listed every place where it worked around vela; the
+Started on 2026-10-15 on `main`. The migration plan of the same app listed every place where it worked around andaime; the
 owner turned them into 13 general items (5 high, 4 medium, 4 low gain), all approved, one commit each. Every default stays
 what it was. Out of scope as in Phase 11.
 
 **Status (2026-10-15): 12.1-12.13 done**, one commit each. `tools/check.sh` run after Phase A, after 12.4-12.9 and at the
 end, each time on DMD 2.109.1 and LDC 1.40.1 with Postgres 16 (podman): 28 sections passed, 0 failed, 3 skipped (h2spec,
-Caddy, Playwright not installed, so `VELA_STRICT=1` cannot pass here). `tools/fuzz.sh 300 json`: 2.7M runs clean. Compile
+Caddy, Playwright not installed, so `ANDAIME_STRICT=1` cannot pass here). `tools/fuzz.sh 300 json`: 2.7M runs clean. Compile
 budget within noise (interleaved measurement after the naming fast path: median 451 vs 449 ms; `check.sh` runs 399-431 ms,
 the baseline 416 ms on this machine).
 
@@ -1613,35 +1613,35 @@ the baseline 416 ms on this machine).
 
 | # | Item | Decision | Rejected | Why |
 |---|------|----------|----------|-----|
-| G1 | 12.1 | `@naming(Naming.snakeCase)` on the struct (also `kebabCase`, `camelCase`, `upperSnakeCase`, `asIs`), in `vela.http.naming` so vela-pg shares it; `jsonKeyOf` is the only source of field names (OpenAPI had a copy). A field's `@jsonKey` wins. Not inherited by nested structs. | An app-wide default; inheritance. | JSON code is templated on `T` with no App in sight, so an app-wide policy would need a global; one UDA per DTO is cheap and explicit. |
+| G1 | 12.1 | `@naming(Naming.snakeCase)` on the struct (also `kebabCase`, `camelCase`, `upperSnakeCase`, `asIs`), in `andaime.http.naming` so andaime-pg shares it; `jsonKeyOf` is the only source of field names (OpenAPI had a copy). A field's `@jsonKey` wins. Not inherited by nested structs. | An app-wide default; inheritance. | JSON code is templated on `T` with no App in sight, so an app-wide policy would need a global; one UDA per DTO is cheap and explicit. |
 | G2 | 12.1/12.3 | `@naming` on a field and wire-name clashes are `static assert`s deep in the JSON templates (multi-line), tested by unittests, not `compile_fail`. | Walking every DTO in `handlerError`. | The same as the existing "not serializable to JSON" error; a recursive walk costs compile time on every handler for a rare mistake. |
 | G3 | 12.1/12.3 | Types without a policy or attributes take a path with no CTFE (`jsonKeyOf`, `enumWireName` return the identifier). | Always calling `applyNaming`. | The first version cost ~15 ms on the budget; with the fast path the interleaved measurement is within noise. |
-| G4 | 12.3 | An enum's wire name is `@wireName`, else the enum's `@naming`, else the member; quotes, backslashes, control characters, empty and duplicate names are compile errors (so a wire name is never escaped). The D name is no longer accepted once renamed. In vela-pg an enum is its wire name as text (a Postgres enum or text column). | Accepting both spellings; integers in the database. | One spelling everywhere keeps OpenAPI honest; text matches Postgres enums, whose labels are what the API sends. |
-| G5 | 12.2 | `@column("x")` (vela.db) > the struct's `@naming` > the identifier; `@prefix` goes before the nested struct's own names. vela-pg-jobs' `JobRow` uses it. | Reusing `@jsonKey` for columns. | A column and a JSON key often differ (`created_at` vs `createdAt` in a legacy API). |
+| G4 | 12.3 | An enum's wire name is `@wireName`, else the enum's `@naming`, else the member; quotes, backslashes, control characters, empty and duplicate names are compile errors (so a wire name is never escaped). The D name is no longer accepted once renamed. In andaime-pg an enum is its wire name as text (a Postgres enum or text column). | Accepting both spellings; integers in the database. | One spelling everywhere keeps OpenAPI honest; text matches Postgres enums, whose labels are what the API sends. |
+| G5 | 12.2 | `@column("x")` (andaime.db) > the struct's `@naming` > the identifier; `@prefix` goes before the nested struct's own names. andaime-pg-jobs' `JobRow` uses it. | Reusing `@jsonKey` for columns. | A column and a JSON key often differ (`created_at` vs `createdAt` in a legacy API). |
 | G6 | 12.4 | `JobSchedule` (`every!J`, `cron!J`, `disable!J`) in `WorkerHooks.schedule`, applied to the `ScheduledJob` list that already existed; checked by `runJobs`/`supervisorHook` before anything starts. Reading the environment stays in the app. | `@Every(5.minutes, env: "X")`. | The runtime list was already there; an env name in a UDA would tie the library to one configuration source. |
 | G7 | 12.5 | `FakeHttpClient` plugs in through a thread-local `HttpTransport` (`setHttpTransport`) that `HttpClient.request` checks after parsing the URL; adapters keep using `HttpClient`. | An interface for the client; a fake upstream server. | `HttpClient` stays `final` and the real path pays one null check; tests need no sockets. |
 | G8 | 12.6 | `TrailingSlash.matchBoth` registers each route's other form at `freeze`, after every explicit route (a duplicate is skipped, so explicit wins); groups choose `strict` or `matchBoth`; `redirect` stays app-wide (it is decided before routing). | A runtime retry on 404. | No work per request, and a group can opt in. |
-| G9 | 12.7 | `Json!T` (vela.web) is a text type for vela-pg (no new dependency) but plain `T` in JSON bodies, responses and OpenAPI; arrays are read from Postgres' text literal, 1-D only. | `@jsonColumn` with vela-pg depending on vela:web (owner's pick: `Json!T`). | Drivers depend only on the engine. |
-| G10 | 12.8 | `PgConfig.onQuery`/`PgConn.onQuery`, a `@safe` delegate called after every statement with `internal` for vela's own `BEGIN`/`COMMIT`/`SAVEPOINT`; `rollbackAfter` hides its own two. | A `@system` user callback. | AGENTS.md allows no new call site of `@system` user code; the hook is configuration, like `WorkerHooks.extra`. |
-| G11 | 12.9 | `JobTransaction` (one method) with `PgJobStore.within(tx)` and `TestJobStore.transaction()` (publishes on `commit`, id 0 before). | A `TestJobStore` that understands `PgConn`. | Keeps vela:jobs free of vela-pg. |
+| G9 | 12.7 | `Json!T` (andaime.web) is a text type for andaime-pg (no new dependency) but plain `T` in JSON bodies, responses and OpenAPI; arrays are read from Postgres' text literal, 1-D only. | `@jsonColumn` with andaime-pg depending on andaime:web (owner's pick: `Json!T`). | Drivers depend only on the engine. |
+| G10 | 12.8 | `PgConfig.onQuery`/`PgConn.onQuery`, a `@safe` delegate called after every statement with `internal` for andaime's own `BEGIN`/`COMMIT`/`SAVEPOINT`; `rollbackAfter` hides its own two. | A `@system` user callback. | AGENTS.md allows no new call site of `@system` user code; the hook is configuration, like `WorkerHooks.extra`. |
+| G11 | 12.9 | `JobTransaction` (one method) with `PgJobStore.within(tx)` and `TestJobStore.transaction()` (publishes on `commit`, id 0 before). | A `TestJobStore` that understands `PgConn`. | Keeps andaime:jobs free of andaime-pg. |
 | G12 | 12.11 | `ServerConfig.errorBodies` (status -> fixed body), `jsonErrorBodies()` for `{"detail":...}`; HTTP/1.1 only. | A callback. | The engine answers without a fiber and without the app; a fixed body needs neither. HTTP/2 is frozen (D3). |
-| G13 | 12.12 | `LogScope` in `vela.log` (fields rendered once), held in the fiber's slot while `perform` runs, or the thread's scope in `drainJobs`; both fiber sources (server, `runJobs`) know it. | A thread-local "current job". | Jobs interleave on a thread like requests do (F26). |
+| G13 | 12.12 | `LogScope` in `andaime.log` (fields rendered once), held in the fiber's slot while `perform` runs, or the thread's scope in `drainJobs`; both fiber sources (server, `runJobs`) know it. | A thread-local "current job". | Jobs interleave on a thread like requests do (F26). |
 | G14 | 12.13 | `TxMode.readOnly` -> `BEGIN READ ONLY`; nested it stays a savepoint of the outer mode. | `SET TRANSACTION` inside a savepoint (not allowed after the first query). | Documented, since under `rollbackAfter` a read-only block cannot refuse writes. |
 
 ### [x] 12.1 Naming policy for JSON, `Query!T`, `Form!T` and OpenAPI — M
 
-> **Done.** `vela.http.naming` (`Naming`, `naming`, `wireName`, `applyNaming`, `namingOf`, enum helpers); `jsonKeyOf`;
+> **Done.** `andaime.http.naming` (`Naming`, `naming`, `wireName`, `applyNaming`, `namingOf`, enum helpers); `jsonKeyOf`;
 > OpenAPI's duplicate removed. Tests: `naming.d` and `dto.d` unittests, `tests/web/naming.d`. Docs: `requests.md`
 > ("Wire names"), `responses.md`, `validation.md`.
 
 ### [x] 12.2 Column names in `rowsAs!T` — S
 
-> **Done.** `column`, `columnNameOf`; `JobRow` in vela-pg-jobs. Tests: `tests/db/pg_features.d` (`testNamesAndEnums`).
+> **Done.** `column`, `columnNameOf`; `JobRow` in andaime-pg-jobs. Tests: `tests/db/pg_features.d` (`testNamesAndEnums`).
 > Docs: `database.md`.
 
 ### [x] 12.3 Enum wire names — M
 
-> **Done.** JSON both ways, path/query/form/header, the 422 message, OpenAPI's list, logs, vela-pg parameters (also arrays)
+> **Done.** JSON both ways, path/query/form/header, the 422 message, OpenAPI's list, logs, andaime-pg parameters (also arrays)
 > and cells. Tests: `tests/web/naming.d`, `tests/db/pg_features.d` (a Postgres enum type). Docs: `requests.md`,
 > `database.md`.
 
@@ -1652,7 +1652,7 @@ the baseline 416 ms on this machine).
 
 ### [x] 12.5 `FakeHttpClient` — M
 
-> **Done.** `vela.engine.httpfake` (`FakeHttpClient`, `Expectation`, `RecordedRequest`), `HttpTransport`,
+> **Done.** `andaime.engine.httpfake` (`FakeHttpClient`, `Expectation`, `RecordedRequest`), `HttpTransport`,
 > `setHttpTransport`. Tests: module unittest (replies in order, prefixes, `always`, timeout, failure, unexpected request,
 > `verify`, a client made by hand). Docs: `http-client.md` (a `// check` example), `testing.md`.
 
@@ -1663,7 +1663,7 @@ the baseline 416 ms on this machine).
 
 ### [x] 12.7 Array and JSON columns — M
 
-> **Done.** `parseArray` in vela-pg; `Json!T` in `vela.web.jsonvalue`, wired into `writeJson`, `readJson` and OpenAPI. Also
+> **Done.** `parseArray` in andaime-pg; `Json!T` in `andaime.web.jsonvalue`, wired into `writeJson`, `readJson` and OpenAPI. Also
 > fixed: an `Optional!JsonValue` field made the OpenAPI document invalid (`{,"nullable":true}`). Tests:
 > `tests/db/pg_features.d` (every element kind, NULL elements, errors, an `array_agg` + `json_agg` query),
 > `tests/web/json_text.d`, `jsonvalue.d` unittest. Docs: `database.md`, `requests.md`.
@@ -1697,8 +1697,9 @@ the baseline 416 ms on this machine).
 
 ## Open owner decisions (not blocking)
 
-- **The final name.** "vela" collides with KubeVela and go-vela; also check code.dlang.org. Rename before the first
-  public release. The rename is mechanical: package names, `vela.*` module names, the `vela:` message prefix, the docs.
+- **The final name.** Decided: **andaime** (Portuguese for "scaffolding"), renamed from the provisional name "vela". The
+  rename was mechanical: package names, `andaime.*` module names, the `andaime:` message prefix, `ANDAIME_*` environment
+  variables, the docs. Still check code.dlang.org for a collision before the first public release.
 - **When to unfreeze HTTP/2 and TLS** (D3).
 - **Whether and when to publish on code.dlang.org** (after Phase 4 or Phase 5?).
 
@@ -1706,14 +1707,14 @@ the baseline 416 ms on this machine).
 
 ## Appendix A — Evidence gathered during the review
 
-These probes were run with LDC 1.40.1 against `vela:web` only (the full package does not build on that compiler; see
+These probes were run with LDC 1.40.1 against `andaime:web` only (the full package does not build on that compiler; see
 0.1). They are small enough to re-run after each fix.
 
 **Wrong JSON for `Maybe`, CRLF in headers, lost array index** (items 1.3, 1.1, 1.4):
 
 ```d
-import vela.web;
-import vela.db.pg : Maybe;
+import andaime.web;
+import andaime.db.pg : Maybe;
 
 struct Row { int id; Maybe!string email; }
 struct Item { string name; @minLength(3) string code; }
@@ -1752,7 +1753,7 @@ Build command, run from the repository root:
 
 ```d
 @safe:
-import vela.web;
+import andaime.web;
 struct Item { @minLength(3) string code; }
 const(char)[] leaked;                                                // thread-local
 string keep(Header!"X-Tok" t) { leaked = t; return "ok"; }           // compiles in @safe code
@@ -1767,7 +1768,7 @@ void item(JsonBody!Item o) {}
   inside the dispatch template plus a template-instantiation line. So `scope` would be mandatory on every such
   parameter.
 - Without the flag, everything compiles, including the bad case.
-- vela itself does not compile with the flag (`web/.../testing.d:39–42` fail first).
+- andaime itself does not compile with the flag (`web/.../testing.d:39–42` fail first).
 
 **GC cost of copying a 40-byte header** (LDC 1.40, `-O3 -release`, 16 cores):
 
@@ -1784,11 +1785,11 @@ GC-free.
 
 ## Appendix B — Definition of done (every item)
 
-- [ ] `tools/check.sh` is green on DMD and LDC (and with `VELA_STRICT=1` in CI once 0.5 exists).
+- [ ] `tools/check.sh` is green on DMD and LDC (and with `ANDAIME_STRICT=1` in CI once 0.5 exists).
 - [ ] New tests cover the change; every new signature rule has a `tests/compile_fail/` case with a one-line message.
 - [ ] The hot path is still GC-free (`tests/alloc`), and the memory tests are within their limits.
 - [ ] HTTP/2 changes: `tools/h2_interop.sh` plus `tools/fuzz.sh 300 h2`. Parser changes: corpus files plus
       `tools/fuzz.sh 300 parse`.
 - [ ] Docs are updated in the same commit (README, quickstart, `AGENTS.md`, deploy guide, as relevant).
-- [ ] English everywhere; `vela:` prefixes; `@safe`, with every new `@trusted` commented.
+- [ ] English everywhere; `andaime:` prefixes; `@safe`, with every new `@trusted` commented.
 - [ ] The item's checkbox in `PLAN.md` is ticked.

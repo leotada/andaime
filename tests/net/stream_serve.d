@@ -1,7 +1,7 @@
 /// Server for tools/stream_interop.sh: streamed responses for curl to read. Usage: stream_serve <port>
 module stream_serve;
 
-import vela;
+import andaime;
 import std.conv : to;
 import core.time : msecs;
 

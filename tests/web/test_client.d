@@ -4,8 +4,8 @@ module test_client;
 
 @safe:
 
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 
 struct Upload { @minLength(2) string title; UploadedFile photo; Optional!UploadedFile extra; }
 struct NewUser { @minLength(2) string name; int age; }
@@ -94,10 +94,10 @@ unittest
 
     // multipart: text fields and files, binary-safe, with a boundary that appears in no part
     ubyte[] bytes = [0, 1, 2, 0xff, '\r', '\n'];
-    auto r = c.postMultipart("/upload", [["title", "Trip --vela-test-boundary-7MA4YWxkTrZu0gW"]],
+    auto r = c.postMultipart("/upload", [["title", "Trip --andaime-test-boundary-7MA4YWxkTrZu0gW"]],
         [TestFile("photo", "a.jpg", "image/jpeg", bytes)]);
     assert(r.status == 200, r.body);
-    assert(r.body == "Trip --vela-test-boundary-7MA4YWxkTrZu0gW|a.jpg|image/jpeg|" ~ cast(string) bytes.idup ~ "|-", r.body);
+    assert(r.body == "Trip --andaime-test-boundary-7MA4YWxkTrZu0gW|a.jpg|image/jpeg|" ~ cast(string) bytes.idup ~ "|-", r.body);
     r = c.putMultipart("/upload", [["title", "Two"]], [TestFile("photo", "p.png", "image/png", [1]),
         TestFile("extra", "e.txt", "text/plain", cast(const(ubyte)[]) "x")]);
     assert(r.status == 200 && r.body[$ - 5 .. $] == "e.txt", r.body);

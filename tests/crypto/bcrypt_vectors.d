@@ -3,7 +3,7 @@
 /// missing.
 module bcrypt_vectors;
 
-import vela.crypto;
+import andaime.crypto;
 import core.stdc.stdio : fprintf, printf, stderr;
 
 int main()
@@ -51,7 +51,7 @@ int main()
     try
         bcryptHash("x", 3);
     catch (CryptoError e)
-        threw = e.msg == "vela.crypto: the bcrypt cost goes from 4 to 31";
+        threw = e.msg == "andaime.crypto: the bcrypt cost goes from 4 to 31";
     assert(threw);
     threw = false;
     try

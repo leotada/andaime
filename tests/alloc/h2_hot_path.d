@@ -1,9 +1,9 @@
 /// The HTTP/2 hot path does not allocate on the GC either: frames in, HPACK decoding, the
 /// request handed to the app through the server's callback, the response transcoded and framed.
-import vela;
-import vela.http;
-import vela.http.hpack : encodeField;
-import vela.server : handlerFactory;
+import andaime;
+import andaime.http;
+import andaime.http.hpack : encodeField;
+import andaime.server : handlerFactory;
 import core.memory : GC;
 import core.stdc.stdio : printf;
 

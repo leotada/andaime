@@ -1,11 +1,11 @@
 # Logging
 
-`vela.log` (part of `import vela;`) writes one line per call to stderr, at four levels, in three formats. Inside a request
+`andaime.log` (part of `import andaime;`) writes one line per call to stderr, at four levels, in three formats. Inside a request
 the request id is added by itself.
 
 ```d
 // check
-import vela;
+import andaime;
 
 struct Order { long id; string plan; }
 
@@ -19,7 +19,7 @@ Order create(JsonBody!Order o)
 
 void main()
 {
-    configureLog(LogLevel.info, LogFormat.json); // VELA_LOG_LEVEL / VELA_LOG_FORMAT still win
+    configureLog(LogLevel.info, LogFormat.json); // ANDAIME_LOG_LEVEL / ANDAIME_LOG_FORMAT still win
     logInfo("starting", "port", 8080);
     serve(() {
         auto app = new App;
@@ -54,26 +54,26 @@ With `LogFormat.json` a request to `/orders` writes:
 | `LogLevel.debug_` | details for development (`debug` is a D keyword) |
 | `LogLevel.info` | the default: the access log, your events |
 | `LogLevel.warn` | something to look at |
-| `LogLevel.error` | failures: vela's exceptions behind a 500, `vela.jobs:` failures |
+| `LogLevel.error` | failures: andaime's exceptions behind a 500, `andaime.jobs:` failures |
 | `LogLevel.off` | nothing |
 
 | Format | A line |
 |--------|--------|
-| `LogFormat.text` (default) | `order created request_id=8f3a order_id=7 plan=pro`; vela's own lines are exactly as before (`GET /orders 200 0.4ms ip=...`, `vela: error in GET /x: ...`) |
+| `LogFormat.text` (default) | `order created request_id=8f3a order_id=7 plan=pro`; andaime's own lines are exactly as before (`GET /orders 200 0.4ms ip=...`, `andaime: error in GET /x: ...`) |
 | `LogFormat.kv` | `time=2026-10-14T12:00:00.123Z level=info msg="order created" request_id=8f3a order_id=7 plan=pro` (logfmt) |
 | `LogFormat.json` | one JSON object per line, with the same keys |
 
 Text values that are not a plain word are quoted and escaped like JSON strings, so a stack trace stays on one line in
 `kv` and `json`. Time is UTC with milliseconds.
 
-The environment overrides the code, so a deployment can change them without a rebuild: `VELA_LOG_LEVEL` (`debug`, `info`,
-`warn`, `error`, `off`) and `VELA_LOG_FORMAT` (`text`, `kv` or `logfmt`, `json`).
+The environment overrides the code, so a deployment can change them without a rebuild: `ANDAIME_LOG_LEVEL` (`debug`, `info`,
+`warn`, `error`, `off`) and `ANDAIME_LOG_FORMAT` (`text`, `kv` or `logfmt`, `json`).
 
 ## The request id
 
 The `requestId()` middleware gives each request an id (the client's `X-Request-Id` when it is safe, or a new one), and
 every line written while that request runs carries it as `request_id`, from any function, without passing a `Context`
-around. vela keeps the id with the request's fiber, so lines of requests that interleave on one worker (while one waits on
+around. andaime keeps the id with the request's fiber, so lines of requests that interleave on one worker (while one waits on
 the database, another runs) never get each other's id. Outside a request (startup, a background job) there is no
 `request_id`.
 
@@ -81,10 +81,10 @@ Inside a background job's `perform` every line carries the job instead: `job` (i
 (`msg="mail sent" job=app.jobs.SendMail job_id=42 attempt=2 to=ana@x.com`), on any role and in `TestJobStore.drainJobs`.
 A job with `@Offload` runs `perform` on a pool thread, whose lines carry neither.
 
-## vela's own lines
+## andaime's own lines
 
 The access log (`accessLog()`, `info`), the exceptions behind a 500 (`error`, with the stack trace, rate-limited by
-`App.logStackTraces`) and the failures of background jobs (`vela.jobs:`, `error`) go through `vela.log`: they follow the
+`App.logStackTraces`) and the failures of background jobs (`andaime.jobs:`, `error`) go through `andaime.log`: they follow the
 level, and in `kv`/`json` they are structured (`msg="error in handler" method=GET path=/x error="..."`). A few startup and
 engine messages (bad configuration, a stalled worker, a crash) are still written straight to stderr.
 
@@ -96,7 +96,7 @@ collector, to journald, or to a test.
 
 ```d
 // check
-import vela;
+import andaime;
 
 void main() // setLogSink is @system: it writes a variable shared by all threads
 {

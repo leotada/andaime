@@ -1,9 +1,9 @@
-/// vela.log through real requests: the default `text` format keeps vela's lines as they were; `kv` and `json` add time,
+/// andaime.log through real requests: the default `text` format keeps andaime's lines as they were; `kv` and `json` add time,
 /// level, the request id and structured fields; levels filter; the environment overrides the code.
 module logging_test;
 
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 import std.json : parseJSON, JSONValue;
 import std.string : splitLines, indexOf, startsWith;
 
@@ -103,7 +103,7 @@ unittest
     });
     assert(lines[0] == "saying hello request_id=req-42 who=Ana n=2", lines[0]);
     assert(lines[1].startsWith("GET /hello 200 ") && lines[1].indexOf("ms ip=127.0.0.1 rid=req-42") > 0, lines[1]);
-    assert(lines[2].startsWith("vela: error in GET /boom: object.Exception@") && lines[2].indexOf("kaput") > 0, lines[2]);
+    assert(lines[2].startsWith("andaime: error in GET /boom: object.Exception@") && lines[2].indexOf("kaput") > 0, lines[2]);
     assert(lines[$ - 1].startsWith("GET /boom 500 ") && lines[$ - 1].indexOf("rid=req-43") > 0, lines[$ - 1]);
 }
 
@@ -155,11 +155,11 @@ unittest
     {
         import core.sys.posix.stdlib : setenv, unsetenv;
 
-        () @trusted { setenv("VELA_LOG_LEVEL", "error", 1); setenv("VELA_LOG_FORMAT", "json", 1); }();
+        () @trusted { setenv("ANDAIME_LOG_LEVEL", "error", 1); setenv("ANDAIME_LOG_FORMAT", "json", 1); }();
     }
     else version (Windows)
     {
-        () @trusted { _putenv_s("VELA_LOG_LEVEL", "error"); _putenv_s("VELA_LOG_FORMAT", "json"); }();
+        () @trusted { _putenv_s("ANDAIME_LOG_LEVEL", "error"); _putenv_s("ANDAIME_LOG_FORMAT", "json"); }();
     }
     configureLog(LogLevel.debug_, LogFormat.text);
     assert(logLevel == LogLevel.error && logFormat == LogFormat.json);
@@ -167,11 +167,11 @@ unittest
     {
         import core.sys.posix.stdlib : unsetenv;
 
-        () @trusted { unsetenv("VELA_LOG_LEVEL"); unsetenv("VELA_LOG_FORMAT"); }();
+        () @trusted { unsetenv("ANDAIME_LOG_LEVEL"); unsetenv("ANDAIME_LOG_FORMAT"); }();
     }
     else version (Windows)
     {
-        () @trusted { _putenv_s("VELA_LOG_LEVEL", ""); _putenv_s("VELA_LOG_FORMAT", ""); }();
+        () @trusted { _putenv_s("ANDAIME_LOG_LEVEL", ""); _putenv_s("ANDAIME_LOG_FORMAT", ""); }();
     }
     configureLog(LogLevel.info, LogFormat.text);
     assert(logLevel == LogLevel.info && logFormat == LogFormat.text);
@@ -240,13 +240,13 @@ unittest
 
 unittest
 {
-    // vela's own lines in the text format reach the sink as the legacy text, with fields: the access log and a 500
+    // andaime's own lines in the text format reach the sink as the legacy text, with fields: the access log and a 500
     configureLog(LogLevel.info, LogFormat.text);
     auto c = TestClient(build());
     auto logs = captureLog({ c.get("/boom", hdr("X-Request-Id", "e1")); });
     assert(logs.length == 2, "the 500 line and the access line");
     assert(logs[0].level == LogLevel.error && logs[0].message == "error in handler" && logs[0].field("path") == "/boom");
-    assert(logs[0].line.startsWith("vela: error in GET /boom: "), logs[0].line);
+    assert(logs[0].line.startsWith("andaime: error in GET /boom: "), logs[0].line);
     assert(logs[1].message == "request" && logs[1].field("status") == "500");
     assert(logs[1].line.startsWith("GET /boom 500 ") && logs[1].line.indexOf("rid=e1") > 0, logs[1].line);
 }

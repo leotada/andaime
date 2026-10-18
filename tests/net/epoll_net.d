@@ -6,9 +6,9 @@ module epoll_net;
 
 version (linux):
 
-import vela;
-import vela.engine;
-import vela.server : handlerFactory;
+import andaime;
+import andaime.engine;
+import andaime.server : handlerFactory;
 
 import core.atomic : atomicOp, atomicLoad;
 import core.thread : Thread;
@@ -453,7 +453,7 @@ void testResponseHeaders()
 
     auto s = start(ServerConfig.init);
     scope (exit) stop(s);
-    // vela owns Content-Length and Connection; two Set-Cookie both reach the wire; no stray bytes follow the body
+    // andaime owns Content-Length and Connection; two Set-Cookie both reach the wire; no stray bytes follow the body
     auto c = dial(s.port);
     c.tx("GET /owned HTTP/1.1\r\nHost: t\r\n\r\n");
     auto r = c.rx();
@@ -469,7 +469,7 @@ void testResponseHeaders()
     r = c.rx();
     assert(r.status == 500 && !r.head.canFind("pwned") && !r.head.canFind("Location"), r.head);
     c.hang();
-    ok("response headers: vela-owned ones dropped, duplicates kept, CR/LF injection answered with 500");
+    ok("response headers: andaime-owned ones dropped, duplicates kept, CR/LF injection answered with 500");
 }
 
 /// Request data handed to user code lives in GC memory: whatever a handler or middleware keeps after the request is

@@ -1,4 +1,4 @@
-# Contributing to vela
+# Contributing to andaime
 
 The project's rules (language, `@safe`, no heavy Phobos in the core, one-line compile errors, the concurrency and response
 contracts) are in [AGENTS.md](AGENTS.md); read it before changing `engine/`, `http/` or `web/`. [PLAN.md](PLAN.md) holds the
@@ -8,11 +8,11 @@ improvement plan and its decision log. Everything is written in English: code, c
 
 | Package | Role | Depends on |
 |---------|------|------------|
-| `vela:http` (`http/`) | HTTP types, `Optional`, text types, zero-copy HTTP/1.1 parser and writer, chunked decoder, HTTP/2 session and HPACK, WebSocket frames and messages. No I/O. | — |
-| `vela:web` (`web/`) | `App`, router, handler introspection, JSON, OpenAPI, middleware, cookies, streaming, WebSocket routes, `TestClient`. No sockets. | http |
-| `vela:engine` (`engine/`) | epoll loop, fibers, buffers, `offload`, HTTP/HTTPS and WebSocket client, OpenSSL, zlib. No routes. | http |
-| `vela-pg` (`drivers/pg/`) | PostgreSQL driver over async libpq. An independent package: the core never depends on it. | vela:engine |
-| `vela` (`source/vela/`) | `import vela;`, `server.d` (the only glue between web and engine), static files | all |
+| `andaime:http` (`http/`) | HTTP types, `Optional`, text types, zero-copy HTTP/1.1 parser and writer, chunked decoder, HTTP/2 session and HPACK, WebSocket frames and messages. No I/O. | — |
+| `andaime:web` (`web/`) | `App`, router, handler introspection, JSON, OpenAPI, middleware, cookies, streaming, WebSocket routes, `TestClient`. No sockets. | http |
+| `andaime:engine` (`engine/`) | epoll loop, fibers, buffers, `offload`, HTTP/HTTPS and WebSocket client, OpenSSL, zlib. No routes. | http |
+| `andaime-pg` (`drivers/pg/`) | PostgreSQL driver over async libpq. An independent package: the core never depends on it. | andaime:engine |
+| `andaime` (`source/andaime/`) | `import andaime;`, `server.d` (the only glue between web and engine), static files | all |
 
 ## Toolchain
 
@@ -24,8 +24,8 @@ on **both** compilers.
 ```sh
 tools/check.sh                       # everything, with DMD
 DC=ldmd2 tools/check.sh              # with LDC
-VELA_ONLY="memory" tools/check.sh    # only the sections whose name contains the text
-VELA_STRICT=1 tools/check.sh         # a skipped section fails the run (CI does this)
+ANDAIME_ONLY="memory" tools/check.sh    # only the sections whose name contains the text
+ANDAIME_STRICT=1 tools/check.sh         # a skipped section fails the run (CI does this)
 ```
 
 `check.sh` runs sections: unittests, a `-preview=dip1000` type-check of everything (new code must keep it passing: mark
@@ -41,7 +41,7 @@ Without them the matching sections are skipped. A setup that runs every section 
 
 | Tool | For | How |
 |------|-----|-----|
-| PostgreSQL | `vela-pg`, the API example | a local server (found automatically), or a container: `podman run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55432:5432 postgres:16` and `VELA_PG="host=127.0.0.1 port=55432 user=postgres dbname=postgres"` |
+| PostgreSQL | `andaime-pg`, the API example | a local server (found automatically), or a container: `podman run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55432:5432 postgres:16` and `ANDAIME_PG="host=127.0.0.1 port=55432 user=postgres dbname=postgres"` |
 | python3 + `h2`, `openapi-spec-validator`, `websockets` (13+) | HTTP/2 and WebSocket interop, OpenAPI validity | `pip install h2 openapi-spec-validator 'websockets>=13'` (a venv is fine: put its `bin` first on `PATH`) |
 | h2spec 2.6.0 | HTTP/2 conformance | the release binary; `H2SPEC=/path/to/h2spec` |
 | Caddy 2 | h2c reverse-proxy test | the release binary; `CADDY=/path/to/caddy` |
@@ -71,7 +71,7 @@ tools/bench.sh 10                    # requests per second of one worker, for be
 
 ## Conventions
 
-- Library messages start with `vela:` (`vela.db:`, `vela.http:` for the driver and client).
+- Library messages start with `andaime:` (`andaime.db:`, `andaime.http:` for the driver and client).
 - New code is `@safe`; every `@trusted` has a one-line comment saying why it is sound.
 - No `std.format`, `std.conv`, `std.json`, `std.regex`, `std.algorithm`, `std.range` in `http/`, `web/`, `engine/` (compile
   time). Tests and examples may use them.

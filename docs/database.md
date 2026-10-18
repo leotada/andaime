@@ -1,6 +1,6 @@
-# PostgreSQL (`vela-pg`)
+# PostgreSQL (`andaime-pg`)
 
-`vela-pg` is a PostgreSQL driver over asynchronous libpq: a query suspends only the request's fiber, and the worker keeps
+`andaime-pg` is a PostgreSQL driver over asynchronous libpq: a query suspends only the request's fiber, and the worker keeps
 serving other requests meanwhile. It is a separate DUB package, and libpq is loaded at run time, so applications that do not
 use it neither link nor install it.
 
@@ -9,8 +9,8 @@ use it neither link nor install it.
 `dub.sdl`:
 
 ```sdl
-dependency "vela" path="../dapi"
-dependency "vela-pg" path="../dapi/drivers/pg"
+dependency "andaime" path="../dapi"
+dependency "andaime-pg" path="../dapi/drivers/pg"
 ```
 
 The machine needs libpq (`libpq5` on Debian/Ubuntu, `libpq5` or `postgresql-libs` elsewhere). `pgAvailable()` says whether
@@ -20,8 +20,8 @@ to anything. Without libpq, `PgConn.connect` throws `PgError` with the same mess
 ## Queries
 
 ```d
-import vela;
-import vela.db;
+import andaime;
+import andaime.db;
 
 struct User { int id; string name; Optional!string email; }
 
@@ -76,7 +76,7 @@ void touch(int id) { db.exec("update users set seen_at = now() where id = $1", i
   NULL in a non-`Optional` field of a struct that is there is the usual error.
 - Array columns read into `T[]` (`int[]`, `string[]`, `Uuid[]`, an enum...): `uuid[]`, `text[]`, `int[]`, and
   `array_agg(...)`. A `NULL` element needs `Optional!T[]`; a multidimensional array throws (read it as `string`).
-- A `json`/`jsonb` column reads into `Json!T` (from `vela.web`): `Json!(TagRef[]) tags` decodes the text with the rules of a
+- A `json`/`jsonb` column reads into `Json!T` (from `andaime.web`): `Json!(TagRef[]) tags` decodes the text with the rules of a
   request body, and `Json!JsonValue` takes anything. In a response it is plain JSON (not a string), OpenAPI shows `T`, and it
   is also a parameter (`$1::jsonb`). With `array_agg` and `json_agg` a list endpoint loads its relations in one query:
 
@@ -173,7 +173,7 @@ PgPool db()
 
 `cfg.onQuery` is called after every statement of the pool's connections, with a `QueryEvent`: `sql` (valid during the call),
 `duration`, `rows` (-1 on failure), `error` and `sqlState` of a failure, and `internal` for the `BEGIN`, `COMMIT`,
-`ROLLBACK` and `SAVEPOINT` statements vela sends itself. It runs on the request's fiber, so a log line carries the request id:
+`ROLLBACK` and `SAVEPOINT` statements andaime sends itself. It runs on the request's fiber, so a log line carries the request id:
 
 ```d
 cfg.onQuery = (ref const QueryEvent e) @safe {

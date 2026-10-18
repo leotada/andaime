@@ -1,10 +1,10 @@
 /// Guarantees a WebSocket's message path does not allocate on the GC once warm: frame parsing, unmasking, UTF-8 check,
 /// echo and framing, with and without permessage-deflate (zlib's memory is its own, freed by `release`), and over an
 /// HTTP/2 stream (RFC 8441: DATA frames in, the session's tunnel input, DATA frames out, WINDOW_UPDATEs).
-import vela;
-import vela.http;
-import vela.http.hpack : encodeField;
-import vela.engine.zlib : zlibDeflate;
+import andaime;
+import andaime.http;
+import andaime.http.hpack : encodeField;
+import andaime.engine.zlib : zlibDeflate;
 import core.memory : GC;
 import core.time : Duration;
 import core.stdc.stdio : printf;

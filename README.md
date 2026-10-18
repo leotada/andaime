@@ -1,17 +1,17 @@
-# vela
+# andaime
 
-**vela** is a fast, memory-safe web framework for D with FastAPI-style ergonomics: **a handler's function signature is its HTTP contract**.
+**andaime** is a fast, memory-safe web framework for D with FastAPI-style ergonomics: **a handler's function signature is its HTTP contract**.
 
 Path parameters, query strings, headers, cookies, JSON payloads, forms, and multipart uploads are extracted and validated directly from parameter types and names by code generated at compile time. Invalid requests are rejected with a `422 Unprocessable Content` response before your handler ever runs, and the OpenAPI 3.1 schema and Swagger UI are generated from the exact same signatures.
 
 > [!NOTE]
-> The name **vela** is provisional (DUB package `vela`, `import vela;`); the repository is `dapi`.
+> The name **andaime** is Portuguese for "scaffolding": a modular web framework where you attach modules as you need them (DUB package `andaime`, `import andaime;`). The repository is `dapi`.
 
 ```d
 // check
 @safe:
 
-import vela;
+import andaime;
 
 struct UserInput { @minLength(2) string name; @inRange(0, 150) int age; }
 struct User { long id; string name; int age; }
@@ -54,7 +54,7 @@ curl -X POST localhost:8080/users -d '{"name":"A","age":200}'
 
 ---
 
-## Why vela
+## Why andaime
 
 - **Zero-boilerplate endpoints.** No manual request parsing, no repetitive validation logic, and no separate schema files to keep in sync. Your D types and function signatures define routing, validation, serialization, and OpenAPI documentation in one place.
 - **Plain sequential code, high concurrency.** One worker thread per CPU core (`SO_REUSEPORT`) runs an `epoll` event loop with one lightweight fiber per request. Database queries, HTTP client requests, WebSockets, and `sleep` suspend only the active fiber—never the worker thread.
@@ -62,7 +62,7 @@ curl -X POST localhost:8080/users -d '{"name":"A","age":200}'
 - **Small footprint and sub-second builds.** Around 25 MB RSS under 1,000 concurrent connections, zero GC allocations on the hot request path, and the core avoids heavy Phobos templates so an example application type-checks in under 400 ms on DMD.
 - **One-line compile errors.** Mistakes in handler signatures fail at compile time with a single human-readable diagnostic instead of a deep template backtrace:
   ```text
-  app.d(12): vela: handler 'getUser' in GET /users/{id}: the route declares {id}, but the function has no parameter named 'id'
+  app.d(12): andaime: handler 'getUser' in GET /users/{id}: the route declares {id}, but the function has no parameter named 'id'
   ```
 - **Memory-safe by default (`@safe`).** The framework is checked with `@safe` and `-preview=dip1000`. Your handlers can be `@safe` too, or call `@system` C libraries directly without ceremony.
 
@@ -78,7 +78,7 @@ curl -X POST localhost:8080/users -d '{"name":"A","age":200}'
 
 ### 1. Create a project
 
-`vela` is not published on `code.dlang.org` yet; depend on a local checkout:
+`andaime` is not published on `code.dlang.org` yet; depend on a local checkout:
 
 ```sh
 git clone https://github.com/leotada/dapi
@@ -90,7 +90,7 @@ Create `dub.sdl`:
 ```sdl
 name "my-api"
 targetType "executable"
-dependency "vela" path="../dapi"
+dependency "andaime" path="../dapi"
 ```
 
 ### 2. Write your first API and test
@@ -101,7 +101,7 @@ Create `source/app.d`:
 // check
 @safe:
 
-import vela;
+import andaime;
 
 string hello(string name = "world") => "hello, " ~ name;
 
@@ -207,7 +207,7 @@ WebSocket chat(string room, Header!"Authorization" auth)
 
 ### Non-blocking I/O: PostgreSQL, HTTP client, and CPU offload
 
-Query PostgreSQL asynchronously (`vela-pg`), call upstream HTTP/HTTPS services, or offload CPU-intensive tasks to a bounded thread pool without blocking the event loop:
+Query PostgreSQL asynchronously (`andaime-pg`), call upstream HTTP/HTTPS services, or offload CPU-intensive tasks to a bounded thread pool without blocking the event loop:
 
 ```d
 User u = pgPool(dsn).query("SELECT id, name, age FROM users WHERE id = $1", id).one!User;
@@ -215,9 +215,9 @@ auto quote = httpClient().get("https://api.example.com/quote").body;
 auto png = offload(() => renderChart(data));
 ```
 
-### Background jobs and cron (`vela:jobs`)
+### Background jobs and cron (`andaime:jobs`)
 
-Define background jobs as structs with `@Job("queue")` and a `perform` method. Configure retries, uniqueness locks, and `@Cron` schedules with attributes, and run the same binary as an API server, a job worker, or both (`--role=api|worker|all`), backed by in-memory or durable PostgreSQL queues (`vela-pg-jobs`):
+Define background jobs as structs with `@Job("queue")` and a `perform` method. Configure retries, uniqueness locks, and `@Cron` schedules with attributes, and run the same binary as an API server, a job worker, or both (`--role=api|worker|all`), backed by in-memory or durable PostgreSQL queues (`andaime-pg-jobs`):
 
 ```d
 @Job("mail") @Retries(5)
@@ -233,7 +233,7 @@ struct SendWelcomeEmail
 }
 ```
 
-### Cryptography (`vela:crypto`)
+### Cryptography (`andaime:crypto`)
 
 Hash passwords with bcrypt on the offload pool, compute SHA-256 / HMAC / HKDF, encrypt with AES-128-GCM, sign ES256 JWTs, or encrypt RFC 8291 Web Push notifications:
 
@@ -245,7 +245,7 @@ auto sig = es256Sign(vapidKey, jwtSigningInput);
 
 ### Production HTTPS and HTTP/2
 
-Serve HTTPS and HTTP/2 directly from `vela`, with automatic port 80 redirects, ACME HTTP-01 challenge handling, and zero-downtime certificate reloading:
+Serve HTTPS and HTTP/2 directly from `andaime`, with automatic port 80 redirects, ACME HTTP-01 challenge handling, and zero-downtime certificate reloading:
 
 ```d
 ServerConfig cfg;
@@ -264,14 +264,14 @@ The core framework has zero external DUB dependencies. Optional capabilities liv
 
 | Package | Import | Description |
 |---------|--------|-------------|
-| `vela` | `import vela;` | Root package: re-exports `vela:http`, `vela:web`, `vela:engine`, the server (`serve`), and static file serving. |
-| `vela:http` | `import vela.http;` | HTTP types, zero-copy HTTP/1.1 parser, HTTP/2 session & HPACK, WebSocket codec & `WsConn`, `Optional`, `PatchField`. |
-| `vela:web` | `import vela.web;` | `App`, router, compile-time handler introspection, JSON codec, OpenAPI, middleware, `vela.log`, `TestClient`. |
-| `vela:engine` | `import vela.engine;` | `epoll` loop, fibers, buffer pool, `offload` pool, HTTP/HTTPS and WebSocket clients, OpenSSL & zlib loaders. |
-| `vela:jobs` | `import vela.jobs;` | Background jobs, retries, uniqueness, cron schedules, `InMemoryJobStore`, and `TestJobStore`. |
-| `vela:crypto` | `import vela.crypto;` | Bcrypt, SHA-256, HMAC, HKDF, AES-128-GCM, P-256 (ES256 & ECDH), and RFC 8291 Web Push encryption. |
-| `vela-pg` (`drivers/pg`) | `import vela.db.pg;` | Asynchronous PostgreSQL driver & connection pool over `libpq` (`dlopen`). |
-| `vela-pg-jobs` (`drivers/pgjobs`) | `import vela.jobs.pg;` | Durable PostgreSQL `JobStore` using `FOR UPDATE SKIP LOCKED`, `LISTEN`/`NOTIFY`, lease reaping, and distributed cron deduplication. |
+| `andaime` | `import andaime;` | Root package: re-exports `andaime:http`, `andaime:web`, `andaime:engine`, the server (`serve`), and static file serving. |
+| `andaime:http` | `import andaime.http;` | HTTP types, zero-copy HTTP/1.1 parser, HTTP/2 session & HPACK, WebSocket codec & `WsConn`, `Optional`, `PatchField`. |
+| `andaime:web` | `import andaime.web;` | `App`, router, compile-time handler introspection, JSON codec, OpenAPI, middleware, `andaime.log`, `TestClient`. |
+| `andaime:engine` | `import andaime.engine;` | `epoll` loop, fibers, buffer pool, `offload` pool, HTTP/HTTPS and WebSocket clients, OpenSSL & zlib loaders. |
+| `andaime:jobs` | `import andaime.jobs;` | Background jobs, retries, uniqueness, cron schedules, `InMemoryJobStore`, and `TestJobStore`. |
+| `andaime:crypto` | `import andaime.crypto;` | Bcrypt, SHA-256, HMAC, HKDF, AES-128-GCM, P-256 (ES256 & ECDH), and RFC 8291 Web Push encryption. |
+| `andaime-pg` (`drivers/pg`) | `import andaime.db.pg;` | Asynchronous PostgreSQL driver & connection pool over `libpq` (`dlopen`). |
+| `andaime-pg-jobs` (`drivers/pgjobs`) | `import andaime.jobs.pg;` | Durable PostgreSQL `JobStore` using `FOR UPDATE SKIP LOCKED`, `LISTEN`/`NOTIFY`, lease reaping, and distributed cron deduplication. |
 
 ---
 
@@ -283,7 +283,7 @@ Start with the [Documentation index](docs/README.md) or jump directly to a guide
 |----------|--------|
 | **Fundamentals** | [Getting started](docs/getting-started.md) · [Routing](docs/routing.md) · [Reading the request](docs/requests.md) · [Validation and errors](docs/validation.md) · [Responses](docs/responses.md) |
 | **Building APIs** | [Middleware and error handling](docs/middleware.md) · [Logging](docs/logging.md) · [Streaming & SSE](docs/streaming.md) · [WebSockets](docs/websocket.md) · [Static files and OpenAPI](docs/static-files-and-openapi.md) |
-| **Async, Data & Auth** | [Concurrency](docs/concurrency.md) · [Database (`vela-pg`)](docs/database.md) · [Jobs and cron](docs/jobs-and-cron.md) · [HTTP client](docs/http-client.md) · [Cryptography (`vela:crypto`)](docs/crypto.md) |
+| **Async, Data & Auth** | [Concurrency](docs/concurrency.md) · [Database (`andaime-pg`)](docs/database.md) · [Jobs and cron](docs/jobs-and-cron.md) · [HTTP client](docs/http-client.md) · [Cryptography (`andaime:crypto`)](docs/crypto.md) |
 | **Quality & Safety** | [Testing (`TestClient`)](docs/testing.md) · [Memory safety (`@safe`)](docs/safety.md) |
 | **Production** | [Deploying](docs/deploy.md) · [HTTPS & TLS](docs/tls.md) · [HTTP/2](docs/http2.md) · [Configuration reference](docs/configuration.md) |
 
@@ -291,7 +291,7 @@ Start with the [Documentation index](docs/README.md) or jump directly to a guide
 
 ## Status and current limitations
 
-`vela` is in active pre-1.0 development, and APIs may still evolve before the first tagged release. Everything included is heavily tested in CI across DMD and LDC (see [CONTRIBUTING.md](CONTRIBUTING.md)):
+`andaime` is in active pre-1.0 development, and APIs may still evolve before the first tagged release. Everything included is heavily tested in CI across DMD and LDC (see [CONTRIBUTING.md](CONTRIBUTING.md)):
 - **HTTP/1.1 & HTTP/2:** RFC 9113 compliant (`h2spec` 146/146 over TLS), tested against Chromium, `curl`, `python-h2`, and Caddy (`h2c`), plus continuous `libFuzzer` + ASan coverage.
 - **WebSockets:** RFC 6455 with `permessage-deflate` over HTTP/1.1 and RFC 8441 extended `CONNECT` over HTTP/2, tested against Chromium, Python's `websockets`, and `python-h2`.
 - **PostgreSQL, Jobs, Crypto & Clients:** Tested end-to-end against real PostgreSQL instances, TLS upstreams, and official cryptographic test vectors.

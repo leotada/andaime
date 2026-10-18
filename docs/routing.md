@@ -24,7 +24,7 @@ app.get!("/hello/{name}", (string name) => greeting ~ ", " ~ name);
 Register everything inside the build function passed to `serve` ([concurrency.md](concurrency.md)). The app freezes when it
 starts serving (or on the first `TestClient` request); registering anything after that throws `RouteError`.
 
-> If your module defines its own function named `get`, `post`, `put`, `ws`... it hides vela's. Call `vela.get!("/x", fn)(app)` then.
+> If your module defines its own function named `get`, `post`, `put`, `ws`... it hides andaime's. Call `andaime.get!("/x", fn)(app)` then.
 
 ## Path parameters
 
@@ -64,7 +64,7 @@ A class whose methods carry a route attribute is registered at once with `mount`
 // check
 @safe:
 
-import vela;
+import andaime;
 
 struct Item { long id; string name; }
 

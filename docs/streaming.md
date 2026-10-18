@@ -7,7 +7,7 @@ Server-Sent Events (live updates, token-by-token output).
 // check
 @safe:
 
-import vela;
+import andaime;
 import core.time : seconds;
 
 string[] rowsOf(string table) => ["id,name\n", "1,Ana\n"];
@@ -77,6 +77,6 @@ A browser reads Server-Sent Events with `new EventSource("/clock")`. Named event
 
 ## Behind a proxy
 
-nginx honors the `X-Accel-Buffering: no` header vela sends on an `EventStream`. Other proxies have their own switch for response
+nginx honors the `X-Accel-Buffering: no` header andaime sends on an `EventStream`. Other proxies have their own switch for response
 buffering or flushing (Caddy's `reverse_proxy` has `flush_interval -1`). Send a heartbeat (`w.comment()`) more often than the
 proxy's idle timeout.

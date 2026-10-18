@@ -3,8 +3,8 @@ module text_types;
 
 @safe:
 
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 import std.json : parseJSON;
 
 struct Uuid

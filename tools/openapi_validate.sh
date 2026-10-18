@@ -13,5 +13,5 @@ fi
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 $DC -unittest -main $I -i -of"$tmp/gen" tests/web/openapi_names.d > /dev/null
-VELA_OPENAPI_OUT="$tmp/openapi.json" "$tmp/gen" > /dev/null
+ANDAIME_OPENAPI_OUT="$tmp/openapi.json" "$tmp/gen" > /dev/null
 python3 -m openapi_spec_validator "$tmp/openapi.json"

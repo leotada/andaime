@@ -4,12 +4,12 @@
 /// frames with at most one close frame, last.
 module ws_invariants;
 
-import vela.http;
+import andaime.http;
 import core.time : Duration;
 
 enum maxMessage = 4096;
 
-/// permessage-deflate without zlib (the fuzz build links only vela:http): "inflating" copies the payload, and a payload
+/// permessage-deflate without zlib (the fuzz build links only andaime:http): "inflating" copies the payload, and a payload
 /// that starts with 0xFF is corrupt. That is enough to run the RSV1 paths.
 final class FakeDeflate : WsDeflate
 {

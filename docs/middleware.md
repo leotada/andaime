@@ -64,7 +64,7 @@ handler that asks for a `Local!T` nobody set gets a 500 (a configuration error, 
 
 | | |
 |-|-|
-| `accessLog()` | one line per request through [`vela.log`](logging.md) at the `info` level: `GET /users/7 200 1.3ms ip=203.0.113.7 rid=...` by default, structured fields in the `kv` and `json` formats; register it after `requestId()` to include the id |
+| `accessLog()` | one line per request through [`andaime.log`](logging.md) at the `info` level: `GET /users/7 200 1.3ms ip=203.0.113.7 rid=...` by default, structured fields in the `kv` and `json` formats; register it after `requestId()` to include the id |
 | `requestId(header = "X-Request-Id")` | reuses a safe incoming id or generates one; echoes it in the response; handlers read it as `Local!RequestId` |
 | `cors(CorsConfig(...))` | CORS, preflights included (below) |
 

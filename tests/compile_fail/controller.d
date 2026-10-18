@@ -1,5 +1,5 @@
 // EXPECT: handler 'byId' in GET /items/{id}: parameter 'id' comes from the route ({id}) and must be a scalar
-import vela;
+import andaime;
 @safe:
 struct Key { long v; }
 final class Items { @Get("/items/{id}") string byId(Key id) => "x"; }

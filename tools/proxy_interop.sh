@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# vela behind a real reverse proxy that speaks h2c to its upstreams (Caddy, `reverse_proxy h2c://...`, the setup that
-# docs/http2.md recommends). curl talks HTTP/1.1 to Caddy; Caddy talks cleartext HTTP/2 to vela. Checks that the requests
+# andaime behind a real reverse proxy that speaks h2c to its upstreams (Caddy, `reverse_proxy h2c://...`, the setup that
+# docs/http2.md recommends). curl talks HTTP/1.1 to Caddy; Caddy talks cleartext HTTP/2 to andaime. Checks that the requests
 # reach the handlers as HTTP/2, an upload and a 4 MiB download intact, concurrent slow requests in parallel, Server-Sent
 # Events arriving one at a time and a 20 MiB stream. Skips (exit 77) without Caddy or curl.
 # Usage: DC=dmd tools/proxy_interop.sh   (CADDY=/path/to/caddy when it is not on PATH)
@@ -67,7 +67,7 @@ for p in "${naps[@]}"; do wait "$p" || true; done
 ms=$(( ($(date +%s%N) - s) / 1000000 ))
 naps=$(cat "$tmp"/nap.* 2> /dev/null | grep -o slept | wc -l)
 if [[ "$naps" -ne 40 ]] || (( ms > 2000 )); then echo "FAILED: 40 concurrent requests through Caddy: $naps answered in $ms ms"; f=1; fi
-(( f )) && fail=1 || echo "ok  Caddy -> vela over h2c: handler sees HTTP/2, upload, 4 MiB download, 404, 40 concurrent requests of 300 ms in $ms ms"
+(( f )) && fail=1 || echo "ok  Caddy -> andaime over h2c: handler sees HTTP/2, upload, 4 MiB download, 404, 40 concurrent requests of 300 ms in $ms ms"
 
 # Server-Sent Events: each event must reach the client when it is sent, not all at the end
 start=$(date +%s%N)
@@ -85,5 +85,5 @@ bytes=$(curl -s "$url/mb/20" | wc -c)
 if [[ "$bytes" -ne $(( 20 * 1024 * 1024 )) ]]; then echo "FAILED: 20 MiB stream through Caddy: $bytes bytes"; fail=1
 else echo "ok  20 MiB stream through Caddy intact"; fi
 
-if (( fail )); then echo "--- caddy log"; tail -20 "$tmp/caddy.log"; echo "--- vela logs"; tail -10 "$tmp/app.log" "$tmp/stream.log"; fi
+if (( fail )); then echo "--- caddy log"; tail -20 "$tmp/caddy.log"; echo "--- andaime logs"; tail -10 "$tmp/app.log" "$tmp/stream.log"; fi
 exit $fail

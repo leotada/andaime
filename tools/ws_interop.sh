@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# WebSockets against python's `websockets` library: vela's server with and without permessage-deflate (echo of text,
-# UTF-8, 3 MiB binary, ordering, ping, close codes), and vela's client against a python server. Then WebSockets over
+# WebSockets against python's `websockets` library: andaime's server with and without permessage-deflate (echo of text,
+# UTF-8, 3 MiB binary, ordering, ping, close codes), and andaime's client against a python server. Then WebSockets over
 # HTTP/2 (RFC 8441), h2c and TLS, with python-h2 carrying the `websockets` library's frames. Skips (exit 77) without
 # python3 or its `websockets` module (>= 13); the HTTP/2 part is listed as skipped without the `h2` module or openssl.
 # Usage: DC=dmd tools/ws_interop.sh
@@ -28,17 +28,17 @@ port=$(( 19600 + RANDOM % 200 ))
 "$tmp/srv" "$port" > "$tmp/srv.out" 2> "$tmp/srv.err" &
 pids+=($!)
 wait_port "$port"
-echo "-- vela server, python client"
+echo "-- andaime server, python client"
 python3 tests/net/ws_interop.py client "$port" || fail=1
 
-echo "-- python server, vela client"
+echo "-- python server, andaime client"
 pport=$(( port + 1 ))
 python3 tests/net/ws_interop.py server "$pport" > "$tmp/py.out" 2>&1 &
 pids+=($!)
 for _ in $(seq 1 50); do grep -q ready "$tmp/py.out" 2> /dev/null && break; sleep 0.1; done
 "$tmp/cli" "$pport" || fail=1
 
-echo "-- vela server over HTTP/2 (RFC 8441), python-h2 client"
+echo "-- andaime server over HTTP/2 (RFC 8441), python-h2 client"
 if ! python3 -c 'import h2' 2> /dev/null; then
     skips+=("python module h2 (pip install h2)")
 else

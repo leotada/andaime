@@ -30,9 +30,9 @@
 | `errorBodies` | none | bodies of the HTTP/1.1 answers the engine gives before any handler runs (400, 408, 413, 414, 431, 501, 503, 505), as `ErrorBody(status, body, contentType)` entries; `cfg.errorBodies = jsonErrorBodies();` sends `{"detail":"..."}` like the app's 404 and 405 |
 
 Other settings: `StaticConfig` (`serveStatic`), `OpenApiInfo` (`serveOpenApi`), `CorsConfig` (`cors`), `CookieOptions`
-(`setCookie`), `PgConfig` (`vela-pg`), `HttpClientConfig`, `App.logStackTraces`, `App.trailingSlash` ([routing.md](routing.md)),
-`configureLog(level, format)` and the `VELA_LOG_LEVEL` / `VELA_LOG_FORMAT` environment variables ([logging.md](logging.md)). Process-level
-variables of the tests and tools (`VELA_STRICT`, `VELA_CI`, `VELA_PG`, `VELA_TLS_RSS_MB`...) are described in `tools/check.sh`.
+(`setCookie`), `PgConfig` (`andaime-pg`), `HttpClientConfig`, `App.logStackTraces`, `App.trailingSlash` ([routing.md](routing.md)),
+`configureLog(level, format)` and the `ANDAIME_LOG_LEVEL` / `ANDAIME_LOG_FORMAT` environment variables ([logging.md](logging.md)). Process-level
+variables of the tests and tools (`ANDAIME_STRICT`, `ANDAIME_CI`, `ANDAIME_PG`, `ANDAIME_TLS_RSS_MB`...) are described in `tools/check.sh`.
 
 `LoopStats` (per worker, for metrics and tests): `inFlight`, `peakInFlight`, `connections`, `rejected`, `cancelled`, `timedOut`,
 `stalls`, `handlerErrors`, `fibersPoisoned`, `http2Connections`, `http2Streams`, `tlsHandshakes`, `tlsFailures`, `webSockets`,

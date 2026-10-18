@@ -1,11 +1,11 @@
-/// vela ergonomics example: in-memory CRUD of users.
-/// The signature of each function IS the HTTP contract: vela reads the types and
+/// andaime ergonomics example: in-memory CRUD of users.
+/// The signature of each function IS the HTTP contract: andaime reads the types and
 /// parameter names at compile time and generates the extraction and validation.
 module app;
 
 @safe:
 
-import vela;
+import andaime;
 import core.time : MonoTime;
 import std.stdio : writefln;
 

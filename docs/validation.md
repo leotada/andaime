@@ -72,7 +72,7 @@ handler runs instead of the 422 (the route's handler still does not run), gets t
 
 ```d
 // check
-import vela;
+import andaime;
 
 struct Message { string message; }
 
@@ -169,7 +169,7 @@ look, use `app.onError` ([middleware.md](middleware.md#error-handling)), and `ap
 An invalid handler fails to compile with one line that says what to fix:
 
 ```
-app.d(12): vela: handler 'list' in GET /users: parameter 'body_' is JsonBody, but GET has no body; use POST, PUT or PATCH
+app.d(12): andaime: handler 'list' in GET /users: parameter 'body_' is JsonBody, but GET has no body; use POST, PUT or PATCH
 ```
 
 Among the rules: every `{param}` needs a parameter of that name, one body per handler, no body on GET, supported return

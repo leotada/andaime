@@ -96,7 +96,7 @@ extern (C) void* memmem(const(void)*, size_t, const(void)*, size_t) nothrow @nog
 
 void worker(ushort port, string path, size_t nconns, size_t depth, Result* res)
 {
-    auto req = "GET " ~ path ~ " HTTP/1.1\r\nHost: localhost\r\nUser-Agent: vela-bench\r\nAccept: */*\r\n\r\n";
+    auto req = "GET " ~ path ~ " HTTP/1.1\r\nHost: localhost\r\nUser-Agent: andaime-bench\r\nAccept: */*\r\n\r\n";
     char[] batch;
     foreach (_; 0 .. depth)
         batch ~= req;

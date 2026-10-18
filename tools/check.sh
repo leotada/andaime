@@ -1,19 +1,19 @@
 #!/usr/bin/env bash
-# Full vela verification. Usage: tools/check.sh   (DC=ldmd2 to use LDC)
+# Full andaime verification. Usage: tools/check.sh   (DC=ldmd2 to use LDC)
 #
 # Every step is a "section". A section that cannot run (missing Postgres, h2spec, Playwright...) exits 77 and
 # prints "skip: <reason>" on stderr; the summary at the end lists what was skipped.
-#   VELA_STRICT=1  a skipped section fails the run (CI uses this, so a green run means everything ran)
-#   VELA_ALLOW_SKIP="browser h2spec"  with VELA_STRICT=1, a skipped section whose name or reason contains one of
+#   ANDAIME_STRICT=1  a skipped section fails the run (CI uses this, so a green run means everything ran)
+#   ANDAIME_ALLOW_SKIP="browser h2spec"  with ANDAIME_STRICT=1, a skipped section whose name or reason contains one of
 #                  these words is still accepted (CI runs the browser test in its own job)
-#   VELA_ONLY="browser"  run only the sections whose name contains this text
-#   VELA_CI=1      the compile-time budget is printed but does not fail the run (shared runners are noisy)
+#   ANDAIME_ONLY="browser"  run only the sections whose name contains this text
+#   ANDAIME_CI=1      the compile-time budget is printed but does not fail the run (shared runners are noisy)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 DC="${DC:-dmd}"
 I="-Isource -Ihttp/source -Iweb/source -Iengine/source -Idrivers/pg/source"
-STRICT="${VELA_STRICT:-0}"
-CI="${VELA_CI:-0}"
+STRICT="${ANDAIME_STRICT:-0}"
+CI="${ANDAIME_CI:-0}"
 export DC
 work=$(mktemp -d)
 errf="$work/stderr"
@@ -35,7 +35,7 @@ skipped=()
 # Runs in a subshell with `set -e`, so the first failing command ends the section.
 section() {
     local name=$1; shift
-    if [[ -n "${VELA_ONLY:-}" && "$name" != *"$VELA_ONLY"* ]]; then return 0; fi
+    if [[ -n "${ANDAIME_ONLY:-}" && "$name" != *"$ANDAIME_ONLY"* ]]; then return 0; fi
     echo "== $name"
     local rc=0
     set +e
@@ -69,9 +69,9 @@ have_libssl3() {
 # ---------------------------------------------------------------- unit and web-layer tests
 
 s_unittests() {
-    $DC -unittest -main $I -i -run engine/source/vela/engine/package.d
-    $DC -unittest -main $I -i -run web/source/vela/web/package.d
-    $DC -unittest -main $I -i -run drivers/pg/source/vela/db/package.d
+    $DC -unittest -main $I -i -run engine/source/andaime/engine/package.d
+    $DC -unittest -main $I -i -run web/source/andaime/web/package.d
+    $DC -unittest -main $I -i -run drivers/pg/source/andaime/db/package.d
 }
 
 # typecheck_tree <extra flags...>: type-checks (-o-) the library, its unittests, the tests and the examples that live under
@@ -128,7 +128,7 @@ s_web() {
     for t in tests/web/*.d; do
         if ! $DC -unittest -main $I -Itests/web -i -run "$t" > /dev/null 2>&1; then
             echo "FAILED: $t"
-            $DC -unittest -main $I -Itests/web -i -run "$t" 2>&1 | grep -v '^vela: error in' | tail -15
+            $DC -unittest -main $I -Itests/web -i -run "$t" 2>&1 | grep -v '^andaime: error in' | tail -15
             rc=1
         fi
     done
@@ -148,9 +148,9 @@ s_jobs() {
             rc=1
         fi
     done
-    if ! $DC -unittest -main $I $ji -i -run jobs/source/vela/jobs/package.d > /dev/null 2>&1; then
-        echo "FAILED: jobs/source/vela/jobs/package.d"
-        $DC -unittest -main $I $ji -i -run jobs/source/vela/jobs/package.d 2>&1 | tail -40
+    if ! $DC -unittest -main $I $ji -i -run jobs/source/andaime/jobs/package.d > /dev/null 2>&1; then
+        echo "FAILED: jobs/source/andaime/jobs/package.d"
+        $DC -unittest -main $I $ji -i -run jobs/source/andaime/jobs/package.d 2>&1 | tail -40
         rc=1
     fi
     echo "ok  $(ls tests/jobs/*.d | wc -l) files in tests/jobs"
@@ -203,7 +203,7 @@ s_net() {
     $DC $I -i -run tests/net/stream_net.d
     $DC $I -i -run tests/net/spawn_net.d
     $DC $I -i -run tests/net/log_net.d
-    # jobs_worker_net.d imports vela.jobs; -Ijobs/source stays on this command only
+    # jobs_worker_net.d imports andaime.jobs; -Ijobs/source stays on this command only
     $DC $I -Ijobs/source -i -run tests/net/jobs_worker_net.d
 }
 
@@ -255,7 +255,7 @@ s_browser() {
 s_postgres() {
     tools/with_postgres.sh "$(build_test tests/db/pg_net.d)"
     tools/with_postgres.sh "$(build_test tests/db/pg_features.d)"
-    # pg_jobs.d imports vela.jobs and vela.jobs.pg. Those -I flags stay on this compile only.
+    # pg_jobs.d imports andaime.jobs and andaime.jobs.pg. Those -I flags stay on this compile only.
     tools/with_postgres.sh "$(I="$I -Ijobs/source -Idrivers/pgjobs/source" build_test tests/db/pg_jobs.d)"
 }
 
@@ -263,10 +263,10 @@ s_client() {
     tools/with_upstream.sh "$(build_test tests/net/client_net.d)"
 }
 
-# vela:crypto: built first, run afterwards, so a missing library is a skip (77), not a failure
+# andaime:crypto: built first, run afterwards, so a missing library is a skip (77), not a failure
 s_crypto() {
     local ci="$I -Icrypto/source" t rc=0
-    $DC -unittest -main $ci -i -run crypto/source/vela/crypto/package.d
+    $DC -unittest -main $ci -i -run crypto/source/andaime/crypto/package.d
     for t in tests/crypto/*.d; do
         local bin; bin=$(I="$ci" build_test "$t")
         "$bin" || { rc=$?; (( rc == 77 )) || return $rc; }
@@ -339,10 +339,10 @@ s_memory() {
 # HTTPS: OpenSSL keeps tens of KiB per connection on top of the request itself, so it has its own ceiling.
 # Measured peaks for 1,000 connections: ~44 MB with OpenSSL 3.0; with OpenSSL 3.5, 55-65 MB before the network buffers
 # moved to the GC heap and 56-71 MB after (HTTP/1.1 over TLS is the high one: the same 1,000 buffers take ~3 MB more as
-# GC regions than in the malloc heap). So the default is 80 MB; VELA_TLS_RSS_MB overrides it. Handshakes run one after another in the
+# GC regions than in the malloc heap). So the default is 80 MB; ANDAIME_TLS_RSS_MB overrides it. Handshakes run one after another in the
 # load generator, so the handler waits longer for all 1,000 requests to be in flight at once.
 s_memory_tls() {
-    local limit_mb="${VELA_TLS_RSS_MB:-80}"
+    local limit_mb="${ANDAIME_TLS_RSS_MB:-80}"
     if ! command -v openssl > /dev/null || ! have_libssl3; then
         echo "skip: openssl or libssl.so.3 missing" >&2; return 77
     fi
@@ -414,8 +414,8 @@ s_compile_fail() {
     return $rc
 }
 
-# DUB packaging: sub-package dependencies and layering (vela:web must not import vela:engine, so building it alone
-# proves the direction), the vela-pg and vela-pg-jobs path dependencies and both examples.
+# DUB packaging: sub-package dependencies and layering (andaime:web must not import andaime:engine, so building it alone
+# proves the direction), the andaime-pg and andaime-pg-jobs path dependencies and both examples.
 s_dub() {
     if ! command -v dub > /dev/null; then echo "skip: dub not installed" >&2; return 77; fi
     local rc=0
@@ -430,13 +430,13 @@ s_dub() {
     dub build $dubc -q --root=drivers/pgjobs || rc=1
     (cd examples/hello && dub build $dubc -q) || rc=1
     (cd examples/api && dub build $dubc -q) || rc=1
-    # the core must never import a driver; jobs depends on web and engine, not on vela-pg
-    if grep -rn "import vela\.db" http web engine source jobs crypto --include=*.d; then
-        echo "FAILED: the core, vela:jobs or vela:crypto imports a driver (vela.db)"; rc=1
+    # the core must never import a driver; jobs depends on web and engine, not on andaime-pg
+    if grep -rn "import andaime\.db" http web engine source jobs crypto --include=*.d; then
+        echo "FAILED: the core, andaime:jobs or andaime:crypto imports a driver (andaime.db)"; rc=1
     fi
-    # vela:crypto is opt-in: nothing in the core may need it
-    if grep -rn "import vela\.crypto" http web engine source jobs --include=*.d; then
-        echo "FAILED: the core or vela:jobs imports vela:crypto"; rc=1
+    # andaime:crypto is opt-in: nothing in the core may need it
+    if grep -rn "import andaime\.crypto" http web engine source jobs --include=*.d; then
+        echo "FAILED: the core or andaime:jobs imports andaime:crypto"; rc=1
     fi
     return $rc
 }
@@ -465,7 +465,7 @@ s_budget() {
           echo "examples/hello edit-and-rebuild: $(( (e - s) / 1000000 )) ms (touch app.d + dub build, debug; reported, not enforced)" )
     fi
     if (( best >= 440 )); then
-        if [[ "$CI" == 1 ]]; then echo "above the budget (VELA_CI=1: not failing)"
+        if [[ "$CI" == 1 ]]; then echo "above the budget (ANDAIME_CI=1: not failing)"
         else echo "ABOVE BUDGET"; return 1; fi
     elif (( best >= 400 )); then
         echo "warning: above the 400 ms target but within the noise of this machine"
@@ -518,7 +518,7 @@ section "behind a reverse proxy over h2c (Caddy: requests, upload, concurrency, 
 section "real browser (Chromium via Playwright: HTTPS, h2, redirect port, HTTP/1.1 fallback)" s_browser
 section "PostgreSQL (async libpq, job queue)" s_postgres
 section "HTTP/HTTPS client and thread pool" s_client
-section "vela:crypto (RFC 4231, RFC 5869, GCM, ES256 vs openssl, ECDH, RFC 8291 Appendix A, bcrypt vs python)" s_crypto
+section "andaime:crypto (RFC 4231, RFC 5869, GCM, ES256 vs openssl, ECDH, RFC 8291 Appendix A, bcrypt vs python)" s_crypto
 section "real API example end to end (Postgres + external API + auth + CORS + static files + OpenAPI)" s_api_e2e
 section "memory: 1,000 in-flight requests over HTTP/1.1 and HTTP/2, 1,000 open WebSockets on each (peak RSS < 30 MB)" s_memory
 section "memory: 1,000 in-flight requests over HTTPS (peak RSS < 80 MB, depends on the OpenSSL version)" s_memory_tls
@@ -538,11 +538,11 @@ if [[ "$STRICT" == 1 ]]; then
     unexpected=()
     for n in "${skipped[@]}"; do
         allowed=0
-        for w in ${VELA_ALLOW_SKIP:-}; do [[ "$n" == *"$w"* ]] && allowed=1; done
+        for w in ${ANDAIME_ALLOW_SKIP:-}; do [[ "$n" == *"$w"* ]] && allowed=1; done
         (( allowed )) || unexpected+=("$n")
     done
     if (( ${#unexpected[@]} > 0 )); then
-        echo "VELA_STRICT=1: ${#unexpected[@]} skipped section(s) count as failures"
+        echo "ANDAIME_STRICT=1: ${#unexpected[@]} skipped section(s) count as failures"
         exit 1
     fi
 fi

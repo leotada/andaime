@@ -1,18 +1,18 @@
-# Cryptography: `vela:crypto`
+# Cryptography: `andaime:crypto`
 
-`vela:crypto` has the primitives web applications usually need: password hashes, signed tokens, Web Push. It is a
-separate subpackage. An application that uses it adds `dependency "vela:crypto" version="*"` and `import vela.crypto;`;
-the rest of vela does not depend on it.
+`andaime:crypto` has the primitives web applications usually need: password hashes, signed tokens, Web Push. It is a
+separate subpackage. An application that uses it adds `dependency "andaime:crypto" version="*"` and `import andaime.crypto;`;
+the rest of andaime does not depend on it.
 
 It calls OpenSSL 3's libcrypto and libxcrypt (for bcrypt), both loaded at run time like the TLS code: the build never
-needs them, and a function whose library is missing throws `CryptoError` ("vela.crypto: OpenSSL 3 (libcrypto.so.3) not
+needs them, and a function whose library is missing throws `CryptoError` ("andaime.crypto: OpenSSL 3 (libcrypto.so.3) not
 found..."). Debian and Ubuntu: `libssl3` and `libcrypt1`; Fedora and openSUSE: `openssl-libs`/`libopenssl3` and
 `libxcrypt`. Everything is `@safe`.
 
 ```d
 // check
-import vela;
-import vela.crypto;
+import andaime;
+import andaime.crypto;
 import std.datetime.systime : Clock;
 import std.conv : to;
 
@@ -77,7 +77,7 @@ void main()
 |----------|--------------|
 | `randomBytes(n)` | `n` bytes from the kernel's CSPRNG (getrandom): tokens, salts, keys. Needs no library. |
 | `constantTimeEquals(a, b)` | Compares bytes or text in time that does not depend on where they differ (MACs, tokens). Needs no library. |
-| `base64UrlEncode(bytes)`, `base64UrlDecode(text, out bytes)` | base64url without padding (from `vela:http`); decoding is strict and returns false on bad input. |
+| `base64UrlEncode(bytes)`, `base64UrlDecode(text, out bytes)` | base64url without padding (from `andaime:http`); decoding is strict and returns false on bad input. |
 | `sha256(data)` | SHA-256 (32 bytes). |
 | `hmacSha256(key, data)` | HMAC-SHA256 (32 bytes). |
 | `hkdfSha256(salt, ikm, info, length)`, `hkdfExtract`, `hkdfExpand` | HKDF (RFC 5869). |

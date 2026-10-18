@@ -1,11 +1,11 @@
 # Reading the request
 
-A handler declares what it needs as parameters; vela extracts, converts and validates each one before calling it. If anything
+A handler declares what it needs as parameters; andaime extracts, converts and validates each one before calling it. If anything
 fails, the client gets a **422** listing every problem and the handler does not run ([validation.md](validation.md)).
 
 ## Where each parameter comes from
 
-| In the signature | vela reads |
+| In the signature | andaime reads |
 |------------------|------------|
 | `long id` with `{id}` in the route | the path parameter |
 | `int limit = 20` (not in the route) | the query string `?limit=`; the default makes it optional |
@@ -90,7 +90,7 @@ An API in `snake_case` does not need a `@jsonKey` on every field. Put a policy o
 
 ```d
 // check
-import vela;
+import andaime;
 
 @naming(Naming.snakeCase)
 struct TaskIn
@@ -137,7 +137,7 @@ file fields accepts either urlencoded or multipart.
 // check
 @safe:
 
-import vela;
+import andaime;
 
 struct Profile
 {
@@ -208,7 +208,7 @@ apart (both are empty); `PatchField!T` can:
 
 ```d
 // check
-import vela;
+import andaime;
 
 struct Profile { string name; string nickname; int age; }
 
@@ -261,7 +261,7 @@ members keep their order. Use it as the body (`JsonBody!JsonValue`), as a DTO fi
 
 ```d
 // check
-import vela;
+import andaime;
 
 immutable string[] known = ["dark_mode", "language"];
 
@@ -321,7 +321,7 @@ plain `T`, and `alias this` reaches the value.
 string whoAmI(ClientIp ip) => ip.toString;
 ```
 
-Behind a load balancer or reverse proxy the TCP peer is the proxy. Tell vela which proxies to believe and it reads the real
+Behind a load balancer or reverse proxy the TCP peer is the proxy. Tell andaime which proxies to believe and it reads the real
 client from `X-Forwarded-For`, walking from the right and stopping at the first address that is not a trusted proxy:
 
 ```d

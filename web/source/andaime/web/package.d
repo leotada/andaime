@@ -1,0 +1,27 @@
+/// `andaime:web` — high-level API. Knows nothing about sockets: operates on
+/// `Request` (slices) and writes into a response buffer.
+module andaime.web;
+
+@safe:
+
+public import andaime.web.application;
+public import andaime.web.context;
+public import andaime.web.params;
+public import andaime.web.dto : jsonKey, optional, jsonIgnore, minLength, maxLength, inRange, schemaName,
+    ValidationErrors, FieldError, ErrorSource, LocPart;
+public import andaime.http.naming : Naming, naming, wireName;
+public import andaime.web.handler_traits : writeDefaultValidationErrors;
+public import andaime.web.jsonvalue : JsonValue, JsonMember, JsonType, JsonError, JsonLimits, parseJson, fromJson, toJson,
+    Json;
+public import andaime.web.json : writeJson;
+public import andaime.log;
+public import andaime.web.testing;
+public import andaime.web.cors;
+public import andaime.web.openapi : OpenApiInfo, summary;
+public import andaime.web.middleware;
+public import andaime.web.stream : Stream, StreamWriter, EventStream, EventWriter, produces, sendResponse;
+public import andaime.web.websocket : WebSocket;
+public import andaime.http.websocket : WsConn, WsMessage, WsKind, WsCloseCode, WsClosed;
+public import andaime.web.router : RouteError;
+public import andaime.web.models : Query, Form, UploadedFile;
+public import andaime.web.cookies : cookie, setCookie, deleteCookie, CookieOptions, SameSite;

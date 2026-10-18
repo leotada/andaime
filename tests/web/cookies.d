@@ -3,8 +3,8 @@ module cookies_test;
 
 @safe:
 
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 import std.json : parseJSON;
 import std.algorithm : canFind;
 

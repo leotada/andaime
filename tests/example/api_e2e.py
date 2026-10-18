@@ -84,12 +84,12 @@ check("invalid currency: 422", s == 422, b)
 
 # static files
 s, b, h = call("GET", "/assets/index.html", auth=False)
-check("static file", s == 200 and "<h1>vela api</h1>" in b and h.get("ETag"), b)
+check("static file", s == 200 and "<h1>andaime api</h1>" in b and h.get("ETag"), b)
 s, b, h2 = call("GET", "/assets/index.html", auth=False, headers={"If-None-Match": h["ETag"]})
 check("static: 304 with ETag", s == 304)
 for bad in ["/assets/../dub.sdl", "/assets/%2e%2e/dub.sdl", "/assets/..%2fdub.sdl"]:
     s, b, h = call("GET", bad, auth=False)
-    check("traversal blocked " + bad, s == 404 and "vela-pg" not in b, b[:60])
+    check("traversal blocked " + bad, s == 404 and "andaime-pg" not in b, b[:60])
 
 # OpenAPI
 s, b, h = call("GET", "/openapi.json", auth=False)

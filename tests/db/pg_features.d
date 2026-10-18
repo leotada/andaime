@@ -1,11 +1,11 @@
-/// vela-pg features against a real server (VELA_PG = conninfo): array parameters. Without VELA_PG the test declares itself
+/// andaime-pg features against a real server (ANDAIME_PG = conninfo): array parameters. Without ANDAIME_PG the test declares itself
 /// skipped (prints `skip: <reason>` and exits 77).
 module pg_features;
 
 version (linux):
 
-import vela;
-import vela.db;
+import andaime;
+import andaime.db;
 
 import core.stdc.stdio : printf;
 import core.stdc.stdlib : getenv;
@@ -107,7 +107,7 @@ void testNestedRows()
     try
         c.query("select p.id, p.title, null::int as author_id, null::text as author_email from t_posts p").rowsAs!Post;
     catch (PgError e)
-        threw = e.msg == "vela.db: the query did not return the column 'author_nickname' expected by UserSummary";
+        threw = e.msg == "andaime.db: the query did not return the column 'author_nickname' expected by UserSummary";
     assert(threw);
 
     // a required (non-Optional) nested struct, and prefixes that compose (post_owner_...)
@@ -182,13 +182,13 @@ void testNamesAndEnums()
     try
         c.query("select 'onIssue'").get!Photo(0, 0);
     catch (PgError e)
-        threw = e.msg == "vela.db: column '?column?' has the value 'onIssue', which is not Photo";
+        threw = e.msg == "andaime.db: column '?column?' has the value 'onIssue', which is not Photo";
     assert(threw);
     threw = false;
     try
         c.query("select 1 as id, 'x' as mail").rowsAs!Person;
     catch (PgError e)
-        threw = e.msg == "vela.db: the query did not return the column 'first_name' expected by Person";
+        threw = e.msg == "andaime.db: the query did not return the column 'first_name' expected by Person";
     assert(threw);
 
     c.exec("drop table t_task");
@@ -232,13 +232,13 @@ void testReadArraysAndJson()
     try
         c.query("select '{1,NULL}'::int[]").get!(int[])(0, 0);
     catch (PgError e)
-        threw = e.msg == "vela.db: column 'int4' has a NULL element; use Optional!(int)[] in the field";
+        threw = e.msg == "andaime.db: column 'int4' has a NULL element; use Optional!(int)[] in the field";
     assert(threw);
     threw = false;
     try
         c.query("select '{{1,2},{3,4}}'::int[]").get!(int[])(0, 0);
     catch (PgError e)
-        threw = e.msg == "vela.db: column 'int4' is a multidimensional array; read it as string";
+        threw = e.msg == "andaime.db: column 'int4' is a multidimensional array; read it as string";
     assert(threw);
     threw = false;
     try
@@ -310,7 +310,7 @@ void testQueryHook()
         threw = e.sqlState == "22012";
     assert(threw && seen.length == 1 && seen[0].rows == -1 && seen[0].sqlState == "22012" && seen[0].error.length);
 
-    // transactions: vela's own statements are marked internal
+    // transactions: andaime's own statements are marked internal
     seen = null;
     pool.transaction((PgConn x) { x.exec("select 1"); });
     string[] kinds;
@@ -340,7 +340,7 @@ void testSavepoints()
     try
         c.savepoint((PgConn x) { });
     catch (PgError e)
-        threw = e.msg == "vela.db: savepoint needs an open transaction (use transaction)";
+        threw = e.msg == "andaime.db: savepoint needs an open transaction (use transaction)";
     assert(threw);
 
     // inside a transaction: a failed savepoint rolls back only its own work, the rest commits
@@ -423,13 +423,13 @@ void testRollbackHarness()
 
 void main()
 {
-    auto env = getenv("VELA_PG");
+    auto env = getenv("ANDAIME_PG");
     if (env is null)
     {
         import core.stdc.stdio : fprintf, stderr;
         import core.stdc.stdlib : exit;
 
-        fprintf(stderr, "skip: set VELA_PG to the conninfo of a test Postgres\n");
+        fprintf(stderr, "skip: set ANDAIME_PG to the conninfo of a test Postgres\n");
         exit(77);
     }
     conninfo = cast(string) env[0 .. strlen(env)].idup;

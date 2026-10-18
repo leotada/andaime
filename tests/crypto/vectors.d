@@ -1,10 +1,10 @@
-/// Known-answer tests for `vela:crypto`: SHA-256 (FIPS 180-2 examples), HMAC-SHA256 (RFC 4231), HKDF (RFC 5869 cases
+/// Known-answer tests for `andaime:crypto`: SHA-256 (FIPS 180-2 examples), HMAC-SHA256 (RFC 4231), HKDF (RFC 5869 cases
 /// 1-3), AES-128-GCM (the GCM specification's test cases 2-4, used by NIST's validation), P-256 keys, ES256 signatures
 /// checked against the `openssl` command in both directions (skipped when it is not installed), and ECDH.
 /// Exits 77 (skip) when OpenSSL 3 cannot be loaded.
 module crypto_vectors;
 
-import vela.crypto;
+import andaime.crypto;
 import core.stdc.stdio : fprintf, printf, stderr;
 import std.conv : hexString;
 import std.string : representation;
@@ -132,7 +132,7 @@ void testGcm()
     try
         aes128GcmSeal(key[0 .. 15], nonce, pt);
     catch (CryptoError e)
-        threw = e.msg == "vela.crypto: AES-128-GCM needs a 16-byte key";
+        threw = e.msg == "andaime.crypto: AES-128-GCM needs a 16-byte key";
     assert(threw);
 }
 
@@ -201,7 +201,7 @@ void opensslCrossCheck(EcKeyP256 k, string input, ubyte[64] sig)
         fprintf(stderr, "note: openssl command not found; ES256 cross-check skipped\n");
         return;
     }
-    auto dir = buildPath(tempDir, "vela_es256_" ~ (cast(size_t) &k).to!string);
+    auto dir = buildPath(tempDir, "andaime_es256_" ~ (cast(size_t) &k).to!string);
     mkdirRecurse(dir);
     scope (exit)
         rmdirRecurse(dir);

@@ -1,5 +1,5 @@
 // EXPECT: query lists hold scalars (int, string, enum...)
-import vela;
+import andaime;
 @safe:
 struct Filter { int a; }
 string f(Filter[] filters) => "x";

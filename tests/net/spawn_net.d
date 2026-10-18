@@ -6,7 +6,7 @@ module spawn_net;
 
 version (linux):
 
-import vela;
+import andaime;
 
 import core.atomic : atomicLoad, atomicOp, atomicStore;
 import core.thread : Thread;

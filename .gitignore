@@ -18,7 +18,7 @@ __dummy.html
 # Binaries of the examples and tests
 examples/*/hello
 examples/*/api
-/vela-test-*
+/andaime-test-*
 *-test-library
 
 # Fuzzing

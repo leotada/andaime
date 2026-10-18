@@ -5,8 +5,8 @@ module stream_test;
 
 @safe:
 
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 import std.algorithm : canFind;
 import std.json : parseJSON;
 

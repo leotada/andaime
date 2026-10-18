@@ -1,4 +1,4 @@
-/// A "real" API in vela: users in Postgres (RDS), a quote coming from an
+/// A "real" API in andaime: users in Postgres (RDS), a quote coming from an
 /// external API, Bearer authentication, CORS, static files and OpenAPI.
 ///
 /// Environment variables:
@@ -11,8 +11,8 @@ module app;
 
 @safe:
 
-import vela;
-import vela.db;
+import andaime;
+import andaime.db;
 
 import core.stdc.stdlib : getenv;
 import core.time : seconds;
@@ -208,7 +208,7 @@ App buildApp()
     api.get!("/whoami", whoami);
 
     app.serveStatic("/assets", "public");
-    app.serveOpenApi(OpenApiInfo("vela api", "1.0.0", "Example API with Postgres and an external API"));
+    app.serveOpenApi(OpenApiInfo("andaime api", "1.0.0", "Example API with Postgres and an external API"));
     return app;
 }
 

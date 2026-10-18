@@ -4,10 +4,10 @@
 /// Usage: tls_loadgen <port> <connections> <ca.pem> [h2]
 /// Exits with code 1 on any failure.
 ///
-/// In the `vela.engine` package only to reach the raw OpenSSL table (package-protected).
-module vela.engine.tls_loadgen;
+/// In the `andaime.engine` package only to reach the raw OpenSSL table (package-protected).
+module andaime.engine.tls_loadgen;
 
-import vela.engine.tls;
+import andaime.engine.tls;
 import core.time;
 import core.stdc.errno : errno, EINTR;
 import core.stdc.stdio : printf;

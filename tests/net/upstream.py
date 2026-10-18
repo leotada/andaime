@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""HTTP/HTTPS helper server for vela's HTTP client tests.
+"""HTTP/HTTPS helper server for andaime's HTTP client tests.
 
 Uso: upstream.py <cert.pem> <key.pem>
 Prints "PLAIN <port> TLS <port>" on standard output when ready.

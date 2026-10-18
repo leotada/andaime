@@ -11,7 +11,7 @@ it cannot prove (a C call, a `__gshared` variable) go in a small `@trusted` func
 ```d
 @safe:
 
-import vela;
+import andaime;
 import core.stdc.stdlib : getenv;
 import core.stdc.string : strlen;
 
@@ -31,7 +31,7 @@ directly, without ceremony.
 To require `@safe` handlers in the whole app, add to `dub.sdl`:
 
 ```sdl
-versions "VelaStrictSafe"
+versions "AndaimeStrictSafe"
 ```
 
 A `@system` handler then fails to compile with a one-line message.
@@ -40,13 +40,13 @@ A `@system` handler then fails to compile with a one-line message.
 
 The library, its tests and the examples type-check with `-preview=dip1000` (scoped pointers, the checks that
 `scope` and `return scope` parameters do not escape), on DMD and LDC, and CI keeps it so. An application that builds with
-the flag, or a test runner that turns it on (`unit-threaded` does), can use vela and `VelaStrictSafe` together. A few
+the flag, or a test runner that turns it on (`unit-threaded` does), can use andaime and `AndaimeStrictSafe` together. A few
 parameters that keep views into the caller's memory are not `scope` for that reason: the request parser's buffer and header
 store, the multipart body (the parts point into it) and `Request.queryValues(name)`.
 
 The code is also checked under language edition 2025 (`module x 2025;`, DMD 2.112 and later), which includes DIP1000. An
-application written in a newer edition can import vela: a template follows the rules of the edition of the module that
-defines it, not of the one that instantiates it. vela itself stays on the baseline edition, because the older compilers it
+application written in a newer edition can import andaime: a template follows the rules of the edition of the module that
+defines it, not of the one that instantiates it. andaime itself stays on the baseline edition, because the older compilers it
 supports do not read the syntax.
 
 ## What you may keep from a request
@@ -63,7 +63,7 @@ the buffer is reused, so the view may later show bytes of another request. Copy 
 
 - A `RangeError`, a failed `assert` or another `Error` inside a handler answers 500, logs a full stack trace and retires the
   fiber (its cleanup may not have run). The server keeps serving.
-- A fiber stack overflow (deep recursion) is a segmentation fault that ends the process; vela first prints which request was
+- A fiber stack overflow (deep recursion) is a segmentation fault that ends the process; andaime first prints which request was
   running. Raise `ServerConfig.fiberStackBytes` (256 KiB) if you need deep recursion.
 
 ## Shared state

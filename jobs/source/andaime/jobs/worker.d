@@ -968,7 +968,7 @@ unittest
     catch (Exception e)
     {
         badApi = true;
-        assert(e.msg.length >= 10 && e.msg[0 .. 10] == "andaime.jobs:");
+        assert(e.msg.length >= 13 && e.msg[0 .. 13] == "andaime.jobs:");
     }
     assert(badApi);
 
@@ -979,7 +979,7 @@ unittest
     catch (Exception e)
     {
         badRun = true;
-        assert(e.msg.length >= 10 && e.msg[0 .. 10] == "andaime.jobs:");
+        assert(e.msg.length >= 13 && e.msg[0 .. 13] == "andaime.jobs:");
     }
     assert(badRun);
 
@@ -989,7 +989,7 @@ unittest
     catch (Exception e)
     {
         badRun = true;
-        assert(e.msg.length >= 10 && e.msg[0 .. 10] == "andaime.jobs:");
+        assert(e.msg.length >= 13 && e.msg[0 .. 13] == "andaime.jobs:");
     }
     assert(badRun);
 
@@ -999,7 +999,7 @@ unittest
     catch (Exception e)
     {
         badHook = true;
-        assert(e.msg.length >= 10 && e.msg[0 .. 10] == "andaime.jobs:");
+        assert(e.msg.length >= 13 && e.msg[0 .. 13] == "andaime.jobs:");
     }
     assert(badHook);
 
@@ -1008,7 +1008,7 @@ unittest
         supervisorHook!UnitWork(null, parseStartup(["prog", "--role=all"]));
     catch (Exception e)
     {
-        badHook = e.msg.length >= 10 && e.msg[0 .. 10] == "andaime.jobs:";
+        badHook = e.msg.length >= 13 && e.msg[0 .. 13] == "andaime.jobs:";
     }
     assert(badHook);
 
@@ -1020,7 +1020,7 @@ unittest
     catch (Exception e)
     {
         badQueues = true;
-        assert(e.msg.length >= 10 && e.msg[0 .. 10] == "andaime.jobs:");
+        assert(e.msg.length >= 13 && e.msg[0 .. 13] == "andaime.jobs:");
     }
     assert(badQueues);
 }

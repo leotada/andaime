@@ -227,7 +227,7 @@ version (unittest)
             dg();
         catch (Exception e)
         {
-            assert(e.msg.length >= 10 && e.msg[0 .. 10] == "andaime.jobs:", e.msg);
+            assert(e.msg.length >= 13 && e.msg[0 .. 13] == "andaime.jobs:", e.msg);
             return e.msg;
         }
         assert(0, "expected andaime.jobs: exception");

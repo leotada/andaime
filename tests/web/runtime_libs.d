@@ -13,7 +13,7 @@ unittest
     if (!tlsAvailable)
     {
         auto why = tlsLoadError.get;
-        assert(why.length > 20 && why[0 .. 11] == "andaime.http: ", why);
+        assert(why.length > 20 && why[0 .. 14] == "andaime.http: ", why);
         assert(why == tlsLoadError.get, "the reason is stable between calls");
     }
 }
@@ -24,7 +24,7 @@ unittest
     if (!zlibAvailable)
     {
         auto why = zlibLoadError.get;
-        assert(why.length > 20 && why[0 .. 6] == "andaime: ", why);
+        assert(why.length > 20 && why[0 .. 9] == "andaime: ", why);
     }
 }
 
@@ -34,6 +34,6 @@ unittest
     if (!pgAvailable)
     {
         auto why = pgLoadError.get;
-        assert(why.length > 20 && why[0 .. 9] == "andaime.db: ", why);
+        assert(why.length > 20 && why[0 .. 12] == "andaime.db: ", why);
     }
 }

@@ -13,6 +13,7 @@ improvement plan and its decision log. Everything is written in English: code, c
 | `andaime:engine` (`engine/`) | epoll loop, fibers, buffers, `offload`, HTTP/HTTPS and WebSocket client, OpenSSL, zlib. No routes. | http |
 | `andaime-pg` (`drivers/pg/`) | PostgreSQL driver over async libpq. An independent package: the core never depends on it. | andaime:engine |
 | `andaime` (`source/andaime/`) | `import andaime;`, `server.d` (the only glue between web and engine), static files | all |
+| `andaime:cli` (`cli/`) | The optional `andaime` command and its templates (`cli/templates/`). `examples/clean` is its exact output. | — |
 
 ## Toolchain
 
@@ -32,7 +33,8 @@ ANDAIME_STRICT=1 tools/check.sh         # a skipped section fails the run (CI do
 parameters that are only read `scope`, and `return scope` when the result points into them), the same under language
 edition 2025 (DMD 2.112+; older compilers skip it, CI runs it on 2.112.0), the web layer, documentation examples, OpenAPI validity, the parser, HTTP/2 session and
 WebSocket layer with mutation fuzzing, the GC-free hot path, network tests (HTTP/1.1, HTTP/2, HTTPS, WebSockets),
-interoperability (curl, python-h2, h2spec, python websockets, Caddy, Chromium), PostgreSQL, the HTTP client, the API example end to end, memory ceilings, compile-error tests, DUB
+interoperability (curl, python-h2, h2spec, python websockets, Caddy, Chromium), PostgreSQL, the HTTP client, the API example end to end, the `andaime` command end to end
+(`tools/cli_e2e.sh`: every template and generator, and `examples/clean` against a fresh output), memory ceilings, compile-error tests, DUB
 builds and the compile-time budget. A section whose tool is missing exits 77 and is listed as skipped in the summary.
 
 ### Optional tools

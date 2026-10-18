@@ -18,8 +18,12 @@ __dummy.html
 # Binaries of the examples and tests
 examples/*/hello
 examples/*/api
+examples/clean/clean
+examples/clean/clean-test-*
 /andaime-test-*
 *-test-library
+cli/bin/
+/.cli-e2e/
 
 # Fuzzing
 tests/fuzz/crashes/

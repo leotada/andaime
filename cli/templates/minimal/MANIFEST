@@ -1,0 +1,8 @@
+# Every file of this template, for the string imports that embed it (tools/cli_e2e.sh checks this list)
+new/files/.gitignore.tpl
+new/files/README.md.tpl
+new/files/andaime.json.tpl
+new/files/dub.sdl.tpl
+new/files/source/app.d.tpl
+new/files/source/main.d.tpl
+new/generator.json

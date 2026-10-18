@@ -85,8 +85,15 @@ typecheck_tree() {
     for t in tests/web/*.d tests/jobs/*.d; do
         $DC $flags -unittest -main -i "$t" || { echo "FAILED: $t"; rc=1; }
     done
-    for t in tests/h2/*.d tests/crypto/*.d tests/fuzz/*.d tests/alloc/*.d tests/net/*.d tests/db/*.d examples/*/source/*.d; do
+    for t in tests/h2/*.d tests/crypto/*.d tests/fuzz/*.d tests/alloc/*.d tests/net/*.d tests/db/*.d; do
         $DC $flags -i "$t" || { echo "FAILED: $t"; rc=1; }
+    done
+    # an example's source/ is its import path (examples/clean has packages in it); its tests/ compile against it
+    for t in examples/*/source/*.d; do
+        $DC $flags -I"$(dirname "$t")" -i "$t" || { echo "FAILED: $t"; rc=1; }
+    done
+    for t in examples/*/tests/*.d; do
+        $DC $flags -I"$(dirname "$(dirname "$t")")/source" -unittest -main -i "$t" || { echo "FAILED: $t"; rc=1; }
     done
     return $rc
 }
@@ -185,6 +192,15 @@ s_json_fuzz() {
 
 s_example_tests() {
     $DC -unittest -main $I -i -run examples/hello/source/app.d > /dev/null
+    # examples/clean, as `dub test` runs it: source/ (but main.d) and tests/; the access log of its requests is dropped
+    local clean="$work/clean_tests"
+    $DC -unittest -main $I -Ijobs/source -Idrivers/pgjobs/source -Iexamples/clean/source -i -of"$clean" \
+        $(find examples/clean/source -name '*.d' ! -name main.d) examples/clean/tests/*.d > /dev/null
+    "$clean" 2> /dev/null
+}
+
+s_cli() {
+    tools/with_postgres.sh tools/cli_e2e.sh
 }
 
 s_hot_path() {
@@ -431,6 +447,8 @@ s_dub() {
     dub build $dubc -q --root=drivers/pgjobs || rc=1
     (cd examples/hello && dub build $dubc -q) || rc=1
     (cd examples/api && dub build $dubc -q) || rc=1
+    (cd examples/clean && dub build $dubc -q) || rc=1
+    dub build $dubc -q :cli || rc=1
     # the core must never import a driver; jobs depends on web and engine, not on andaime-pg
     if grep -rn "import andaime\.db" http web engine source jobs crypto --include=*.d; then
         echo "FAILED: the core, andaime:jobs or andaime:crypto imports a driver (andaime.db)"; rc=1
@@ -487,8 +505,11 @@ s_cross_platform() {
         for t in tests/web/*.d tests/jobs/*.d; do
             ldc2 -mtriple=$triple $flags -unittest -main -i "$t"
         done
-        for t in tests/h2/*.d tests/crypto/*.d tests/fuzz/*.d tests/alloc/*.d tests/db/*.d examples/*/source/*.d; do
+        for t in tests/h2/*.d tests/crypto/*.d tests/fuzz/*.d tests/alloc/*.d tests/db/*.d; do
             ldc2 -mtriple=$triple $flags -i "$t"
+        done
+        for t in examples/*/source/*.d; do
+            ldc2 -mtriple=$triple $flags -I"$(dirname "$t")" -i "$t"
         done
     done
     echo "macOS (x86_64-apple-darwin) and Windows (x86_64-pc-windows-msvc) full cross-compilation OK"
@@ -506,6 +527,7 @@ section "HTTP/2: session (frames, streams, flow control, errors, limits) and mut
 section "WebSocket: message layer mutation fuzz (frames, fragments, control frames, close codes, limits)" s_ws_session
 section "JSON reader: mutation fuzz (JsonValue round trip, depth limit, typed decode)" s_json_fuzz
 section "example tests (TestClient, no network)" s_example_tests
+section "andaime CLI end to end (templates, generators, routes, check; examples/clean is their output)" s_cli
 section "hot path without GC allocation (HTTP/1.1, HTTP/2, WebSocket messages)" s_hot_path
 section "network tests (EpollLoop + fibers: cancellation, ceiling, deadlines, pools, background fibers)" s_net
 section "HTTP/2 network tests (h2c, multiplexing, cancellation, deadlines, flow control, upgrade, stop)" s_h2_net

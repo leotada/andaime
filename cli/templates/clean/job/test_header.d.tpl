@@ -1,0 +1,11 @@
+/// The jobs of {{feature}}, run through a test store, with their use cases over in-memory adapters.
+module tests.{{feature}}_jobs;
+
+@safe:
+
+import andaime;
+import andaime.jobs;
+import adapters.jobs.provider : provided;
+import adapters.jobs.{{feature}};
+import adapters.memory.{{feature}} : Memory{{Entity}}Repository;
+import usecases.{{feature}};

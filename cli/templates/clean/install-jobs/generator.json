@@ -1,0 +1,14 @@
+{
+  "create": [
+    { "path": "source/jobs.d", "from": "jobs.d.tpl" },
+    { "path": "source/adapters/jobs/provider.d", "from": "provider.d.tpl" }
+  ],
+  "insert": [
+    { "path": "dub.sdl", "marker": "// andaime:dependencies", "from": "dependencies.tpl" }
+  ],
+  "replace": [
+    { "path": "source/main.d", "text": "import app : buildApp;", "with": "import jobs : serveWithJobs;" },
+    { "path": "source/main.d", "text": "serve(&buildApp, cfg);", "with": "serveWithJobs(args, cfg);" },
+    { "path": "andaime.json", "text": "\"jobs\": false", "with": "\"jobs\": true" }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "append": [
+    { "path": "source/usecases/{{feature}}.d", "from": "usecase.d.tpl", "unless": "class {{Name}}\n" },
+    { "path": "tests/{{feature}}.d", "from": "test.d.tpl", "unless": "unittest // {{Name}}\n" }
+  ]
+}

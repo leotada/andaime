@@ -1,0 +1,16 @@
+{
+  "append": [
+    { "path": "source/usecases/{{feature}}.d", "from": "../usecase/usecase.d.tpl", "unless": "class {{Name}}\n" },
+    { "path": "source/adapters/jobs/{{feature}}.d", "header": "jobs_header.d.tpl", "from": "job.d.tpl",
+      "unless": "struct {{Name}}Job\n" },
+    { "path": "tests/{{feature}}_jobs.d", "header": "test_header.d.tpl", "from": "test.d.tpl",
+      "unless": "unittest // {{Name}}Job " }
+  ],
+  "insert": [
+    { "path": "source/jobs.d", "marker": "// andaime:imports",
+      "text": "import adapters.jobs.{{feature}} : {{Name}}Job;\nimport usecases.{{feature}} : {{Name}};\n" },
+    { "path": "source/jobs.d", "marker": "// andaime:jobs", "text": "{{Name}}Job,\n" },
+    { "path": "source/jobs.d", "marker": "// andaime:provide",
+      "text": "provided!{{Name}}.provide(() => new {{Name}}(currentAdapters().{{featureCamel}}));\n" }
+  ]
+}

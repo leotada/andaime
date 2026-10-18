@@ -428,6 +428,36 @@ flowchart LR
 | 🔐 `andaime:crypto` | `import andaime.crypto;` | bcrypt, SHA-256, HMAC, HKDF, AES-128-GCM, P-256 (ES256, ECDH), Web Push encryption |
 | 🐘 `andaime-pg` | `import andaime.db.pg;` | Async PostgreSQL driver and pool over `libpq` |
 | 🗄️ `andaime-pg-jobs` | `import andaime.jobs.pg;` | Durable job queue: `SKIP LOCKED`, `LISTEN`/`NOTIFY`, one cron run across processes |
+| 🛠️ `andaime:cli` | `dub build :cli` | The `andaime` command: new projects, generators, the route table, the dependency rule |
+
+---
+
+## 🏛️ An architecture, if you want one
+
+andaime does not impose a structure. For applications that will grow, the optional `andaime` command generates one
+based on Clean Architecture and SOLID, in the spirit of `rails new` and `rails generate`. The folders are the layers,
+a feature is the same file name in each of them, and dependencies point inward:
+
+```
+source/domain/users.d             entities and business rules: no framework, no database
+source/usecases/users.d           one class per use case, and the ports (interfaces) they need
+source/adapters/http/users.d      a controller: the HTTP contract and its OpenAPI
+source/adapters/postgres/users.d  the repository over PostgreSQL; adapters/memory/ has the same in memory
+source/app.d                      the composition root: buildApp, once per worker, no DI container
+```
+
+```sh
+andaime new my-api                                          # also: --db none, --jobs, --template minimal
+andaime generate resource user name:string email:string:unique
+andaime generate job users SendWelcome user_id:long
+andaime routes                                              # every route and its handler
+andaime check                                               # the dependency rule, from the compiler's imports
+```
+
+The generated code is plain code you own, with tests over an in-memory store. [`examples/clean`](examples/clean) is the
+exact output of the commands above. Why it is shaped this way (no presenters, no container, interfaces rather than
+templates for ports) is in [Architecture](docs/architecture.md), and the commands are in
+[The andaime command](docs/cli.md).
 
 ---
 
@@ -614,6 +644,7 @@ curl 'http://localhost:8080/hello?name=Ana'
 ```sh
 cd examples/hello && dub test && dub run   # in-memory CRUD, controller, middleware, tests
 cd examples/api   && dub run               # PostgreSQL, HTTP client, Bearer auth, CORS, static files, OpenAPI
+cd examples/clean && dub test              # layers (domain, use cases, adapters), Postgres or memory, a job
 ```
 
 ➡️ Step by step: [Getting started](docs/getting-started.md).
@@ -630,6 +661,7 @@ Start at the [documentation index](docs/README.md) or jump to a guide:
 | 🧱 **Building APIs** | [Middleware](docs/middleware.md) · [Logging](docs/logging.md) · [Streaming and SSE](docs/streaming.md) · [WebSockets](docs/websocket.md) · [Static files and OpenAPI](docs/static-files-and-openapi.md) |
 | 🔌 **Async, data, auth** | [Concurrency](docs/concurrency.md) · [Database](docs/database.md) · [Jobs and cron](docs/jobs-and-cron.md) · [HTTP client](docs/http-client.md) · [Cryptography](docs/crypto.md) |
 | 🧪 **Quality and safety** | [Testing](docs/testing.md) · [Memory safety](docs/safety.md) |
+| 🏛️ **Structure** | [Architecture](docs/architecture.md) · [The andaime command](docs/cli.md) |
 | 🚢 **Production** | [Deploying](docs/deploy.md) · [HTTPS and TLS](docs/tls.md) · [HTTP/2](docs/http2.md) · [Configuration](docs/configuration.md) |
 
 ---

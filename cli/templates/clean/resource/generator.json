@@ -1,0 +1,18 @@
+{
+  "create": [
+    { "path": "source/domain/{{plural}}.d", "from": "domain.d.tpl" },
+    { "path": "source/usecases/{{plural}}.d", "from": "usecases.d.tpl" },
+    { "path": "source/adapters/http/{{plural}}.d", "from": "http.d.tpl" },
+    { "path": "source/adapters/postgres/{{plural}}.d", "from": "postgres.d.tpl", "if": "pg" },
+    { "path": "source/adapters/memory/{{plural}}.d", "from": "memory.d.tpl" },
+    { "path": "migrations/{{migration}}_{{plural}}.sql", "from": "migration.sql.tpl", "if": "pg" },
+    { "path": "tests/{{plural}}.d", "from": "tests.d.tpl" }
+  ],
+  "insert": [
+    { "path": "source/app.d", "marker": "// andaime:imports", "from": "app_imports.tpl" },
+    { "path": "source/app.d", "marker": "// andaime:adapters", "text": "{{Name}}Repository {{pluralCamel}};\n" },
+    { "path": "source/app.d", "marker": "// andaime:postgres", "text": "a.{{pluralCamel}} = new Pg{{Name}}Repository(db);\n", "if": "pg" },
+    { "path": "source/app.d", "marker": "// andaime:memory", "text": "a.{{pluralCamel}} = new Memory{{Name}}Repository;\n" },
+    { "path": "source/app.d", "marker": "// andaime:mount", "from": "app_mount.tpl" }
+  ]
+}

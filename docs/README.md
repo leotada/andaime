@@ -24,6 +24,8 @@ things up.
 | [Cryptography](crypto.md) | `andaime:crypto`: bcrypt, SHA-256/HMAC/HKDF, AES-GCM, ES256 (JWT), ECDH, Web Push encryption |
 | [Testing](testing.md) | `TestClient`: requests and responses in memory, JSON and multipart helpers, a cookie jar |
 | [Memory safety](safety.md) | `@safe` handlers, strict mode, what you may keep from a request |
+| [Architecture](architecture.md) | An optional structure in layers (Clean Architecture, SOLID) for applications that grow, and why it is shaped this way |
+| [The andaime command](cli.md) | `andaime new`, `generate` (resource, use case, job), `routes`, `check`, your own templates |
 
 ## Running in production
 
@@ -38,3 +40,5 @@ things up.
 
 - `examples/hello`: an in-memory CRUD with a controller, middleware and tests.
 - `examples/api`: Postgres, an external API, Bearer authentication, CORS, static files, OpenAPI and `onError`.
+- `examples/clean`: an application in layers (domain, use cases, adapters) with Postgres, an in-memory store and a
+  background job; the exact output of `andaime new` and `andaime generate` ([architecture.md](architecture.md)).

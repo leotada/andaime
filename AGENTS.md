@@ -88,17 +88,18 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 | `drivers/pg/` (`andaime-pg`) | PostgreSQL driver over async libpq (dlopen). **Independent package; the core must never depend on it.** |
 | `drivers/pgjobs/` (`andaime-pg-jobs`) | Postgres `JobStore` (`PgJobStore`): `SKIP LOCKED` claims, `LISTEN`/`NOTIFY`, a lease reaper, one cron slot across processes. Depends on `andaime:jobs` and `andaime-pg`. |
 | `source/andaime/` (`andaime`) | `import andaime;`, `server.d` (the only glue between web and engine), `staticfiles.d`. |
-| `examples/hello`, `examples/api` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI. |
+| `examples/hello`, `examples/api`, `examples/clean` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI; an app in layers (domain, use cases, adapters) that is the exact output of the CLI's clean template (`tools/cli_e2e.sh` diffs it). |
+| `cli/` (`andaime:cli`) | The optional `andaime` command: `new`, `generate`, `routes`, `check`. Templates live in `cli/templates/<name>/`, one folder per generator, embedded through each template's `MANIFEST`. A tool, not the core: Phobos is fine here. |
 | `tests/` | `web/` (no network; helper modules in `web/support/`), `jobs/` (no network), `h2/` (HTTP/2 session), `net/` (real sockets), `db/` (needs Postgres), `crypto/` (exits 77 without libcrypto), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
-| `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `ws_interop.sh` (python `websockets`), `proxy_interop.sh` (behind Caddy over h2c), `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, `api_e2e.sh` (`examples/api` end to end), `bench.sh`, and the helpers that start a throwaway Postgres / test upstream. |
+| `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `ws_interop.sh` (python `websockets`), `proxy_interop.sh` (behind Caddy over h2c), `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, `api_e2e.sh` (`examples/api` end to end), `cli_e2e.sh` (the `andaime` command end to end), `bench.sh`, and the helpers that start a throwaway Postgres / test upstream. |
 | `internals/` | Contributor notes per subsystem (concurrency, jobs, response contract, WebSockets, HTTP/2, TLS); see [Subsystem notes](#subsystem-notes). |
-| `docs/`, `README.md` | User-facing docs: `docs/README.md` is the index (guides: getting-started, routing, requests, validation, responses, middleware, streaming, websocket, static files/OpenAPI, concurrency, database, jobs and cron, http-client, logging, crypto, testing, safety; reference: deploy, tls, http2, configuration). Keep them in sync with behavior; code blocks whose first line is `// check` are compiled by `tools/doc_examples.sh`. Contributor material goes in `CONTRIBUTING.md`, not the README. |
+| `docs/`, `README.md` | User-facing docs: `docs/README.md` is the index (guides: getting-started, routing, requests, validation, responses, middleware, streaming, websocket, static files/OpenAPI, concurrency, database, jobs and cron, http-client, logging, crypto, testing, safety, architecture, cli; reference: deploy, tls, http2, configuration). Keep them in sync with behavior; code blocks whose first line is `// check` are compiled by `tools/doc_examples.sh`. Contributor material goes in `CONTRIBUTING.md`, not the README. |
 | `.github/workflows/check.yml` | CI: DMD and LDC at the minimum and latest versions, strict mode; the `edition` section on DMD 2.112.0 in its own job; the browser test and fuzzing in their own jobs, nightly or on a manual run only. |
 
 Dependency direction: `http` <- `web`, `http` <- `engine` <- `drivers/pg`. `jobs` depends on `web` and `engine`, not on `pg`.
 `drivers/pgjobs` depends on `jobs` and `andaime-pg`. `crypto` depends on `http` and `engine`; nothing in the core or `jobs`
-imports it (`check.sh` greps for it). The root `andaime` package does not depend on `jobs`. `web` does not depend on
-`engine`. `source/andaime/server.d` is the only module that knows both `web` and `engine`. Do not introduce a dependency from the
+imports it (`check.sh` greps for it). The root `andaime` package does not depend on `jobs`. `andaime:cli` imports
+nothing from andaime, and nothing depends on it. `web` does not depend on `engine`. `source/andaime/server.d` is the only module that knows both `web` and `engine`. Do not introduce a dependency from the
 core to any driver.
 
 ## Commands and the definition of done
@@ -169,6 +170,9 @@ Read the matching file before touching its area. The rules in those files are no
   fiber's `Request` is reused across protocols.
 - **A new documented example**: start its code block with `// check` and make it a complete program; `tools/doc_examples.sh`
   compiles it.
+- **A change to a CLI template** (`cli/templates/<name>/`): list new files in that template's `MANIFEST`, then make
+  `examples/clean` the new output again (`tools/cli_e2e.sh` shows the difference and the commands that produce it).
+  `docs/architecture.md` and `docs/cli.md` describe what the templates generate.
 
 ## Out of scope for now
 

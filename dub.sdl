@@ -11,5 +11,6 @@ subPackage "web"
 subPackage "engine"
 subPackage "jobs"
 subPackage "crypto"
+subPackage "cli"
 
 toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

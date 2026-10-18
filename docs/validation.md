@@ -160,9 +160,10 @@ a body schema. Other statuses your handler uses (the 404 above) go on the routes
 | 503 | the worker is at `maxInFlight`; sent with `Retry-After` |
 | 504 | the handler did not start its response within `requestTimeoutMs` |
 
-Your own errors: `throw new HttpError(status, "message")` gives `{"detail":"message"}` with that status. To change how errors
-look, use `app.onError` ([middleware.md](middleware.md#error-handling)), and `app.onValidationError` for validation errors
-([above](#your-own-validation-response)).
+Your own errors: `throw new HttpError(status, "message")` gives `{"detail":"message"}` with that status, and so does an
+exception type mapped with `app.mapError!NotFound(404)` (for code that should not import andaime, such as a domain layer).
+To change how errors look, use `app.onError` ([middleware.md](middleware.md#error-handling)), and `app.onValidationError`
+for validation errors ([above](#your-own-validation-response)).
 
 ## Signature mistakes are compile errors
 

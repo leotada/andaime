@@ -99,8 +99,15 @@ App buildApp()
 void main() { serve(&buildApp, 8080); }
 ```
 
-Attributes: `@Get`, `@Post`, `@Put`, `@Patch`, `@Delete`. The methods follow the same signature rules as free functions, and
-the paths are full paths (`mount` is on `App`, not on a group).
+Attributes: `@Get`, `@Post`, `@Put`, `@Patch`, `@Delete` (and `@Ws` for a WebSocket). The methods follow the same signature
+rules as free functions. On `App` the paths are full paths. On a group, `mount` makes them relative to the group's prefix,
+and the group's middleware applies:
+
+```d
+auto api = app.group("/api/v1");
+api.use(&requireToken);
+api.mount(new ItemController);          // GET /api/v1/items/{id}, POST /api/v1/items, both behind requireToken
+```
 
 ## 404, 405 and trailing slashes
 
@@ -120,4 +127,16 @@ App-level middleware runs before routing, so it also sees 404 and 405 responses 
 
 ## Debugging
 
-`app.routes()` returns the route tree as text.
+`app.routeTable()` lists the routes in registration order: method, path and handler (its fully qualified name, `file:line`
+for a lambda, or a label for andaime's own routes):
+
+```
+GET     /health          app.health
+GET     /api/v1/items    app.ItemController.list
+GET     /openapi.json    (andaime: OpenAPI)
+```
+
+Run any app with `ANDAIME_ROUTES=1` (`ANDAIME_ROUTES=1 dub run`) and `serve` prints this table and returns at once. It calls
+the build function once on the main thread and opens no port, so it is safe to run next to a running server. Code in `main`
+before `serve` still runs, so keep startup work that needs a database (a schema check, say) after a configuration you
+can read without one. `app.routes()` returns the route tree as text, which shows how the router matches paths.

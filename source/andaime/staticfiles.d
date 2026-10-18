@@ -73,8 +73,8 @@ void serveStatic(R)(R target, string urlPrefix, string dir, StaticConfig cfg = S
     if (root is null)
         throw new Exception("andaime: the static files folder does not exist: " ~ dir);
     auto srv = new StaticServer(root, cfg);
-    target.register(Method.GET, urlPrefix ~ "/{*path}", &srv.serveWildcard);
-    target.register(Method.GET, urlPrefix.length ? urlPrefix : "/", &srv.serveIndex);
+    target.register(Method.GET, urlPrefix ~ "/{*path}", &srv.serveWildcard, null, "(andaime: static files from " ~ dir ~ ")");
+    target.register(Method.GET, urlPrefix.length ? urlPrefix : "/", &srv.serveIndex, null, "(andaime: static index of " ~ dir ~ ")");
 }
 
 private final class StaticServer

@@ -113,8 +113,20 @@ app.onNotFound((Context ctx) { ctx.text("nothing here", 404); });
 app.onMethodNotAllowed((Context ctx) { ctx.text("wrong method", 405); }); // the Allow header is already set
 ```
 
+Your own exceptions that are answers rather than failures (a domain's `NotFound` or `Conflict`, which must not import
+andaime to throw an `HttpError`) are mapped to a status with `mapError`:
+
+```d
+app.mapError!NotFound(404);       // NotFound and its subclasses
+app.mapError!Conflict(409);
+app.mapError!DomainError(422);    // the first mapping that matches wins: put the general one last
+```
+
+A mapped exception behaves exactly like `HttpError(status, e.msg)`: `{"detail":"msg"}` with that status, no log line and no
+stack trace, and `onError`, when set, receives that `HttpError`.
+
 Middleware sees the final status after `next()` returns, even when the handler threw: the error has already been turned into
-a response (by `onError`, or the default). Map errors in `onError`, not with a `try`/`catch` around `next()`.
+a response (by `onError`, or the default). Map errors in `onError` or `mapError`, not with a `try`/`catch` around `next()`.
 
 `RequestCancelled` (the client left, or the deadline passed) is not an `Exception`, so `catch (Exception)` does not swallow
 it; `scope(exit)` blocks still run ([concurrency.md](concurrency.md#cancellation)).

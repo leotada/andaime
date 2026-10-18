@@ -570,6 +570,7 @@ struct OpRecord
     string pattern;     // as registered (includes the group prefix)
     OpDescribe describe; // null for routes without introspection (static files...)
     ValidationDoc validation; // filled when the app freezes
+    string handler;     // what `App.routeTable` shows: a qualified name, `file:line` of a lambda, or a label
 }
 
 /// `{*rest}` -> `{rest}` (OpenAPI does not know the asterisk).

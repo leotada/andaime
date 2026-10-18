@@ -106,8 +106,19 @@ if (is(F == void function() @safe))
 ///
 /// `onWorker0`, when non-null, runs at the end of worker 0's init (the App is already built and frozen), on that
 /// worker's thread. That is the place to `spawn` background fibers. `null` keeps the previous behavior.
+///
+/// With the environment variable `ANDAIME_ROUTES` set (to anything but "" or "0"), the build function runs once on the
+/// calling thread, `App.routeTable` goes to stdout and this returns true at once: no port, no worker (`andaime routes`).
 bool tryServe(App delegate() @system build, ServerConfig cfg, void delegate() @safe onWorker0 = null)
 {
+    if (routesRequested())
+    {
+        auto app = callBuild(build);
+        if (app is null)
+            throw new Exception("andaime: the build function returned null; it must return the App to serve");
+        writeStdout(app.routeTable());
+        return true;
+    }
     // a bad proxy entry fails startup with one line, before any worker builds anything
     foreach (c; cfg.trustedProxies)
     {
@@ -165,6 +176,26 @@ if (is(F == void function() @safe))
         return tryServe(build, cfg);
     auto call = onWorker0;
     return tryServe(() @trusted => build(), cfg, () { call(); }); // sound: same as the `serve` overload
+}
+
+/// `ANDAIME_ROUTES` is set to something other than "" or "0".
+private bool routesRequested() @trusted nothrow @nogc
+{
+    import core.stdc.stdlib : getenv;
+
+    // sound: getenv returns a NUL-terminated string owned by the environment; only its first two bytes are read here
+    auto p = getenv("ANDAIME_ROUTES");
+    return p !is null && p[0] != '\0' && !(p[0] == '0' && p[1] == '\0');
+}
+
+/// Writes `text` to stdout and flushes it.
+private void writeStdout(string text) @trusted nothrow @nogc
+{
+    import core.stdc.stdio : fflush, fwrite, stdout;
+
+    // sound: fwrite reads exactly text.length bytes from text.ptr
+    fwrite(text.ptr, 1, text.length, stdout);
+    fflush(stdout);
 }
 
 /// The single place where the user's build function is called from `@safe` framework code.

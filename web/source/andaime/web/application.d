@@ -8,7 +8,7 @@ import andaime.http.ip : Cidr, parseCidr;
 import andaime.web.context;
 import andaime.web.params : HttpError;
 import andaime.web.dto : ValidationErrors;
-import andaime.web.numtext : itoa;
+import andaime.web.numtext : itoa, ctNum;
 import andaime.log : LogLevel, logEnabled, logAndaime, setLogSyncSource;
 import andaime.web.router;
 import andaime.web.handler_traits : handlerError, dispatch;
@@ -233,10 +233,18 @@ final class Group
         return new Group(app, prefix ~ checkPrefix(sub), this);
     }
 
-    void register(Method method, string path, HandlerFn h, OpDescribe describe = null)
+    /// `name` is what `App.routeTable` shows for the route (`get!` and `mount` pass the handler's qualified name).
+    void register(Method method, string path, HandlerFn h, OpDescribe describe = null, string name = null)
     {
         auto full = (path == "/" && prefix.length) ? prefix : prefix ~ path;
-        app.registerIn(this, method, full, h, describe);
+        app.registerIn(this, method, full, h, describe, name);
+    }
+
+    /// Registers every method of `controller` annotated with @Get/@Post/..., like `App.mount`. The paths are relative to
+    /// the group's prefix and the group's middleware applies.
+    void mount(C, string file = __FILE__, size_t line = __LINE__)(C controller) if (is(C == class))
+    {
+        mixin(mountBody);
     }
 
     private void collect(ref Middleware[] outer) // root first
@@ -305,6 +313,7 @@ final class App
     private ValidationHook validation;
     private void delegate(Context) @safe[] validationFor; // per handler, built by freeze; null: the default 422
     private OpRecord[] ops;
+    private ErrorMapping[] errorMappings;                  // see `mapError`
 
     private bool frozen;
     private ProxyTrust proxyTrust;
@@ -387,6 +396,19 @@ final class App
         errorHandler = h;
     }
 
+    /// Treats an exception of type `E` (or a subclass) as `HttpError(status, e.msg)`: it answers `status` with
+    /// `{"detail": msg}`, it is not logged, and an `onError` handler receives that `HttpError`. For your own exceptions
+    /// that are answers, not failures: a domain's `NotFound`, `Conflict`... (`app.mapError!NotFound(404)`). The first
+    /// mapping that matches wins. Throws `RouteError` for a status outside 400-599.
+    void mapError(E : Exception)(int status)
+    {
+        mustBeOpen();
+        if (status < 400 || status > 599)
+            throw new RouteError("andaime: mapError!" ~ E.stringof ~ ": " ~ itoa(status)
+                ~ " is not an error status (400-599)");
+        errorMappings ~= ErrorMapping((Exception e) => cast(E) e !is null, status);
+    }
+
     mixin ValidationSetters;
 
     private void setValidation(ValidationHook hook)
@@ -411,19 +433,24 @@ final class App
     }
 
     /// Registers an already-generated handler. The `get`/`post`/... functions below
-    /// validate the signature at compile time and call this.
-    void register(Method method, string path, HandlerFn h, OpDescribe describe = null)
+    /// validate the signature at compile time and call this. `name` is what `routeTable` shows for the route.
+    void register(Method method, string path, HandlerFn h, OpDescribe describe = null, string name = null)
     {
-        registerIn(null, method, path, h, describe);
+        registerIn(null, method, path, h, describe, name);
     }
 
-    private void registerIn(Group owner, Method method, string path, HandlerFn h, OpDescribe describe)
+    private void registerIn(Group owner, Method method, string path, HandlerFn h, OpDescribe describe, string name)
     {
         mustBeOpen();
         handlers ~= h;
         owners ~= owner;
         router.add(method, path, cast(int)(handlers.length - 1));
-        ops ~= OpRecord(method, path, describe);
+        OpRecord op;
+        op.method = method;
+        op.pattern = path;
+        op.describe = describe;
+        op.handler = name;
+        ops ~= op;
     }
 
     /// Wraps each grouped route in its group chain and builds the OpenAPI document. Idempotent.
@@ -486,48 +513,45 @@ final class App
             register(Method.GET, info.jsonPath, delegate(Context c) {
                 c.response.contentType = "application/json";
                 c.response.body.put(openApiJson);
-            });
+            }, null, "(andaime: OpenAPI)");
         if (info.docsPath.length)
         {
             auto html = docsHtml(info.jsonPath, info.title, info.swaggerUiBase);
             register(Method.GET, info.docsPath, delegate(Context c) {
                 c.response.contentType = "text/html; charset=utf-8";
                 c.response.body.put(html);
-            });
+            }, null, "(andaime: Swagger UI)");
         }
     }
 
     /// Registers every method of `controller` annotated with @Get/@Post/...
-    /// Use it for handlers with state (repositories, connections, config).
+    /// Use it for handlers with state (repositories, connections, config). `Group.mount` does the same under a prefix.
     void mount(C, string file = __FILE__, size_t line = __LINE__)(C controller) if (is(C == class))
     {
-        static foreach (member; __traits(allMembers, C))
-        {
-            static if (__traits(compiles, __traits(getOverloads, C, member)))
-            {
-                static foreach (ov; __traits(getOverloads, C, member))
-                {
-                    static foreach (attr; __traits(getAttributes, ov))
-                    {
-                        static if (is(typeof(attr) == Route))
-                        {{
-                            enum err = handlerError!(attr.method, attr.path, ov, file, line, attr.websocket);
-                            static if (err.length)
-                                static assert(0, err);
-                            else static if (attr.websocket) // not in OpenAPI, which cannot describe WebSockets
-                                register(attr.method, attr.path, delegate(Context c) { dispatch!(attr.method, attr.path, ov)(c, controller); });
-                            else
-                                register(attr.method, attr.path, delegate(Context c) { dispatch!(attr.method, attr.path, ov)(c, controller); },
-                                    delegate string(ref Components cs, string pat) @safe { return describeOperation!(attr.method, attr.path, ov)(cs, pat); });
-                        }}
-                    }
-                }
-            }
-        }
+        mixin(mountBody);
     }
 
     /// Route tree as text (debugging).
     string routes() const => router.dump();
+
+    /// The routes as aligned text, one line each in registration order: method, path and handler (its fully qualified
+    /// name, `file:line` for a lambda, or a label for andaime's own routes). `ANDAIME_ROUTES=1` makes `serve` print it.
+    string routeTable() const
+    {
+        size_t width;
+        foreach (ref op; ops)
+            if (op.pattern.length > width)
+                width = op.pattern.length;
+        string o;
+        foreach (ref op; ops)
+        {
+            o ~= padRight(methodName(op.method), 8);
+            o ~= padRight(op.pattern, width + 2);
+            o ~= op.handler.length ? op.handler : "-";
+            o ~= '\n';
+        }
+        return o;
+    }
 
     // ---- execution
 
@@ -564,6 +588,12 @@ final class App
 
     private void fail(Context ctx, Exception e)
     {
+        foreach (ref m; errorMappings)
+            if (m.matches(e))
+            {
+                e = new HttpError(m.status, e.msg, e.file, e.line);
+                break;
+            }
         if (ctx.committed)
         {
             // A streamed response already started: status and headers are on the wire, so no error page is possible.
@@ -763,6 +793,63 @@ final class App
     }
 }
 
+/// An exception type answered as an `HttpError` (see `App.mapError`).
+private struct ErrorMapping
+{
+    bool function(Exception) @safe matches;
+    int status;
+}
+
+/// `s` followed by spaces up to `width` characters (the columns of `App.routeTable`).
+private string padRight(string s, size_t width) pure nothrow
+{
+    string o = s;
+    foreach (_; s.length .. width)
+        o ~= ' ';
+    return o;
+}
+
+/// What `App.routeTable` shows for a handler: its fully qualified name, or where a lambda was written (a lambda's own
+/// name is a compiler artifact).
+private template handlerName(alias fn, string file, size_t line)
+{
+    private enum id = __traits(identifier, fn);
+    static if (id.length >= 8 && id[0 .. 8] == "__lambda")
+        enum handlerName = file ~ ":" ~ ctNum(line);
+    else
+        enum handlerName = __traits(fullyQualifiedName, fn);
+}
+
+/// The body of `App.mount` and `Group.mount`: registers every method of `controller` that carries a `Route` UDA. Mixed
+/// into each (not a shared function) so that a bad signature stays a two-line compile error.
+private enum string mountBody = q{
+    static foreach (member; __traits(allMembers, C))
+    {
+        static if (__traits(compiles, __traits(getOverloads, C, member)))
+        {
+            static foreach (ov; __traits(getOverloads, C, member))
+            {
+                static foreach (attr; __traits(getAttributes, ov))
+                {
+                    static if (is(typeof(attr) == Route))
+                    {{
+                        enum err = handlerError!(attr.method, attr.path, ov, file, line, attr.websocket);
+                        static if (err.length)
+                            static assert(0, err);
+                        else static if (attr.websocket) // not in OpenAPI, which cannot describe WebSockets
+                            register(attr.method, attr.path, delegate(Context c) { dispatch!(attr.method, attr.path, ov)(c, controller); },
+                                null, __traits(fullyQualifiedName, ov) ~ " (WebSocket)");
+                        else
+                            register(attr.method, attr.path, delegate(Context c) { dispatch!(attr.method, attr.path, ov)(c, controller); },
+                                delegate string(ref Components cs, string pat) @safe { return describeOperation!(attr.method, attr.path, ov)(cs, pat); },
+                                __traits(fullyQualifiedName, ov));
+                    }}
+                }
+            }
+        }
+    }
+};
+
 // ---- route registration: free functions called via UFCS (`app.get!(...)`).
 // Free, and not App methods, on purpose: that way a local lambda that
 // captures dependencies (`(long id) => repo.find(id)`) becomes an ordinary closure,
@@ -777,7 +864,8 @@ void get(string path, alias fn, string file = __FILE__, size_t line = __LINE__, 
     enum err = handlerError!(Method.GET, path, fn, file, line);
     static if (err.length) static assert(0, err);
     else app.register(Method.GET, path, delegate(Context c) { dispatch!(Method.GET, path, fn)(c); },
-        delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.GET, path, fn)(cs, pat); });
+        delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.GET, path, fn)(cs, pat); },
+        handlerName!(fn, file, line));
 }
 
 void post(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R)(R app) if (isRouteTarget!R)
@@ -785,7 +873,8 @@ void post(string path, alias fn, string file = __FILE__, size_t line = __LINE__,
     enum err = handlerError!(Method.POST, path, fn, file, line);
     static if (err.length) static assert(0, err);
     else app.register(Method.POST, path, delegate(Context c) { dispatch!(Method.POST, path, fn)(c); },
-        delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.POST, path, fn)(cs, pat); });
+        delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.POST, path, fn)(cs, pat); },
+        handlerName!(fn, file, line));
 }
 
 void put(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R)(R app) if (isRouteTarget!R)
@@ -793,7 +882,8 @@ void put(string path, alias fn, string file = __FILE__, size_t line = __LINE__, 
     enum err = handlerError!(Method.PUT, path, fn, file, line);
     static if (err.length) static assert(0, err);
     else app.register(Method.PUT, path, delegate(Context c) { dispatch!(Method.PUT, path, fn)(c); },
-        delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.PUT, path, fn)(cs, pat); });
+        delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.PUT, path, fn)(cs, pat); },
+        handlerName!(fn, file, line));
 }
 
 void patch(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R)(R app) if (isRouteTarget!R)
@@ -801,7 +891,8 @@ void patch(string path, alias fn, string file = __FILE__, size_t line = __LINE__
     enum err = handlerError!(Method.PATCH, path, fn, file, line);
     static if (err.length) static assert(0, err);
     else app.register(Method.PATCH, path, delegate(Context c) { dispatch!(Method.PATCH, path, fn)(c); },
-        delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.PATCH, path, fn)(cs, pat); });
+        delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.PATCH, path, fn)(cs, pat); },
+        handlerName!(fn, file, line));
 }
 
 void del(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R)(R app) if (isRouteTarget!R)
@@ -809,7 +900,8 @@ void del(string path, alias fn, string file = __FILE__, size_t line = __LINE__, 
     enum err = handlerError!(Method.DELETE, path, fn, file, line);
     static if (err.length) static assert(0, err);
     else app.register(Method.DELETE, path, delegate(Context c) { dispatch!(Method.DELETE, path, fn)(c); },
-        delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.DELETE, path, fn)(cs, pat); });
+        delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.DELETE, path, fn)(cs, pat); },
+        handlerName!(fn, file, line));
 }
 
 /// A WebSocket route: a GET whose handler returns `WebSocket` (see andaime.web.websocket). Not in the OpenAPI document,
@@ -818,5 +910,6 @@ void ws(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R
 {
     enum err = handlerError!(Method.GET, path, fn, file, line, true);
     static if (err.length) static assert(0, err);
-    else app.register(Method.GET, path, delegate(Context c) { dispatch!(Method.GET, path, fn)(c); });
+    else app.register(Method.GET, path, delegate(Context c) { dispatch!(Method.GET, path, fn)(c); }, null,
+        handlerName!(fn, file, line) ~ " (WebSocket)");
 }

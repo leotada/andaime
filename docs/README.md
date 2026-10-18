@@ -8,11 +8,11 @@ things up.
 | Page | What it covers |
 |------|----------------|
 | [Getting started](getting-started.md) | Install, the first route, a CRUD with JSON, a first test |
-| [Routing](routing.md) | Methods, path parameters, groups, controllers, 404/405, trailing slashes |
+| [Routing](routing.md) | Methods, path parameters, groups, controllers, 404/405, trailing slashes, the route table (`ANDAIME_ROUTES`) |
 | [Reading the request](requests.md) | Path, query, JSON body, query/form models, file uploads, headers, cookies, `Optional`, partial updates (`PatchField`), any JSON value (`JsonValue`), client IP, your own types |
 | [Validation and errors](validation.md) | Validation attributes, the 422 format and its error codes, your own validation response (`onValidationError`), other error statuses |
 | [Responses](responses.md) | Return types, status codes, JSON, `Response`, headers, cookies |
-| [Middleware and error handling](middleware.md) | Writing middleware, order, `Local!T`, access log, request id, CORS, `onError` |
+| [Middleware and error handling](middleware.md) | Writing middleware, order, `Local!T`, access log, request id, CORS, `onError`, `mapError` |
 | [Logging](logging.md) | `andaime.log`: levels, `text`/`kv`/`json` lines, the request id on every line, `ANDAIME_LOG_LEVEL` |
 | [Streaming](streaming.md) | `Stream` and Server-Sent Events, backpressure, cancellation |
 | [WebSockets](websocket.md) | `WebSocket` routes, `WsConn`, broadcasting, limits, compression, the `wsConnect` client, testing, proxies |

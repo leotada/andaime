@@ -558,7 +558,7 @@ private bool enqueueScheduled(Jobs...)(JobStore store, ScheduledFire fire) @safe
 private App healthApp() @safe
 {
     auto app = new App;
-    app.register(Method.GET, "/health", (Context ctx) { ctx.text("ok"); });
+    app.register(Method.GET, "/health", (Context ctx) { ctx.text("ok"); }, null, "(andaime: job worker health)");
     return app;
 }
 

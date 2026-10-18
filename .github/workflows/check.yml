@@ -9,9 +9,10 @@ on:
   workflow_dispatch:
 
 env:
-  # tools/check.sh: a skipped section fails the run, except the browser test (own job below).
+  # tools/check.sh: a skipped section fails the run, except the browser test (own job below) and the cross-platform
+  # type-check, which needs ldc2 and so runs only in the LDC job.
   ANDAIME_STRICT: "1"
-  ANDAIME_ALLOW_SKIP: "browser"
+  ANDAIME_ALLOW_SKIP: "browser cross-platform"
   # Shared runners are noisy: the compile-time budget is printed but does not fail the run.
   ANDAIME_CI: "1"
   H2SPEC_VERSION: "2.6.0"

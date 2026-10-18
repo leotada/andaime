@@ -20,11 +20,14 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 - Idiomatic D in handlers and middleware (slices, strings, delegates, DTOs). Do not add defensive `@nogc` to user-facing code.
   The runtime assumes a low-latency GC; the hot path is nevertheless GC-free and a test enforces it.
 - Keep the core free of heavy Phobos: no `std.format`, `std.conv`, `std.json`, `std.regex`, `std.algorithm`, `std.range`
-  in `http/`, `web/` and `engine/` (they cost compile time). Tests and examples may use them.
+  in `http/`, `web/` and `engine/` (they cost compile time). Tests, examples and `version (unittest)` blocks may use them: unittest
+  code is not part of a normal build (`web/source/andaime/web/json.d` imports `std.conv` inside one).
 - Prefer shallow constructs (`static foreach`, `static if`) over deep recursive templates.
 - Every invalid handler signature must produce a **one-line `static assert` message** that says exactly what to fix
   (see `handlerError` in `web/source/andaime/web/handler_traits.d`). Add a case to `tests/compile_fail/` when you add a rule.
-- Error messages from the library start with `andaime:` (`andaime.db:`, `andaime.http:`, `andaime.jobs:` for the drivers, the client and jobs).
+- Error messages start with the prefix of their package: `andaime:` in `http/`, `web/`, the root package and the engine's server
+  modules (`epoll.d`, `tlsserver.d`, `random.d`...); `andaime.http:` in the HTTP and WebSocket clients (`httpclient.d`, `httpfake.d`,
+  `wsclient.d`) and `tls.d`; `andaime.crypto:`, `andaime.jobs:` (also `drivers/pgjobs`) and `andaime.db:` (the Postgres driver).
 - Code also type-checks under language edition 2025 (the `edition` section of `check.sh`: a scratch copy with `module x 2025;`;
   the repository stays on the baseline edition because DMD 2.109 / LDC 1.40 cannot read it; CI runs it on DMD 2.112.0, the
   oldest compiler with editions, and older compilers skip it).
@@ -50,9 +53,11 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 - `-version=AndaimeStrictSafe` (dub: `versions "AndaimeStrictSafe"`) makes `handlerError` reject `@system` handlers with a one-line
   message (`tests/compile_fail/system_handler.d` declares its flag with a `// FLAGS:` line). `tests/web/system_code.d` proves
   that `@system` handlers, middleware and error handlers work by default.
-- Every module starts with `@safe:` except the raw-syscall ones: `engine/.../epoll.d` and `devserver.d` stay `@system`;
-  `EventLoop.run` is `@system` and `andaime.server.serve` is the single `@trusted` entry point into them. Their overrides of
-  `@safe` interfaces (`stop`, `awaitFd`, `sleepMs`, the `ResponseSink` methods) are small `@trusted` bodies.
+- Every module that declares code starts with `@safe:`. Exceptions: `engine/.../epoll.d` and `devserver.d` are `@system:` (raw
+  syscalls); `EventLoop.run` is `@system` and `andaime.server.serve` is the single `@trusted` entry point into them. Their overrides of
+  `@safe` interfaces (`stop`, `awaitFd`, `sleepMs`, the `ResponseSink` methods) are small `@trusted` bodies. `crypto/.../libcrypto.d`
+  is `@system:` (a table of C prototypes) and exposes `@trusted` functions. `engine/.../httpclient.d` has no module attribute: each
+  declaration is marked `@safe` or `@trusted`. Re-export modules (`package.d`) have no code and need neither.
 - FFI modules (`drivers/pg`, `engine/.../httpclient.d`, `wsclient.d`, `tls.d`, `tlsserver.d`, `zlib.d`, `random.d`, `libpq.d`,
   `crypto/.../libcrypto.d`, `ec.d`, `aead.d`, `hash.d`, `bcrypt.d`) expose `@trusted` facades; raw
   pointers never leave them (`tlsserver.d`'s per-connection functions take an `SSL*` and are `@system`; only `epoll.d` calls

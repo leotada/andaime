@@ -6,11 +6,11 @@ module ws_h2_net;
 
 version (linux):
 
-import vela;
-import vela.engine;
-import vela.http;
-import vela.http.hpack : encodeField, HpackDecoder, HpackError;
-import vela.server : handlerFactory;
+import andaime;
+import andaime.engine;
+import andaime.http;
+import andaime.http.hpack : encodeField, HpackDecoder, HpackError;
+import andaime.server : handlerFactory;
 
 import core.atomic : atomicOp, atomicLoad, atomicStore;
 import core.thread : Thread;
@@ -212,7 +212,7 @@ struct Stream
     size_t used;              /// bytes of `data` already parsed into frames
 }
 
-/// A minimal HTTP/2 client that opens WebSockets as streams (frames through vela's codec, masked like a browser's).
+/// A minimal HTTP/2 client that opens WebSockets as streams (frames through andaime's codec, masked like a browser's).
 final class H2Ws
 {
     int fd;

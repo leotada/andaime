@@ -1,7 +1,7 @@
 /// Guarantees the framework's hot path does not allocate on the GC:
 /// routing + path/query extraction + middleware + response JSON.
-import vela;
-import vela.http : splitTarget;
+import andaime;
+import andaime.http : splitTarget;
 import core.memory : GC;
 import core.stdc.stdio : printf;
 
@@ -11,7 +11,7 @@ Out calc(long id, int factor = 2) @safe => Out(id, id * factor, id % 2 == 0);
 
 void passThrough(Context ctx, Next next) @safe
 {
-    ctx.setHeader("X-Engine", "vela");
+    ctx.setHeader("X-Engine", "andaime");
     next();
 }
 

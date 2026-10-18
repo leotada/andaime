@@ -55,17 +55,17 @@ To run a single worker (an in-memory example, a test): `cfg.workers = 1`.
 
 ## Waiting without blocking
 
-Inside a handler, everything that waits must go through vela:
+Inside a handler, everything that waits must go through andaime:
 
 | To | Use |
 |----|-----|
 | pause | `sleep(500.msecs)` (from `core.time`), not `Thread.sleep` |
-| query PostgreSQL | `vela-pg` ([database.md](database.md)) |
+| query PostgreSQL | `andaime-pg` ([database.md](database.md)) |
 | call an HTTP API | `httpClient()` ([http-client.md](http-client.md)) |
 | wait for a file descriptor (your own driver) | `awaitFd(fd, IoEvent.readable, timeout)` |
 | run CPU-heavy work or a blocking C library | `offload(...)` (below) |
 
-A blocking call (`Thread.sleep`, a synchronous socket, a slow C function) stalls **every** request of the worker. vela logs a
+A blocking call (`Thread.sleep`, a synchronous socket, a slow C function) stalls **every** request of the worker. andaime logs a
 warning when a handler holds the worker for more than `stallWarnMs` (50 ms) without yielding.
 
 Outside a request (in `main`, in unittests) the same functions just block, so the same code works in both places.

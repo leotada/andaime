@@ -1,6 +1,6 @@
 // FLAGS: -Ijobs/source
-// EXPECT: vela.jobs: job 'job_no_perform.NoPerform' must define 'void perform(ref JobContext ctx) @safe'
-import vela.jobs;
+// EXPECT: andaime.jobs: job 'job_no_perform.NoPerform' must define 'void perform(ref JobContext ctx) @safe'
+import andaime.jobs;
 @safe:
 @Job("default")
 struct NoPerform

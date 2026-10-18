@@ -4,20 +4,20 @@
 /// handshake deadline, garbage instead of a handshake, h2c/prior knowledge refused over TLS,
 /// certificate reload (good and bad files), configuration errors, and many connections.
 ///
-/// The module sits in the `vela.engine` package only to reach the raw OpenSSL table, which is
-/// package-protected (`vela.engine.tls`); nothing outside tests does this.
+/// The module sits in the `andaime.engine` package only to reach the raw OpenSSL table, which is
+/// package-protected (`andaime.engine.tls`); nothing outside tests does this.
 /// Skips itself (prints `skip: <reason>` and exits 77) when OpenSSL 3 or the `openssl` command is missing.
-module vela.engine.tls_net;
+module andaime.engine.tls_net;
 
 version (linux):
 
-import vela;
-import vela.engine;
-import vela.engine.tls;
-import vela.engine.tlsserver : TlsServer, TicketKeys;
-import vela.http;
-import vela.http.hpack : encodeField;
-import vela.server : handlerFactory;
+import andaime;
+import andaime.engine;
+import andaime.engine.tls;
+import andaime.engine.tlsserver : TlsServer, TicketKeys;
+import andaime.http;
+import andaime.http.hpack : encodeField;
+import andaime.server : handlerFactory;
 
 import core.atomic : atomicOp, atomicLoad;
 import core.thread : Thread;
@@ -660,14 +660,14 @@ void testConfigErrors()
     bad.certFile = dir ~ "/missing.pem";
     bad.keyFile = dir ~ "/a.key";
     auto e = t.load(bad, true, keys);
-    assert(e.indexOf("vela: TLS: cannot load the certificate chain") == 0, e);
+    assert(e.indexOf("andaime: TLS: cannot load the certificate chain") == 0, e);
     bad.certFile = ca("a");
     bad.keyFile = dir ~ "/b.key";
     e = t.load(bad, true, keys);
-    assert(e.indexOf("vela: TLS: the private key " ~ dir ~ "/b.key does not match the certificate") == 0, e);
+    assert(e.indexOf("andaime: TLS: the private key " ~ dir ~ "/b.key does not match the certificate") == 0, e);
     bad.keyFile = dir ~ "/missing.key";
     e = t.load(bad, true, keys);
-    assert(e.indexOf("vela: TLS: cannot load the private key") == 0, e);
+    assert(e.indexOf("andaime: TLS: cannot load the private key") == 0, e);
     TlsServer good;
     bad.keyFile = dir ~ "/a.key";
     assert(good.load(bad, true, keys) is null);
@@ -885,7 +885,7 @@ void testLogging()
     });
     import std.algorithm : count;
 
-    assert(log.count("vela: TLS handshake failed from 127.0.0.1: ") == 2, log);
+    assert(log.count("andaime: TLS handshake failed from 127.0.0.1: ") == 2, log);
     assert(log.indexOf("certificate unknown") >= 0 || log.indexOf("alert") >= 0, log);
     assert(log.indexOf("(1 similar messages suppressed)") >= 0, log); // the cleartext client; not the one that just closed
     assert(log.indexOf("closed") < 0 && log.indexOf("eof") < 0, log);
@@ -913,8 +913,8 @@ void testLogging()
         c.hang();
         Thread.sleep(100.msecs);
     });
-    assert(log.indexOf("vela: HTTP/2 connection error from 127.0.0.1: PROTOCOL_ERROR") >= 0, log);
-    assert(log.indexOf("vela: HTTP/2 connection error from 127.0.0.1: SETTINGS_TIMEOUT") >= 0, log);
+    assert(log.indexOf("andaime: HTTP/2 connection error from 127.0.0.1: PROTOCOL_ERROR") >= 0, log);
+    assert(log.indexOf("andaime: HTTP/2 connection error from 127.0.0.1: SETTINGS_TIMEOUT") >= 0, log);
 
     ServerConfig quiet;
     quiet.logConnectionErrors = false;
@@ -1005,7 +1005,7 @@ void main()
         fprintf(stderr, "skip: %.*s\n", cast(int) e.length, e.ptr);
         exit(77);
     }
-    dir = tempDir ~ "/vela_tls_" ~ thisProcessID.to!string;
+    dir = tempDir ~ "/andaime_tls_" ~ thisProcessID.to!string;
     mkdirRecurse(dir);
     scope (exit) rmdirRecurse(dir);
     if (!makeCert("a") || !makeCert("b", "other"))

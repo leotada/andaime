@@ -1,7 +1,7 @@
 name "crypto"
 description "Cryptographic primitives over OpenSSL 3 and libxcrypt, loaded at run time: SHA-256, HMAC, HKDF, AES-128-GCM, ECDSA/ECDH P-256, Web Push encryption, bcrypt. The core does not depend on it."
 targetType "library"
-dependency "vela:http" version="*"
-dependency "vela:engine" version="*"
+dependency "andaime:http" version="*"
+dependency "andaime:engine" version="*"
 
 toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

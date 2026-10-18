@@ -1,6 +1,6 @@
 # HTTP/2
 
-vela implements HTTP/2 as defined by RFC 9113 (with HPACK, RFC 7541): over TLS through ALPN, and in cleartext (h2c) by prior
+andaime implements HTTP/2 as defined by RFC 9113 (with HPACK, RFC 7541): over TLS through ALPN, and in cleartext (h2c) by prior
 knowledge or `Upgrade: h2c`. It passes h2spec (146/146 over TLS) and is tested against Chromium, curl, python-h2 and Caddy as
 an h2c reverse proxy (see [Verification](#verification)); the optional parts it leaves out are listed under
 [Behavior](#behavior).
@@ -41,7 +41,7 @@ Browsers only speak HTTP/2 over TLS: use h2c service to service, or behind a pro
   service protocol `H2C` (not on the classic Application Load Balancer; its `HTTP2` protocol requires TLS).
 - AWS ALB: HTTP/2 target groups (protocol version `HTTP2`) only work behind an HTTPS listener. AWS does not document whether
   the hop to the target may be cleartext; users report h2c working, but it is untested here. An HTTPS target group pointing at
-  vela's TLS listener is the documented path.
+  andaime's TLS listener is the documented path.
 
 ## Behavior
 
@@ -50,7 +50,7 @@ Browsers only speak HTTP/2 over TLS: use h2c service to service, or behind a pro
   cancels only that handler, and closing the connection cancels all of them.
 - Streamed responses ([streaming.md](streaming.md)) are DATA frames under flow control; a stalled stream suspends only its own
   handler.
-- WebSockets (RFC 8441): vela announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`, and a `CONNECT` with `:protocol websocket` reaches
+- WebSockets (RFC 8441): andaime announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`, and a `CONNECT` with `:protocol websocket` reaches
   the `ws!` route of its `:path` as a GET; the stream then carries the WebSocket both ways, under the same flow control
   ([websocket.md](websocket.md#http2)). Other `:protocol` values get 501, a plain `CONNECT` (a proxy tunnel) too.
 - Graceful stop sends `GOAWAY`; streams already accepted finish first (those still open after `shutdownGraceMs` are cancelled).
@@ -60,7 +60,7 @@ Browsers only speak HTTP/2 over TLS: use h2c service to service, or behind a pro
   connection with `ENHANCE_YOUR_CALM`; reading pauses while a client does not read its responses.
 - A connection that ends is closed with FIN first and its remaining input discarded for up to a second, so the peer never sees a
   reset instead of our last frames.
-- Not for gRPC yet: gRPC needs response trailers (`grpc-status`), which vela does not support.
+- Not for gRPC yet: gRPC needs response trailers (`grpc-status`), which andaime does not support.
 - Not implemented: server push (clients disable it), priorities (accepted and ignored, as RFC 9113 allows), the HPACK dynamic
   table when encoding responses (decoding uses it as required).
 

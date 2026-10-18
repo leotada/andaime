@@ -1,5 +1,5 @@
 // EXPECT: more than one body parameter (JsonBody or Form); merge the fields into a single DTO
-import vela;
+import andaime;
 @safe:
 struct A { int x; } struct B { int y; }
 string f(JsonBody!A a, JsonBody!B b) => "x";

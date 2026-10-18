@@ -2,12 +2,12 @@
 /// Usage: h2_serve <port> [cert.pem key.pem]   (with a certificate: HTTPS, ALPN h2/http1.1)
 module h2_serve;
 
-import vela;
-import vela.engine : ServerConfig;
+import andaime;
+import andaime.engine : ServerConfig;
 
 @safe:
 
-string root() => "hello from vela";
+string root() => "hello from andaime";
 
 string echo(Context c) => cast(string) c.request.body.idup;
 

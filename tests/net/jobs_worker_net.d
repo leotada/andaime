@@ -4,9 +4,9 @@ module jobs_worker_net;
 
 version (linux):
 
-import vela.engine.fiberio : sleep;
-import vela.engine.loop : ServerConfig;
-import vela.jobs;
+import andaime.engine.fiberio : sleep;
+import andaime.engine.loop : ServerConfig;
+import andaime.jobs;
 
 import core.atomic : atomicLoad, atomicStore;
 import core.time : MonoTime, msecs, seconds;
@@ -23,7 +23,7 @@ struct Ping
 
     void perform(ref JobContext ctx)
     {
-        import vela.log : logInfo;
+        import andaime.log : logInfo;
 
         logInfo("ping ran");
         atomicStore(ran, 1);

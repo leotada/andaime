@@ -2,7 +2,7 @@
 /// dies. Usage: stack_overflow <port>
 module stack_overflow;
 
-import vela;
+import andaime;
 import std.conv : to;
 
 @safe:

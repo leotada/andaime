@@ -5,7 +5,7 @@
 /// Usage: bench_serve [port=18100] [workers=1]
 module bench_serve;
 
-import vela;
+import andaime;
 
 @safe:
 
@@ -21,7 +21,7 @@ User user(long id, Header!"User-Agent" agent, bool full = false) => User(id, "us
 
 void serverHeader(Context ctx, Next next)
 {
-    ctx.setHeader("Server", "vela");
+    ctx.setHeader("Server", "andaime");
     next();
 }
 

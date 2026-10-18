@@ -1,12 +1,12 @@
 /// Tests of the outgoing HTTP client against a Python upstream (tests/net/upstream.py).
-/// Variables: VELA_UP_PLAIN, VELA_UP_TLS (ports) and VELA_UP_CERT (the upstream's certificate).
+/// Variables: ANDAIME_UP_PLAIN, ANDAIME_UP_TLS (ports) and ANDAIME_UP_CERT (the upstream's certificate).
 module client_net;
 
 version (linux):
 
-import vela;
-import vela.engine;
-import vela.server : handlerFactory;
+import andaime;
+import andaime.engine;
+import andaime.server : handlerFactory;
 
 import core.atomic : atomicLoad;
 import core.stdc.stdio : printf, fflush, stdout;
@@ -390,14 +390,14 @@ string replicate(string s, size_t n)
 
 void main()
 {
-    auto p = env("VELA_UP_PLAIN"), t = env("VELA_UP_TLS");
-    certFile = env("VELA_UP_CERT");
+    auto p = env("ANDAIME_UP_PLAIN"), t = env("ANDAIME_UP_TLS");
+    certFile = env("ANDAIME_UP_CERT");
     if (p is null || t is null || certFile is null)
     {
         import core.stdc.stdio : fprintf, stderr;
         import core.stdc.stdlib : exit;
 
-        fprintf(stderr, "skip: set VELA_UP_PLAIN, VELA_UP_TLS and VELA_UP_CERT (see tests/net/upstream.py)\n");
+        fprintf(stderr, "skip: set ANDAIME_UP_PLAIN, ANDAIME_UP_TLS and ANDAIME_UP_CERT (see tests/net/upstream.py)\n");
         exit(77);
     }
     plainBase = "http://127.0.0.1:" ~ p;

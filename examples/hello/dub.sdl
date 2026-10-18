@@ -1,4 +1,4 @@
 name "hello"
-description "vela ergonomics example"
+description "andaime ergonomics example"
 targetType "executable"
-dependency "vela" path="../.."
+dependency "andaime" path="../.."

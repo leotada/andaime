@@ -1,8 +1,8 @@
-/// vela.log lines written inside `perform` carry `job`, `job_id` and `attempt`, like a request's lines carry its id.
+/// andaime.log lines written inside `perform` carry `job`, `job_id` and `attempt`, like a request's lines carry its id.
 module job_logging;
 
-import vela.jobs;
-import vela.log;
+import andaime.jobs;
+import andaime.log;
 import std.string : splitLines, indexOf;
 
 @Job("default")
@@ -109,7 +109,7 @@ unittest
 unittest
 {
     // through the sink: the job scope arrives as fields, in order, before the call's own
-    import vela.web.testing : captureLog;
+    import andaime.web.testing : captureLog;
 
     auto store = new TestJobStore;
     enqueue(store, Greet("Dan"));

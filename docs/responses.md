@@ -57,10 +57,10 @@ ctx.addHeader("Link", "</a.css>; rel=preload"); // appends (repeatable headers)
 ctx.addVary("Accept-Language");                 // merges into one Vary header
 ```
 
-vela checks every header after the middleware has unwound. A CR, LF, NUL or other control character in a name or value, an
+andaime checks every header after the middleware has unwound. A CR, LF, NUL or other control character in a name or value, an
 invalid name, or more than 32 headers turns the response into a **500** with a log line naming the header (never its value),
 so a header-injection bug cannot reach the client. `Content-Length`, `Connection`, `Keep-Alive`, `Transfer-Encoding`, `Upgrade`,
-`Proxy-Connection` and `TE` belong to vela and are dropped if you set them; `Date` is added unless you set it.
+`Proxy-Connection` and `TE` belong to andaime and are dropped if you set them; `Date` is added unless you set it.
 
 ## Cookies
 

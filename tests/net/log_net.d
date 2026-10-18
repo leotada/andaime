@@ -1,10 +1,10 @@
-/// vela.log on the real server: requests whose fibers interleave on one worker thread each log with their own request id
+/// andaime.log on the real server: requests whose fibers interleave on one worker thread each log with their own request id
 /// (the id lives in the request fiber's slot, not in a per-thread variable that the next fiber would overwrite).
 module log_net;
 
 version (linux):
 
-import vela;
+import andaime;
 
 import core.thread : Thread;
 import core.time : msecs, MonoTime;
@@ -121,6 +121,6 @@ void main()
     }
     // the fibers really interleaved: the fast request started and finished while the slow one slept
     assert(order == ["before:slow-req", "before:fast-req", "after:fast-req", "after:slow-req"], order.to!string);
-    printf("ok  vela.log: interleaved request fibers on one worker each log their own request id\n");
+    printf("ok  andaime.log: interleaved request fibers on one worker each log their own request id\n");
     fflush(stdout);
 }

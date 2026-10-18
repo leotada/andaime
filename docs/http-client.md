@@ -4,7 +4,7 @@
 response suspend only the request's fiber.
 
 ```d
-import vela;
+import andaime;
 
 struct Quote { string currency; double rate; }
 
@@ -53,7 +53,7 @@ shape varies. Both throw `JsonError` on bad JSON, with the byte or the field:
 
 ```d
 // check
-import vela;
+import andaime;
 
 struct Rate { string currency; double rate; }
 
@@ -141,7 +141,7 @@ Code that calls `httpClient()` (an S3 upload, a mail API, a payment provider) ca
 
 ```d
 // check
-import vela;
+import andaime;
 
 bool uploadAvatar(long id, const(ubyte)[] png)
 {
@@ -182,7 +182,7 @@ void main() {}
   in order. Each answers as many requests as it has replies: `respond(status, body, headers)`, `timeout()`
   (`HttpClientTimeout`) or `fail(msg)` (`HttpClientError`); one with no reply answers once with a 200. `always()` repeats
   the last reply forever.
-- A request no expectation matches throws `HttpClientError("vela.http: FakeHttpClient: unexpected request ...")`, so a
+- A request no expectation matches throws `HttpClientError("andaime.http: FakeHttpClient: unexpected request ...")`, so a
   forgotten call fails the test instead of reaching the network. Every request, expected or not, lands in `requests`
   (method, URL, headers, the body as bytes, `text`, the per-call timeout). `verify()` throws if an expectation was not used
   up.

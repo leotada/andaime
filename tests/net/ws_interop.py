@@ -1,7 +1,7 @@
 """WebSocket interop with the python `websockets` library (tools/ws_interop.sh).
 
 Usage: ws_interop.py client <port>   -- talks to tests/net/ws_serve.d as a client
-       ws_interop.py server <port>   -- serves an echo for vela's WebSocket client (tests/net/ws_client_check.d)
+       ws_interop.py server <port>   -- serves an echo for andaime's WebSocket client (tests/net/ws_client_check.d)
 Exits 77 when `websockets` is not installed.
 """
 import asyncio

@@ -3,8 +3,8 @@
 /// Exits 77 (skip) when OpenSSL 3 cannot be loaded.
 module webpush_rfc8291;
 
-import vela.crypto;
-import vela.crypto.hash : hkdfExtract, hkdfExpand;
+import andaime.crypto;
+import andaime.crypto.hash : hkdfExtract, hkdfExpand;
 import core.stdc.stdio : fprintf, printf, stderr;
 
 ubyte[] b64(string s)

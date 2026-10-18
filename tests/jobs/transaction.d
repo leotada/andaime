@@ -5,7 +5,7 @@ module transaction;
 @safe:
 
 import core.time : minutes;
-import vela.jobs;
+import andaime.jobs;
 
 @Job("mail")
 struct Welcome
@@ -59,7 +59,7 @@ unittest
     try
         enqueue(tx, Welcome("late@x.com"));
     catch (JobStoreError e)
-        threw = e.msg == "vela.jobs: enqueue on a transaction that was already committed or rolled back";
+        threw = e.msg == "andaime.jobs: enqueue on a transaction that was already committed or rolled back";
     assert(threw);
     threw = false;
     try

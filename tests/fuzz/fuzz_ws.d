@@ -4,7 +4,7 @@
 module fuzz_ws;
 
 import ws_invariants;
-import vela.http;
+import andaime.http;
 import core.stdc.stdio : printf;
 import std.conv : to;
 

@@ -3,10 +3,10 @@
 /// to an equal value and writes the same text again; a typed decode of the same bytes never crashes either.
 module json_invariants;
 
-import vela.web.jsonvalue;
-import vela.web.json : decodeJson;
-import vela.web.dto : FieldErrors;
-import vela.web.params : Optional, PatchField;
+import andaime.web.jsonvalue;
+import andaime.web.json : decodeJson;
+import andaime.web.dto : FieldErrors;
+import andaime.web.params : Optional, PatchField;
 
 struct Inner { int n; Optional!string s; }
 struct Typed { string name; PatchField!long id; Inner[] items; double[string] scores; JsonValue extra; }

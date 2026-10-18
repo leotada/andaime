@@ -3,8 +3,8 @@ module client_ip;
 
 @safe:
 
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 
 string who(ClientIp ip) => ip.toString;
 string whoCtx(Context ctx) => ctx.clientIp().toString;

@@ -1,15 +1,15 @@
 /// Postgres job queue: rollback drops the row and the notify, two claimers never share an id,
 /// LISTEN wakes a fiber, a cron slot inserts once, and a lease returns an abandoned `running` row.
-/// Without VELA_PG the test prints `skip: ...` and exits 77. Build it, then run the binary:
+/// Without ANDAIME_PG the test prints `skip: ...` and exits 77. Build it, then run the binary:
 /// `dmd -run` turns that 77 into 1.
 module pg_jobs;
 
 version (linux):
 
-import vela;
-import vela.db;
-import vela.jobs;
-import vela.jobs.pg;
+import andaime;
+import andaime.db;
+import andaime.jobs;
+import andaime.jobs.pg;
 
 import core.atomic : atomicLoad, atomicOp, atomicStore;
 import core.stdc.stdio : printf, fprintf, fflush, stdout, stderr;
@@ -17,7 +17,7 @@ import core.stdc.stdlib : getenv, exit;
 import core.stdc.string : strlen;
 import core.thread : Thread;
 import core.time : Duration, minutes, msecs, seconds;
-import vela.web.numtext : itoa;
+import andaime.web.numtext : itoa;
 import std.datetime.date : DateTime;
 import std.datetime.systime : SysTime;
 import std.datetime.timezone : UTC;
@@ -53,8 +53,8 @@ PgJobStore newStore(PgConn admin, Duration leasePeriod = 15.minutes)
 
 void reset(PgConn admin)
 {
-    admin.exec("drop table if exists vela_jobs");
-    admin.exec("drop table if exists vela_cron_executions");
+    admin.exec("drop table if exists andaime_jobs");
+    admin.exec("drop table if exists andaime_cron_executions");
 }
 
 JobSpec spec(string queue, string name, string payload = `{}`, int priority = 100)
@@ -137,7 +137,7 @@ void testRollback(PgConn admin)
         threw = e.msg == "rollback";
     }
     assert(threw);
-    assert(qint(admin, "select count(*)::int from vela_jobs") == 0);
+    assert(qint(admin, "select count(*)::int from andaime_jobs") == 0);
     assert(store.claimBatch("default", 10).length == 0);
 
     // the same through the store-neutral JobTransaction: committed with the caller's data, or not at all
@@ -145,7 +145,7 @@ void testRollback(PgConn admin)
         JobTransaction jt = store.within(tx);
         assert(enqueue(jt, Ping(8)).inserted);
     });
-    assert(qint(admin, "select count(*)::int from vela_jobs") == 1);
+    assert(qint(admin, "select count(*)::int from andaime_jobs") == 1);
     threw = false;
     try
         pgPool(pgConninfo()).transaction((PgConn tx) {
@@ -154,7 +154,7 @@ void testRollback(PgConn admin)
         });
     catch (Exception e)
         threw = true;
-    assert(threw && qint(admin, "select count(*)::int from vela_jobs") == 1);
+    assert(threw && qint(admin, "select count(*)::int from andaime_jobs") == 1);
 }
 
 /// Unique window, priority order, a future `run_at`, and attempt accounting for fail / release / discard.
@@ -169,8 +169,8 @@ void testUniqueAndAttempts(PgConn admin)
     auto first = store.enqueue(u);
     auto again = store.enqueue(u);
     assert(first.inserted && !again.inserted && again.id == first.id);
-    assert(qint(admin, "select count(*)::int from vela_jobs") == 1);
-    assert(qlong(admin, "select (extract(epoch from unique_slot) * 1000000)::bigint from vela_jobs where id = $1", first.id)
+    assert(qint(admin, "select count(*)::int from andaime_jobs") == 1);
+    assert(qlong(admin, "select (extract(epoch from unique_slot) * 1000000)::bigint from andaime_jobs where id = $1", first.id)
         == u.uniqueSlot);
 
     auto claimed = store.claimBatch("default", 1);
@@ -197,27 +197,27 @@ void testUniqueAndAttempts(PgConn admin)
     assert(store.claimBatch("", 10).length == 0); // future, or already running
 
     store.release(batch[0].id);
-    assert(qstr(admin, "select state from vela_jobs where id = $1", batch[0].id) == "retryable");
-    assert(qint(admin, "select attempt from vela_jobs where id = $1", batch[0].id) == 0);
+    assert(qstr(admin, "select state from andaime_jobs where id = $1", batch[0].id) == "retryable");
+    assert(qint(admin, "select attempt from andaime_jobs where id = $1", batch[0].id) == 0);
     auto rerun = store.claimBatch("default", 1);
     assert(rerun.length == 1 && rerun[0].id == batch[0].id && rerun[0].attempt == 1);
 
     store.fail(rerun[0].id, 60.minutes, "say \"hi\"");
-    assert(qstr(admin, "select state from vela_jobs where id = $1", rerun[0].id) == "retryable");
-    assert(qint(admin, "select attempt from vela_jobs where id = $1", rerun[0].id) == 1);
-    assert(qstr(admin, "select errors->>0 from vela_jobs where id = $1", rerun[0].id) == "say \"hi\"");
+    assert(qstr(admin, "select state from andaime_jobs where id = $1", rerun[0].id) == "retryable");
+    assert(qint(admin, "select attempt from andaime_jobs where id = $1", rerun[0].id) == 1);
+    assert(qstr(admin, "select errors->>0 from andaime_jobs where id = $1", rerun[0].id) == "say \"hi\"");
     assert(store.claimBatch("default", 10).length == 0);
-    admin.exec("update vela_jobs set run_at = now() - interval '1 second' where id = $1", rerun[0].id);
+    admin.exec("update andaime_jobs set run_at = now() - interval '1 second' where id = $1", rerun[0].id);
     auto after = store.claimBatch("default", 1);
     assert(after.length == 1 && after[0].id == rerun[0].id && after[0].attempt == 2);
     assert(after[0].lastError == "say \"hi\"");
     store.complete(after[0].id);
-    assert(qstr(admin, "select state from vela_jobs where id = $1", after[0].id) == "completed");
+    assert(qstr(admin, "select state from andaime_jobs where id = $1", after[0].id) == "completed");
 
-    store.discard(batch[1].id, "a'; drop table vela_jobs;--");
-    assert(qint(admin, "select count(*)::int from vela_jobs") >= 1);
-    assert(qstr(admin, "select state from vela_jobs where id = $1", batch[1].id) == "discarded");
-    assert(qstr(admin, "select state from vela_jobs where job_name = $1", "future") == "scheduled");
+    store.discard(batch[1].id, "a'; drop table andaime_jobs;--");
+    assert(qint(admin, "select count(*)::int from andaime_jobs") >= 1);
+    assert(qstr(admin, "select state from andaime_jobs where id = $1", batch[1].id) == "discarded");
+    assert(qstr(admin, "select state from andaime_jobs where job_name = $1", "future") == "scheduled");
 
     store.enqueue(spec("alpha", "a"));
     store.enqueue(spec("beta", "b"));
@@ -240,7 +240,7 @@ void testClaimers(PgConn admin) @system
         holder.shutdown();
     }
     holder.exec("begin");
-    holder.exec("select id from vela_jobs where id = $1 for update", low.id);
+    holder.exec("select id from andaime_jobs where id = $1 for update", low.id);
     auto got = store.claimBatch("locked", 10);
     assert(got.length == 1 && got[0].id == high.id, "the locked id was claimed");
     holder.exec("rollback");
@@ -298,7 +298,7 @@ void testClaimers(PgConn admin) @system
     a.join();
     b.join();
     assert(atomicLoad(gWins) == 1);
-    assert(qstr(admin, "select state from vela_jobs where id = $1", only.id) == "running");
+    assert(qstr(admin, "select state from andaime_jobs where id = $1", only.id) == "running");
 }
 
 /// `cronSlot` / `slotStart` stdTime inserts once per (job, slot).
@@ -313,14 +313,14 @@ void testCron(PgConn admin)
     assert(cronSlot(expr, now, slot));
     assert(store.claimCronSlot("daily", slot.stdTime));
     assert(!store.claimCronSlot("daily", slot.stdTime));
-    assert(qlong(admin, "select extract(epoch from scheduled_slot)::bigint from vela_cron_executions where job_name = $1", "daily")
+    assert(qlong(admin, "select extract(epoch from scheduled_slot)::bigint from andaime_cron_executions where job_name = $1", "daily")
         == slot.toUnixTime());
 
     auto every = slotStart(now, 15.minutes);
     assert(store.claimCronSlot("quarter", every.stdTime));
     assert(!store.claimCronSlot("quarter", every.stdTime));
     assert(store.claimCronSlot("daily", every.stdTime + 60L * 10_000_000L));
-    assert(qint(admin, "select count(*)::int from vela_cron_executions") == 3);
+    assert(qint(admin, "select count(*)::int from andaime_cron_executions") == 3);
 }
 
 /// A `running` row older than the lease becomes `retryable` with the same attempt. A fresh one stays `running`.
@@ -333,12 +333,12 @@ void testLease(PgConn admin)
     auto fresh = store.enqueue(spec("lease", "fresh"));
     auto a = store.claimBatch("lease", 10);
     assert(a.length == 2 && a[0].attempt == 1 && a[1].attempt == 1);
-    admin.exec("update vela_jobs set attempted_at = now() - interval '2 minutes' where id = $1", old.id);
-    admin.exec("update vela_jobs set attempted_at = now() - interval '10 seconds' where id = $1", fresh.id);
+    admin.exec("update andaime_jobs set attempted_at = now() - interval '2 minutes' where id = $1", old.id);
+    admin.exec("update andaime_jobs set attempted_at = now() - interval '10 seconds' where id = $1", fresh.id);
     store.reap();
-    assert(qstr(admin, "select state from vela_jobs where id = $1", old.id) == "retryable");
-    assert(qint(admin, "select attempt from vela_jobs where id = $1", old.id) == 1);
-    assert(qstr(admin, "select state from vela_jobs where id = $1", fresh.id) == "running");
+    assert(qstr(admin, "select state from andaime_jobs where id = $1", old.id) == "retryable");
+    assert(qint(admin, "select attempt from andaime_jobs where id = $1", old.id) == 1);
+    assert(qstr(admin, "select state from andaime_jobs where id = $1", fresh.id) == "running");
     auto again = store.claimBatch("lease", 10);
     assert(again.length == 1 && again[0].id == old.id && again[0].attempt == 2);
 }
@@ -374,7 +374,7 @@ PgConn connect()
 
 int listening(PgConn c)
 {
-    return qint(c, "select count(*)::int from pg_stat_activity where pid <> pg_backend_pid() and query like '%vela_jobs_notify%' and state = 'idle'");
+    return qint(c, "select count(*)::int from pg_stat_activity where pid <> pg_backend_pid() and query like '%andaime_jobs_notify%' and state = 'idle'");
 }
 
 void dumpActivity(PgConn c)
@@ -462,7 +462,7 @@ void testNotify(PgConn admin)
     assert(threw);
     Thread.sleep(400.msecs);
     assert(atomicLoad(gWakes) == before, "ROLLBACK delivered a notification");
-    assert(qint(admin, "select count(*)::int from vela_jobs") == 0);
+    assert(qint(admin, "select count(*)::int from andaime_jobs") == 0);
 
     auto live = store.enqueue(spec("notify", "live", `{"n":2}`));
     if (!waitFor(() => atomicLoad(gSeen) == live.id, 2500))
@@ -472,8 +472,8 @@ void testNotify(PgConn admin)
         assert(0, "notify did not wake the listener");
     }
     assert(atomicLoad(gWakes) > before);
-    assert(qstr(admin, "select state from vela_jobs where id = $1", live.id) == "running");
-    assert(contains(qstr(admin, "select payload::text from vela_jobs where id = $1", live.id), "2"));
+    assert(qstr(admin, "select state from andaime_jobs where id = $1", live.id) == "running");
+    assert(contains(qstr(admin, "select payload::text from andaime_jobs where id = $1", live.id), "2"));
 
     import core.sys.posix.signal : kill, SIGTERM;
     import core.sys.posix.unistd : getpid;
@@ -486,10 +486,10 @@ void testNotify(PgConn admin)
 
 void main()
 {
-    auto env = getenv("VELA_PG");
+    auto env = getenv("ANDAIME_PG");
     if (env is null)
     {
-        fprintf(stderr, "skip: set VELA_PG to the conninfo of a test Postgres\n");
+        fprintf(stderr, "skip: set ANDAIME_PG to the conninfo of a test Postgres\n");
         exit(77);
     }
     conninfo = cast(string) env[0 .. strlen(env)].idup;

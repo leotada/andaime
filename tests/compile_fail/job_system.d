@@ -1,6 +1,6 @@
 // FLAGS: -Ijobs/source
-// EXPECT: vela.jobs: job 'job_system.SystemPerform' perform is @system; mark it @safe
-import vela.jobs;
+// EXPECT: andaime.jobs: job 'job_system.SystemPerform' perform is @system; mark it @safe
+import andaime.jobs;
 @safe:
 @Job("default")
 struct SystemPerform

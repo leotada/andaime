@@ -50,8 +50,8 @@ c.from("203.0.113.7").get("/whoami");          // the TCP peer address (default 
 
 ```d
 // check
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 
 struct NewUser { string name; int age; }
 struct User { long id; string name; int age; }
@@ -113,7 +113,7 @@ version (unittest) {} else void main() { serve(&buildApp); }
 | `header("Name")` | first value of a header, or `null` |
 | `headers("Set-Cookie")` | every value of a header |
 | `headerList` | all headers, in order |
-| `date()` | the `Date` header vela adds |
+| `date()` | the `Date` header andaime adds |
 | `chunks` | the body as it was written: one entry per `write` of a [stream](streaming.md) (one per Server-Sent Event) |
 | `contentLength` | the announced length, -1 for a stream of unknown length |
 | `aborted` | a stream failed after it started (a real client would see a cut-off body) |
@@ -134,13 +134,13 @@ opens the WebSocket as a browser does on an HTTP/2 connection (RFC 8441): a succ
 
 ## Logs
 
-`captureLog` runs a delegate and returns the lines that `vela.log` wrote on this thread instead of writing them to stderr
+`captureLog` runs a delegate and returns the lines that `andaime.log` wrote on this thread instead of writing them to stderr
 (the level and format from `configureLog` apply, so a line below the level is not collected):
 
 ```d
 // check
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 
 string boom() @safe { throw new Exception("kaput"); }
 

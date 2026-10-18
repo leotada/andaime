@@ -4,8 +4,8 @@ module ordering;
 
 @safe:
 
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 
 string hi() => "hi";
 string late() => "late";
@@ -65,7 +65,7 @@ unittest
             op();
         catch (RouteError e)
         {
-            assert(e.msg == "vela: the app is already serving; register routes and middleware before serve (in the build function)", e.msg);
+            assert(e.msg == "andaime: the app is already serving; register routes and middleware before serve (in the build function)", e.msg);
             return;
         }
         assert(0, "expected a RouteError");

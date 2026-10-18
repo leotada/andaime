@@ -4,8 +4,8 @@ module workers_net;
 
 version (linux):
 
-import vela;
-import vela.engine : ServerConfig;
+import andaime;
+import andaime.engine : ServerConfig;
 
 import core.atomic : atomicOp, atomicLoad;
 import core.sync.mutex : Mutex;
@@ -204,7 +204,7 @@ void testSameAppTwice()
     bool result = true;
     auto log = captureStderr({ result = tryServe(() => shared_, cfg); });
     assert(!result);
-    assert(log.canFind("vela: building the app failed: vela: the build function must create a new App for each worker "
+    assert(log.canFind("andaime: building the app failed: andaime: the build function must create a new App for each worker "
         ~ "(it returned the same object twice); move `new App` and the route registration inside it"), log);
     ok("a build function that returns the same App twice fails with a clear message");
 }
@@ -222,7 +222,7 @@ void testBuildThrows()
     auto log = captureStderr({
         result = tryServe(() { throw new Exception("boom"); return cast(App) null; }, cfg);
     });
-    assert(!result && log.count("vela: building the app failed: boom") == 1, log);
+    assert(!result && log.count("andaime: building the app failed: boom") == 1, log);
 
     // a later worker fails: the server stops instead of running half-built
     shared int calls;
@@ -235,7 +235,7 @@ void testBuildThrows()
             return a;
         }, cfg);
     });
-    assert(!result && log.canFind("vela: building the app failed: second build failed"), log);
+    assert(!result && log.canFind("andaime: building the app failed: second build failed"), log);
     ok("a build that throws: one line on stderr and a false result, whether it is the first worker or a later one");
 }
 

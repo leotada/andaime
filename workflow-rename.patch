@@ -1,0 +1,57 @@
+diff --git a/.github/workflows/check.yml b/.github/workflows/check.yml
+index 3ec6117..e729c0c 100644
+--- a/.github/workflows/check.yml
++++ b/.github/workflows/check.yml
+@@ -11,13 +11,13 @@ on:
+ env:
+   # tools/check.sh: a skipped section fails the run, except the browser test (own job below) and the language-edition
+   # section, which compilers older than DMD 2.112 skip (the "edition" job below runs it on 2.112.0).
+-  VELA_STRICT: "1"
+-  VELA_ALLOW_SKIP: "browser edition"
++  ANDAIME_STRICT: "1"
++  ANDAIME_ALLOW_SKIP: "browser edition"
+   # Shared runners are noisy: the compile-time budget is printed but does not fail the run.
+-  VELA_CI: "1"
++  ANDAIME_CI: "1"
+   H2SPEC_VERSION: "2.6.0"
+   H2SPEC_SHA256: "157ee0de702e01ad40e752dbf074b366027e550c8e7504f9450da2809e279318"
+-  # tools/proxy_interop.sh: vela behind Caddy over h2c
++  # tools/proxy_interop.sh: andaime behind Caddy over h2c
+   CADDY_VERSION: "2.11.7"
+   CADDY_SHA512: "a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7"
+ 
+@@ -49,7 +49,7 @@ jobs:
+           --health-timeout 5s
+           --health-retries 10
+     env:
+-      VELA_PG: "host=127.0.0.1 port=5432 user=postgres dbname=postgres"
++      ANDAIME_PG: "host=127.0.0.1 port=5432 user=postgres dbname=postgres"
+       DC: ${{ matrix.dc }}
+     steps:
+       - uses: actions/checkout@v4
+@@ -92,9 +92,9 @@ jobs:
+     runs-on: ubuntu-24.04
+     env:
+       DC: dmd
+-      VELA_STRICT: "1"
+-      VELA_ALLOW_SKIP: ""
+-      VELA_ONLY: "edition"
++      ANDAIME_STRICT: "1"
++      ANDAIME_ALLOW_SKIP: ""
++      ANDAIME_ONLY: "edition"
+     steps:
+       - uses: actions/checkout@v4
+       - uses: dlang-community/setup-dlang@v2
+@@ -109,9 +109,9 @@ jobs:
+     runs-on: ubuntu-24.04
+     env:
+       DC: dmd
+-      VELA_STRICT: "1"
+-      VELA_ALLOW_SKIP: ""
+-      VELA_ONLY: "browser"
++      ANDAIME_STRICT: "1"
++      ANDAIME_ALLOW_SKIP: ""
++      ANDAIME_ONLY: "browser"
+     steps:
+       - uses: actions/checkout@v4
+       - uses: dlang-community/setup-dlang@v2

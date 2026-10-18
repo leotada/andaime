@@ -4,9 +4,9 @@ module invariants;
 
 @safe:
 
-import vela.http.parser;
-import vela.http.types;
-import vela.http.chunked;
+import andaime.http.parser;
+import andaime.http.types;
+import andaime.http.chunked;
 
 private bool within(const(char)[] inner, const(char)[] outer) @trusted // only compares addresses
 {

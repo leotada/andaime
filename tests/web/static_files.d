@@ -3,8 +3,8 @@ module static_files;
 
 @safe:
 
-import vela;
-import vela.web.testing;
+import andaime;
+import andaime.web.testing;
 import core.stdc.stdio : tmpfile;
 import std.file : mkdirRecurse, write, tempDir, rmdirRecurse, exists;
 version (Posix)
@@ -13,7 +13,7 @@ import std.path : buildPath;
 
 unittest
 {
-    auto base = buildPath(tempDir, "vela_static_test");
+    auto base = buildPath(tempDir, "andaime_static_test");
     if (exists(base))
         rmdirRecurse(base);
     mkdirRecurse(buildPath(base, "pub", "css"));

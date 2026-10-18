@@ -3,7 +3,7 @@
 module fuzz_parse;
 
 import invariants;
-import vela.http.parser;
+import andaime.http.parser;
 import core.stdc.stdio : printf;
 import std.file : dirEntries, SpanMode, read;
 import std.conv : to;
@@ -100,7 +100,7 @@ void main(string[] args)
         auto input = mutate(rng, pool[rng.below(pool.length)], pool);
         check(input);
         // counts only for the report
-        import vela.http.types : Request, HeaderField;
+        import andaime.http.types : Request, HeaderField;
         Request r;
         HeaderField[32] st;
         final switch (parseRequestHead(input, r, st[]).status)

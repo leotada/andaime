@@ -3,8 +3,8 @@
 /// stream and connection errors, limits and abuse protection.
 module session_test;
 
-import vela.http;
-import vela.http.hpack : encodeField, encodeStatus, encodeInt;
+import andaime.http;
+import andaime.http.hpack : encodeField, encodeStatus, encodeInt;
 
 import std.conv : to;
 import std.stdio : writeln;

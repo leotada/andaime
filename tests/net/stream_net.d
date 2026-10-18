@@ -5,9 +5,9 @@ module stream_net;
 
 version (linux):
 
-import vela;
-import vela.engine;
-import vela.server : handlerFactory;
+import andaime;
+import andaime.engine;
+import andaime.server : handlerFactory;
 
 import core.atomic : atomicOp, atomicLoad;
 import core.thread : Thread;
@@ -360,7 +360,7 @@ void testBigFile()
     import std.path : buildPath;
     import core.sys.posix.unistd : getpid;
 
-    auto dir = buildPath(tempDir, "vela_stream_net_" ~ getpid().to!string);
+    auto dir = buildPath(tempDir, "andaime_stream_net_" ~ getpid().to!string);
     if (exists(dir))
         rmdirRecurse(dir);
     mkdirRecurse(dir);

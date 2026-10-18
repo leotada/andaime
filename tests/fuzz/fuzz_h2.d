@@ -5,8 +5,8 @@
 module fuzz_h2;
 
 import h2_invariants;
-import vela.http;
-import vela.http.hpack : encodeField, encodeInt;
+import andaime.http;
+import andaime.http.hpack : encodeField, encodeInt;
 import core.stdc.stdio : printf;
 import std.conv : to;
 

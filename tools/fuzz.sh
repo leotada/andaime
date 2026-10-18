@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 secs="${1:-60}"
 target="${2:-parse}"
 mkdir -p tests/fuzz/crashes
-corpus="/tmp/vela_fuzz_corpus_$target"
+corpus="/tmp/andaime_fuzz_corpus_$target"
 extra=""
 leaks=""
 mkdir -p "$corpus"
@@ -40,7 +40,7 @@ case "$target" in
     *)
         echo "unknown target: $target (parse, h2, ws or json)"; exit 2 ;;
 esac
-ldmd2 -g -Ihttp/source -Iweb/source -Itests/fuzz -i -fsanitize=fuzzer,address -of"/tmp/vela_fuzz_$target" "tests/fuzz/libfuzzer_$target.d"
+ldmd2 -g -Ihttp/source -Iweb/source -Itests/fuzz -i -fsanitize=fuzzer,address -of"/tmp/andaime_fuzz_$target" "tests/fuzz/libfuzzer_$target.d"
 cd tests/fuzz/crashes
 # ASan keeps freed blocks in a quarantine (256 MB by default) to catch use-after-free; 64 MB still
 # catches them and leaves room under libFuzzer's RSS limit for millions of runs.
@@ -48,4 +48,4 @@ cd tests/fuzz/crashes
 # collection frees objects only a local still points to (the json target hit it after ~700k runs: a round trip "changed"
 # a value). The GC-managed code is memory-safe D; the sanitizer is there for the @trusted/@system parts.
 export ASAN_OPTIONS="${ASAN_OPTIONS:-${leaks}quarantine_size_mb=64:detect_stack_use_after_return=0}"
-"/tmp/vela_fuzz_$target" "$corpus" $extra -max_len="$maxlen" -max_total_time="$secs" -print_final_stats=1 -artifact_prefix=./
+"/tmp/andaime_fuzz_$target" "$corpus" $extra -max_len="$maxlen" -max_total_time="$secs" -print_final_stats=1 -artifact_prefix=./

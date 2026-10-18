@@ -2,7 +2,7 @@
 /// Usage: serve_slow [port] [waitMs] [cert.pem key.pem] — see the memory test in tools/check.sh.
 module serve_slow;
 
-import vela;
+import andaime;
 import core.time : msecs;
 
 __gshared long gWaitMs = 3000;

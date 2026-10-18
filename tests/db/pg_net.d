@@ -1,13 +1,13 @@
-/// Tests of the Postgres driver against a real server (VELA_PG = conninfo).
-/// Without VELA_PG the test declares itself skipped (prints `skip: <reason>` and exits 77).
+/// Tests of the Postgres driver against a real server (ANDAIME_PG = conninfo).
+/// Without ANDAIME_PG the test declares itself skipped (prints `skip: <reason>` and exits 77).
 module pg_net;
 
 version (linux):
 
-import vela;
-import vela.engine;
-import vela.db;
-import vela.server : handlerFactory;
+import andaime;
+import andaime.engine;
+import andaime.db;
+import andaime.server : handlerFactory;
 
 import core.atomic : atomicLoad;
 import core.stdc.stdio : printf, fflush, stdout;
@@ -246,7 +246,7 @@ void ok(string name) { printf("ok  %.*s\n", cast(int) name.length, name.ptr); ff
 /// Test-server connections as seen by Postgres itself.
 int backends(PgConn c)
 {
-    return c.query("select count(*)::int from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() and application_name = 'vela_test'")
+    return c.query("select count(*)::int from pg_stat_activity where datname = current_database() and pid <> pg_backend_pid() and application_name = 'andaime_test'")
         .get!int(0, 0);
 }
 
@@ -416,17 +416,17 @@ void testQueryDeadline()
 
 void main()
 {
-    auto env = getenv("VELA_PG");
+    auto env = getenv("ANDAIME_PG");
     if (env is null)
     {
         import core.stdc.stdio : fprintf, stderr;
         import core.stdc.stdlib : exit;
 
-        fprintf(stderr, "skip: set VELA_PG to the conninfo of a test Postgres\n");
+        fprintf(stderr, "skip: set ANDAIME_PG to the conninfo of a test Postgres\n");
         exit(77);
     }
     conninfo = cast(string) env[0 .. strlen(env)].idup;
-    cfg.conninfo = conninfo ~ " application_name=vela_test";
+    cfg.conninfo = conninfo ~ " application_name=andaime_test";
     configureOffload(2, 64);
     setup();
     testPrepared();

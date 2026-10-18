@@ -4,7 +4,7 @@ module retry;
 
 @safe:
 
-import vela.jobs;
+import andaime.jobs;
 
 final class Clock
 {

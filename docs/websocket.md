@@ -9,7 +9,7 @@ of the connection instead (RFC 8441); the handler is the same, see [HTTP/2](#htt
 // check
 @safe:
 
-import vela;
+import andaime;
 
 WebSocket echo(string room, Header!"Authorization" auth)
 {
@@ -50,13 +50,13 @@ void main() { serve(&buildApp, 8080); }
   `Sec-WebSocket-Version: 13`; a missing or malformed `Sec-WebSocket-Key` gets a 400. An HTTP/2 WebSocket request (an
   extended CONNECT) on a route that is not a WebSocket route gets a 400.
 - WebSocket routes are not in the OpenAPI document (OpenAPI cannot describe them).
-- A function of your own named `ws` hides vela's (like `get`); use `vela.ws!(...)(app)` then.
+- A function of your own named `ws` hides andaime's (like `get`); use `andaime.ws!(...)(app)` then.
 
 ## The connection: `WsConn`
 
 | Member | What it does |
 |---|---|
-| `receive()` | The next message: text (`isText`, `text`; vela has checked it is UTF-8), binary (`isBinary`, `data`), or the close (`isClose`, `closeCode`, the reason in `text`). After the close it returns the close again. |
+| `receive()` | The next message: text (`isText`, `text`; andaime has checked it is UTF-8), binary (`isBinary`, `data`), or the close (`isClose`, `closeCode`, the reason in `text`). After the close it returns the close again. |
 | `tryReceive(out msg, timeout)` | The same, waiting at most `timeout`: false when nothing came. One fiber can mix receiving with periodic pushes. |
 | `foreach (msg; ws)` | Every text and binary message until the close. |
 | `send(text)`, `sendBinary(bytes)` | A whole message. Waits while the client is slow (backpressure). |
@@ -75,7 +75,7 @@ close.
 - The 101 (200 on HTTP/2) is sent when the handler returns the `WebSocket`; the body runs inside the middleware chain, so
   middleware sees the whole session (an access log records 101 or 200 and its duration) and its `scope(exit)` runs after
   the connection ends.
-- When the body returns, the connection is closed with 1000 (if it is still open) and vela waits up to a second for the client's
+- When the body returns, the connection is closed with 1000 (if it is still open) and andaime waits up to a second for the client's
   answer. When it throws, the client gets a close with 1011 and the error is logged, as any handler error. A client that
   disappears ends `receive` with a close whose code is 1006.
 - Receiving belongs to the fiber that runs the body. `send`, `sendBinary`, `ping` and `close` may be called from any fiber of
@@ -85,8 +85,8 @@ close.
 ## HTTP/2
 
 A browser that loaded the page over HTTP/2 opens its WebSockets on the same connection, as streams (RFC 8441, "extended
-CONNECT"): vela announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`, the browser sends a `CONNECT` with `:protocol websocket`, and
-vela answers `200` instead of `101`. Chromium and Firefox do it; a client that does not simply uses HTTP/1.1.
+CONNECT"): andaime announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`, the browser sends a `CONNECT` with `:protocol websocket`, and
+andaime answers `200` instead of `101`. Chromium and Firefox do it; a client that does not simply uses HTTP/1.1.
 
 - Nothing changes for the handler: the same route, parameters, middleware, `WsConn`, limits and compression.
   `ctx.request.protocol` is `Protocol.http2` and `ctx.request.connectProtocol` is `"websocket"`; the request's method is GET.
@@ -111,7 +111,7 @@ and send to each.
 // check
 @safe:
 
-import vela;
+import andaime;
 
 WsConn[] room; // module variables are per worker (thread-local): this is the room of one worker
 
@@ -182,7 +182,7 @@ what makes small JSON messages compress well), so it is off by default. Messages
 
 ```d
 // check
-import vela;
+import andaime;
 
 void main()
 {
@@ -236,4 +236,4 @@ location /ws/ {
 
 Caddy's `reverse_proxy` forwards WebSockets without extra configuration. A proxy terminates the browser's HTTP/2 itself:
 whether the browser's WebSocket rides its HTTP/2 connection is between the browser and the proxy, and the proxy then speaks
-HTTP/1.1 (the upgrade) to vela.
+HTTP/1.1 (the upgrade) to andaime.

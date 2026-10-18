@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Guidance for AI coding agents (and humans) working on this repository.
-The code uses the provisional name **vela** (DUB package `vela`, `import vela;`); the repository is `dapi`.
+The framework is called **andaime** (Portuguese for "scaffolding": a modular web framework where you attach modules as you need them; DUB package `andaime`, `import andaime;`); the repository is `dapi`.
 `PLAN.md` holds the improvement plan with its decision log (owner decisions D1-D4, planner decisions P1-P9) and what was done.
 
 ## What this is
@@ -23,8 +23,8 @@ one fiber per request on an epoll loop, readable one-line compile errors.
   in `http/`, `web/` and `engine/` (they cost compile time). Tests and examples may use them.
 - Prefer shallow constructs (`static foreach`, `static if`) over deep recursive templates.
 - Every invalid handler signature must produce a **one-line `static assert` message** that says exactly what to fix
-  (see `handlerError` in `web/source/vela/web/handler_traits.d`). Add a case to `tests/compile_fail/` when you add a rule.
-- Error messages from the library start with `vela:` (`vela.db:`, `vela.http:`, `vela.jobs:` for the drivers, the client and jobs).
+  (see `handlerError` in `web/source/andaime/web/handler_traits.d`). Add a case to `tests/compile_fail/` when you add a rule.
+- Error messages from the library start with `andaime:` (`andaime.db:`, `andaime.http:`, `andaime.jobs:` for the drivers, the client and jobs).
 - Code also type-checks under language edition 2025 (the `edition` section of `check.sh`: a scratch copy with `module x 2025;`;
   the repository stays on the baseline edition because DMD 2.109 / LDC 1.40 cannot read it; CI runs it on DMD 2.112.0, the
   oldest compiler with editions, and older compilers skip it).
@@ -46,19 +46,19 @@ one fiber per request on an epoll loop, readable one-line compile errors.
   The framework invokes user code only through `callMiddleware`, `callUser` (one overload per handler type, `application.d`;
   a validation handler is reached from `dispatch` through the `@safe` `Context.onValidation` that `App.freeze` sets), `callBuild` (the app build function, `server.d`), `callStream`/`callEvents` (stream
   bodies, `stream.d`), `callWebSocket` (a WebSocket body, `web/.../websocket.d`), `textFromString`/`textToString` (a user's
-  text type, `vela.http.texttype`) and the `@trusted` lambda in `dispatch`. Add no other call sites.
-- `-version=VelaStrictSafe` (dub: `versions "VelaStrictSafe"`) makes `handlerError` reject `@system` handlers with a one-line
+  text type, `andaime.http.texttype`) and the `@trusted` lambda in `dispatch`. Add no other call sites.
+- `-version=AndaimeStrictSafe` (dub: `versions "AndaimeStrictSafe"`) makes `handlerError` reject `@system` handlers with a one-line
   message (`tests/compile_fail/system_handler.d` declares its flag with a `// FLAGS:` line). `tests/web/system_code.d` proves
   that `@system` handlers, middleware and error handlers work by default.
 - Every module starts with `@safe:` except the raw-syscall ones: `engine/.../epoll.d` and `devserver.d` stay `@system`;
-  `EventLoop.run` is `@system` and `vela.server.serve` is the single `@trusted` entry point into them. Their overrides of
+  `EventLoop.run` is `@system` and `andaime.server.serve` is the single `@trusted` entry point into them. Their overrides of
   `@safe` interfaces (`stop`, `awaitFd`, `sleepMs`, the `ResponseSink` methods) are small `@trusted` bodies.
 - FFI modules (`drivers/pg`, `engine/.../httpclient.d`, `wsclient.d`, `tls.d`, `tlsserver.d`, `zlib.d`, `random.d`, `libpq.d`,
   `crypto/.../libcrypto.d`, `ec.d`, `aead.d`, `hash.d`, `bcrypt.d`) expose `@trusted` facades; raw
   pointers never leave them (`tlsserver.d`'s per-connection functions take an `SSL*` and are `@system`; only `epoll.d` calls
-  them). Tests that need raw OpenSSL (`tests/net/tls_net.d`, `tls_loadgen.d`) declare a `vela.engine.*` module name to reach the
+  them). Tests that need raw OpenSSL (`tests/net/tls_net.d`, `tls_loadgen.d`) declare a `andaime.engine.*` module name to reach the
   package-protected table. Anything that hands out a raw view (`PgResult.text`) is `@system`.
-- **Memory model of request data**: every slice vela hands to user code points into GC memory (`NO_SCAN` blocks from
+- **Memory model of request data**: every slice andaime hands to user code points into GC memory (`NO_SCAN` blocks from
   `BufferPool` and `ByteBuffer`; never `NO_INTERIOR`, never freed or `realloc`'d by hand; `GC.malloc` is `extern (C)`, so a
   function-pointer cast must say so). A slice kept past the request is memory-safe -- it keeps its block alive -- but it may show
   bytes of a later request that reused the buffer. `Header!"X"` and `Cookie!"x"` hold copies. Never reintroduce `free`/`realloc`
@@ -73,14 +73,14 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 
 | Path | Role |
 |------|------|
-| `http/` (`vela:http`) | HTTP types, `Optional`, `PatchField`, text types, wire names (`@naming`, `@wireName`: `naming.d`, shared by JSON, OpenAPI and vela-pg), IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64, base64url (`base64url.d`). No I/O. |
-| `web/` (`vela:web`) | `App`, `Group`, router, handler introspection, JSON and `JsonValue`, OpenAPI, CORS, cookies, streaming, WebSocket routes, models, middleware, `TestClient`, and the logger `vela.log` (`web/source/vela/log.d`: in `vela:web` so `jobs` and the root package use it; it writes to fd 2 unless a `LogSink` is set (`setLogSink`, or `setThreadLogSink` for tests): the sink gets a `LogRecord` whose slices are valid only during the call, and a line logged from inside a sink is dropped). No sockets. |
-| `engine/` (`vela:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload`, `randomBytes` (getrandom, `random.d`), HTTP/HTTPS client (and `httpfake.d`, a scripted `HttpTransport` for tests), WebSocket client (`wsclient.d`), OpenSSL (dlopen, `tls.d`), zlib (dlopen, `zlib.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
-| `crypto/` (`vela:crypto`) | Cryptographic primitives over OpenSSL 3's libcrypto and libxcrypt (both dlopen, own `__gshared` tables): SHA-256, HMAC, HKDF, AES-128-GCM, P-256 ECDSA (ES256) and ECDH, Web Push encryption (RFC 8291), bcrypt. Depends on `vela:http` and `vela:engine` (`random.d`, `offload`). Nothing else depends on it. |
-| `jobs/` (`vela:jobs`) | Background jobs: `@Job` / `perform`, in-memory and test queues, cron, `--role` and `--queues`. Depends on `vela:web` and `vela:engine`. The root package does not depend on it. |
-| `drivers/pg/` (`vela-pg`) | PostgreSQL driver over async libpq (dlopen). **Independent package; the core must never depend on it.** |
-| `drivers/pgjobs/` (`vela-pg-jobs`) | Postgres `JobStore` (`PgJobStore`): `SKIP LOCKED` claims, `LISTEN`/`NOTIFY`, a lease reaper, one cron slot across processes. Depends on `vela:jobs` and `vela-pg`. |
-| `source/vela/` (`vela`) | `import vela;`, `server.d` (the only glue between web and engine), `staticfiles.d`. |
+| `http/` (`andaime:http`) | HTTP types, `Optional`, `PatchField`, text types, wire names (`@naming`, `@wireName`: `naming.d`, shared by JSON, OpenAPI and andaime-pg), IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64, base64url (`base64url.d`). No I/O. |
+| `web/` (`andaime:web`) | `App`, `Group`, router, handler introspection, JSON and `JsonValue`, OpenAPI, CORS, cookies, streaming, WebSocket routes, models, middleware, `TestClient`, and the logger `andaime.log` (`web/source/andaime/log.d`: in `andaime:web` so `jobs` and the root package use it; it writes to fd 2 unless a `LogSink` is set (`setLogSink`, or `setThreadLogSink` for tests): the sink gets a `LogRecord` whose slices are valid only during the call, and a line logged from inside a sink is dropped). No sockets. |
+| `engine/` (`andaime:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload`, `randomBytes` (getrandom, `random.d`), HTTP/HTTPS client (and `httpfake.d`, a scripted `HttpTransport` for tests), WebSocket client (`wsclient.d`), OpenSSL (dlopen, `tls.d`), zlib (dlopen, `zlib.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
+| `crypto/` (`andaime:crypto`) | Cryptographic primitives over OpenSSL 3's libcrypto and libxcrypt (both dlopen, own `__gshared` tables): SHA-256, HMAC, HKDF, AES-128-GCM, P-256 ECDSA (ES256) and ECDH, Web Push encryption (RFC 8291), bcrypt. Depends on `andaime:http` and `andaime:engine` (`random.d`, `offload`). Nothing else depends on it. |
+| `jobs/` (`andaime:jobs`) | Background jobs: `@Job` / `perform`, in-memory and test queues, cron, `--role` and `--queues`. Depends on `andaime:web` and `andaime:engine`. The root package does not depend on it. |
+| `drivers/pg/` (`andaime-pg`) | PostgreSQL driver over async libpq (dlopen). **Independent package; the core must never depend on it.** |
+| `drivers/pgjobs/` (`andaime-pg-jobs`) | Postgres `JobStore` (`PgJobStore`): `SKIP LOCKED` claims, `LISTEN`/`NOTIFY`, a lease reaper, one cron slot across processes. Depends on `andaime:jobs` and `andaime-pg`. |
+| `source/andaime/` (`andaime`) | `import andaime;`, `server.d` (the only glue between web and engine), `staticfiles.d`. |
 | `examples/hello`, `examples/api` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI. |
 | `tests/` | `web/` (no network; helper modules in `web/support/`), `jobs/` (no network), `h2/` (HTTP/2 session), `net/` (real sockets), `db/` (needs Postgres), `fuzz/`, `alloc/`, `compile_fail/`, `example/`. |
 | `tools/` | `check.sh` (everything), `fuzz.sh`, `h2_interop.sh`, `stream_interop.sh`, `ws_interop.sh` (python `websockets`), `proxy_interop.sh` (behind Caddy over h2c), `crash_check.sh`, `openapi_validate.sh`, `doc_examples.sh`, `bench.sh`, and the helpers that start a throwaway Postgres / test upstream. |
@@ -88,17 +88,17 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 | `.github/workflows/check.yml` | CI: DMD and LDC at the minimum and latest versions, strict mode; browser test and nightly fuzzing in their own jobs. |
 
 Dependency direction: `http` <- `web`, `http` <- `engine` <- `drivers/pg`. `jobs` depends on `web` and `engine`, not on `pg`.
-`drivers/pgjobs` depends on `jobs` and `vela-pg`. `crypto` depends on `http` and `engine`; nothing in the core or `jobs`
-imports it (`check.sh` greps for it). The root `vela` package does not depend on `jobs`. `web` does not depend on
-`engine`. `source/vela/server.d` is the only module that knows both `web` and `engine`. Do not introduce a dependency from the
+`drivers/pgjobs` depends on `jobs` and `andaime-pg`. `crypto` depends on `http` and `engine`; nothing in the core or `jobs`
+imports it (`check.sh` greps for it). The root `andaime` package does not depend on `jobs`. `web` does not depend on
+`engine`. `source/andaime/server.d` is the only module that knows both `web` and `engine`. Do not introduce a dependency from the
 core to any driver.
 
 ## Commands and the definition of done
 
 ```sh
 tools/check.sh                 # full verification (DMD); DC=ldmd2 for LDC
-VELA_STRICT=1 tools/check.sh   # a skipped section fails the run (CI does this)
-VELA_ONLY="memory" tools/check.sh   # only the sections whose name contains the text
+ANDAIME_STRICT=1 tools/check.sh   # a skipped section fails the run (CI does this)
+ANDAIME_ONLY="memory" tools/check.sh   # only the sections whose name contains the text
 tools/fuzz.sh [seconds] [parse|h2|ws|json]  # libFuzzer + ASan on the HTTP/1 parser, the HTTP/2 session, WebSockets or the JSON reader (needs LDC)
 tools/ws_interop.sh            # WebSockets against python's `websockets` (server and client, permessage-deflate); also run by check.sh
 tools/bench.sh [seconds]       # throughput (req/s) of one worker, with and without pipelining; for before/after, not a gate
@@ -130,7 +130,7 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 - **Per-request state that the code below a handler needs** (the logger's request id) lives with the request's fiber:
   `Worker` is a `LocalFiber` (`fiberio.d`) whose `fiberLocal` slot `server.d` sets to the request's `Context`. Never keep
   such state in a thread-local variable: requests interleave on one thread at every wait. Without fibers (`TestClient`,
-  the devserver) `App.handle` sets `vela.log`'s per-thread source instead.
+  the devserver) `App.handle` sets `andaime.log`'s per-thread source instead.
 - **Errors inside handlers** (D4): an `Exception` becomes a 500 through the app (logged with a stack trace, 5 traces per second per
   App); an `Error` (RangeError, AssertError...) also gets a 500, a full trace in the log (5 per second per worker, the rest
   counted), and the fiber is retired (`LoopStats.fibersPoisoned`): after an `Error`, cleanup may not have run. A fiber stack
@@ -144,7 +144,7 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
   through `@Offload` or `offload`.
 - A Postgres claim is `UPDATE ... WHERE id IN (SELECT ... FOR UPDATE SKIP LOCKED)` and that transaction commits before `perform`.
   Do not hold the row lock across the work.
-- Cron dedupe across processes is `INSERT ... ON CONFLICT` on `(job_name, scheduled_slot)` in `vela_cron_executions`
+- Cron dedupe across processes is `INSERT ... ON CONFLICT` on `(job_name, scheduled_slot)` in `andaime_cron_executions`
   (`claimCron` / `claimCronSlot`). The supervisor enqueues only when that insert wins. `PgJobStore.startServices`
   starts `LISTEN` and the reaper on worker 0; an empty claim waits for a notification or 5 seconds.
 - Shutdown stops calling `claimBatch`. `release` returns an in-flight row to `retryable` without spending the attempt: a claimed
@@ -154,11 +154,11 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 - `InMemoryJobStore` is one thread. `runJobs` forces `workers = 1` by default. Several cores or processes use `PgJobStore`, one
   store per worker thread, and only worker 0 consumes. Queue concurrency is how many jobs that worker runs at once, not per core.
   One fiber per queue claims. `WorkerHooks.extra` runs on worker 0 before the loop polls: `spawn` from there, and do not call
-  `sleep` or `awaitFd` in `extra` itself. A store failure is logged (`vela.jobs:`) and the fiber continues.
+  `sleep` or `awaitFd` in `extra` itself. A store failure is logged (`andaime.jobs:`) and the fiber continues.
 
 ## The response contract (read before touching `engine/`, `server.d` or `web/.../stream.d`)
 
-- The engine calls `RequestCallback(ref Request, ResponseSink)` (`vela.http.response`): `sink.start(ResponseHead)`, any number of
+- The engine calls `RequestCallback(ref Request, ResponseSink)` (`andaime.http.response`): `sink.start(ResponseHead)`, any number of
   `sink.write(bytes)`, `sink.end()`. The web layer never produces HTTP/1.1 text and the HTTP/2 session never parses it: both
   protocols encode from the structured head.
 - `Worker` is the sink. Output goes to `w.output`; on HTTP/1.1 the loop sends it after the handler returns (the buffered case), or
@@ -192,12 +192,12 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 
 ## WebSockets (read before touching `http/.../websocket.d`, `web/.../websocket.d`, `wsclient.d` or `Phase.upgraded` in `epoll.d`)
 
-- Layers: `vela.http.websocket` has the codec, the handshake and `WsConn` (the whole message layer: fragments, pings, close
-  handshake, limits, ping/idle timing, deflate hooks) and does I/O only through `UpgradedConn` (`vela.http.response`). The engine
+- Layers: `andaime.http.websocket` has the codec, the handshake and `WsConn` (the whole message layer: fragments, pings, close
+  handshake, limits, ping/idle timing, deflate hooks) and does I/O only through `UpgradedConn` (`andaime.http.response`). The engine
   implements `UpgradedConn` on a server connection (`WsPort` in `epoll.d`), `wsclient.d` on a client one, `TestClient` in memory.
   Protocol rules belong in `WsConn`, where the unittests, `tests/web/websocket.d` and the fuzzers reach them without sockets.
 - The web layer never imports the engine: compression reaches it as `Context.newDeflate` (a `WsDeflateFactory`), set by
-  `server.d` to `vela.engine.zlib`.
+  `server.d` to `andaime.engine.zlib`.
 - The takeover (`sinkUpgrade`): pending pipelined answers go into `wsOut` before the 101; bytes after the request in `c.buf`
   become the first WebSocket input (`wsIn`); `c.buf` itself stays untouched until the connection closes, because the handler's
   `Request` (and its captured params) point into it. The connection never goes back to HTTP.
@@ -233,7 +233,7 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 require (response sink, memory model). The owner lifted it once, for WebSockets over HTTP/2 (RFC 8441, `PLAN.md` 10.7).
 Everything below still applies to those.
 
-- Protocol logic lives in `H2Session` (`vela.http.h2`), which does no I/O: the engine feeds it bytes (`receive`), runs what
+- Protocol logic lives in `H2Session` (`andaime.http.h2`), which does no I/O: the engine feeds it bytes (`receive`), runs what
   `popReady` hands out (one fiber per stream), cancels what `popReset` hands out, hands each response back with `respond` (or
   `beginResponse`/`sendData`/`endResponse` for a streamed body), and writes `pendingOutput`. Anything about frames, HPACK, stream
   states or flow control belongs in the session, where `tests/h2/session_test.d` and the fuzzers can reach it without sockets.
@@ -264,7 +264,7 @@ Everything below still applies to those.
 
 - dlopen function tables must live in a `struct` held by a `__gshared` instance (`pq`, `tls`, `z`), never in loose `extern (C)` variables
   (they become global symbols that the C library then calls itself).
-- A user helper named `get`/`put`/`post`/`ws` hides vela's free functions; use `vela.get!(...)(app)`.
+- A user helper named `get`/`put`/`post`/`ws` hides andaime's free functions; use `andaime.get!(...)(app)`.
 - DMD 2.109 segfaults on a call that relies on a default argument placed before a variadic parameter (`f(string a, S s = S.init,
   T[] rest...)`): use an overload instead (`TestClient.websocket`, `TestClient.request`), and test the short call on DMD. It also crashes, instead of reporting it, on some name clashes
   between imported enums: when DMD dies with a segfault, try LDC for the real error message.
@@ -280,14 +280,14 @@ Everything below still applies to those.
 
 - **A new handler parameter kind**: add the wrapper in `web/.../params.d`, bind it in `handler_traits.d` (dispatch and `handlerError`),
   describe it in `openapi.d`, and add tests in `tests/web/` plus a `tests/compile_fail/` case for its misuse.
-- **A new job rule**: extend `jobError` in `jobs/source/vela/jobs/job.d` with one `vela.jobs:` line, and add
+- **A new job rule**: extend `jobError` in `jobs/source/andaime/jobs/job.d` with one `andaime.jobs:` line, and add
   `tests/compile_fail/job_*.d` (`// FLAGS: -Ijobs/source`).
-- **A new driver** (MySQL, Redis...): a new package under `drivers/`, depending only on `vela:engine`, using `awaitFd`/`offload`;
+- **A new driver** (MySQL, Redis...): a new package under `drivers/`, depending only on `andaime:engine`, using `awaitFd`/`offload`;
   load native libraries at run time (dlopen) so the framework still builds without them.
 - **A new crypto primitive**: in `crypto/`, through `CryptoApi` in `libcrypto.d` (add the symbol to the table; OpenSSL 3
   non-deprecated API), a small `@trusted` body with a soundness comment, no raw pointer in the signature, an official
   test vector in `tests/crypto/` (which exits 77 when the library is missing), and a line in `docs/crypto.md`.
-- **A new event-loop backend** (kqueue, io_uring): implement the `EventLoop` interface in `engine/source/vela/engine/loop.d`.
+- **A new event-loop backend** (kqueue, io_uring): implement the `EventLoop` interface in `engine/source/andaime/engine/loop.d`.
 - **A new `Request` field**: every producer must set it -- the HTTP/1 parser (`parseRequestHead`), the HTTP/2 session
   (`finishRequest`), and for fields that do not come from the bytes (`peer`) the engine at both entry points -- because the
   fiber's `Request` is reused across protocols.

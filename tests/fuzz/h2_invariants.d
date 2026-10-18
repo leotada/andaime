@@ -4,7 +4,7 @@
 /// GOAWAY when it gives up on the connection.
 module h2_invariants;
 
-import vela.http;
+import andaime.http;
 
 /// The valid connection start every input is appended to (fuzzers then explore the frames).
 immutable ubyte[] h2Start = cast(immutable(ubyte)[]) (clientPreface ~ "\x00\x00\x00\x04\x00\x00\x00\x00\x00");

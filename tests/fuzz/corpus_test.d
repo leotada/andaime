@@ -3,8 +3,8 @@
 /// status: 400, 413...). To cover a new attack, just drop a file in here.
 module corpus_test;
 
-import vela.http.parser;
-import vela.http.types;
+import andaime.http.parser;
+import andaime.http.types;
 import core.stdc.stdio : printf;
 import std.file : dirEntries, SpanMode, read;
 import std.path : baseName, stripExtension, extension;

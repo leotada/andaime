@@ -4,7 +4,7 @@ module unique;
 @safe:
 
 import core.time : minutes;
-import vela.jobs;
+import andaime.jobs;
 
 final class Clock
 {

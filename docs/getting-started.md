@@ -3,7 +3,7 @@
 From an empty folder to a running API. Everything here is tested with DMD 2.109.1 and LDC 1.40.1 (the minimum versions) on
 Linux x86_64.
 
-> The code uses the provisional name **vela** (`import vela;`); the repository is called `dapi`.
+> The framework is called **andaime** (Portuguese for "scaffolding"; `import andaime;`); the repository is called `dapi`.
 
 ## Requirements
 
@@ -14,7 +14,7 @@ Linux x86_64.
 
 ## A new project
 
-vela is not on code.dlang.org yet, so depend on a checkout:
+andaime is not on code.dlang.org yet, so depend on a checkout:
 
 ```sh
 git clone https://github.com/leotada/dapi
@@ -26,7 +26,7 @@ mkdir my-api && cd my-api
 ```sdl
 name "my-api"
 targetType "executable"
-dependency "vela" path="../dapi"
+dependency "andaime" path="../dapi"
 ```
 
 ## The first route
@@ -37,7 +37,7 @@ dependency "vela" path="../dapi"
 // check
 @safe:
 
-import vela;
+import andaime;
 
 string hello(string name = "world") => "hello, " ~ name;
 
@@ -58,7 +58,7 @@ curl 'localhost:8080/hello'              # hello, world
 ```
 
 There is no `req.query["name"]`: **the function signature is the HTTP contract**. `name` is not in the route, so it comes from
-the query string, and its default value makes it optional. vela reads the signature at compile time and generates the code
+the query string, and its default value makes it optional. andaime reads the signature at compile time and generates the code
 that extracts, converts and validates every parameter.
 
 Two things in this program matter later:
@@ -74,7 +74,7 @@ Two things in this program matter later:
 // check
 @safe:
 
-import vela;
+import andaime;
 
 struct UserInput
 {
@@ -167,7 +167,7 @@ With a `unittest` block in `app.d`, wrap `main` in `version (unittest) {} else` 
 An invalid handler signature is a one-line compile error that says what to fix, not a template backtrace:
 
 ```
-app.d(4): vela: handler 'getUser' in GET /users/{id}: the route declares {id}, but the function has no parameter named 'id'
+app.d(4): andaime: handler 'getUser' in GET /users/{id}: the route declares {id}, but the function has no parameter named 'id'
 ```
 
 ## The examples in the repository

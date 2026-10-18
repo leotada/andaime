@@ -5,10 +5,10 @@ module ws_net;
 
 version (linux):
 
-import vela;
-import vela.engine;
-import vela.http;
-import vela.server : handlerFactory;
+import andaime;
+import andaime.engine;
+import andaime.http;
+import andaime.server : handlerFactory;
 
 import core.atomic : atomicOp, atomicLoad, atomicStore;
 import core.thread : Thread;
@@ -261,7 +261,7 @@ void ok(string name)
     fflush(stdout);
 }
 
-/// A raw WebSocket client: the handshake by hand, frames through vela's codec (masked, as a browser's).
+/// A raw WebSocket client: the handshake by hand, frames through andaime's codec (masked, as a browser's).
 struct Client
 {
     int fd;

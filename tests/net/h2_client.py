@@ -99,7 +99,7 @@ def check(name, cond):
 
 c = Conn()
 (r,) = c.wait(c.request("GET", "/"))
-check("GET /", r["headers"][b":status"] == b"200" and r["body"] == b"hello from vela")
+check("GET /", r["headers"][b":status"] == b"200" and r["body"] == b"hello from andaime")
 
 payload = bytes(range(256)) * 4000  # ~1 MB, more than every initial window
 (r,) = c.wait(c.request("POST", "/echo", payload))
@@ -123,7 +123,7 @@ if not CA:
     (r,) = up.wait(1)
     check("h2c upgrade answers the HTTP/1.1 request on stream 1", r["body"] == b"h2")
     (r,) = up.wait(up.request("GET", "/"))
-    check("upgraded connection serves new streams", r["body"] == b"hello from vela")
+    check("upgraded connection serves new streams", r["body"] == b"hello from andaime")
 else:
     (r,) = c.wait(c.request("GET", "/proto"))
     check("ALPN h2 reaches the handler as HTTP/2", r["body"] == b"h2")

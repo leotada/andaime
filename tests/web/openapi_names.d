@@ -2,9 +2,9 @@
 /// docs page (escaping, integrity).
 module openapi_names;
 
-import vela;
-import vela.web.testing;
-import vela.web.openapi : docsHtml, defaultSwaggerUiBase;
+import andaime;
+import andaime.web.testing;
+import andaime.web.openapi : docsHtml, defaultSwaggerUiBase;
 import std.json : parseJSON, JSONValue;
 import std.algorithm : canFind;
 static import support.models_a;
@@ -12,7 +12,7 @@ static import support.models_b;
 
 struct Plain { int x; }
 @schemaName("PublicThing") struct Internal { int y; }
-struct HTTPError { string mine; }  // collides with the schema vela defines for @responds
+struct HTTPError { string mine; }  // collides with the schema andaime defines for @responds
 
 @safe:
 
@@ -69,7 +69,7 @@ class Repo2
     // tools/openapi_validate.sh asks for the document to feed it to an independent validator
     import std.process : environment;
     import std.file : write;
-    if (auto path = environment.get("VELA_OPENAPI_OUT"))
+    if (auto path = environment.get("ANDAIME_OPENAPI_OUT"))
         write(path, c.get("/openapi.json").body);
 
     // two User structs from two modules: two schemas, each operation points to its own
@@ -85,7 +85,7 @@ class Repo2
         foreach (ch; name)
             assert((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '.' || ch == '_' || ch == '-', name);
 
-    // @schemaName, and a user struct called HTTPError does not clobber vela's
+    // @schemaName, and a user struct called HTTPError does not clobber andaime's
     assert(refOf("/renamed") == "#/components/schemas/PublicThing");
     assert(refOf("/mine") != "#/components/schemas/HTTPError");
     assert(schemas["HTTPError"]["required"].array[0].str == "detail");

@@ -1,5 +1,5 @@
 // EXPECT: fields must be scalars (int, string, enum, bool...), text types, Optional of those, or lists of scalars
-import vela;
+import andaime;
 @safe:
 struct Inner { int a; }
 struct Filters { Inner inner; }

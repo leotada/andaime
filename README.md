@@ -11,7 +11,7 @@
 ![@safe](https://img.shields.io/badge/%40safe-%2B_dip1000-success)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
-[Quickstart](#quickstart) · [Features](#features) · [Performance](#performance) · [Compile speed](#compile-speed) · [Comparison](#comparison) · [Edition 2025](#compatibility) · [Docs](docs/README.md)
+[Quickstart](#quickstart) · [Features](#features) · [Performance](#performance) · [Compile speed](#compile-speed) · [Examples](#examples) · [Comparison](#comparison) · [Edition 2025](#compatibility) · [Docs](docs/README.md)
 
 </div>
 
@@ -158,7 +158,7 @@ api.use((Context ctx, Next next) {
 logInfo("order created", "order_id", order.id, "plan", order.plan);   // carries request_id automatically
 ```
 
-#### Server-Sent Events and WebSockets
+#### Server-Sent Events
 
 ```d
 EventStream ticks() => EventStream((scope EventWriter w) {
@@ -168,43 +168,14 @@ EventStream ticks() => EventStream((scope EventWriter w) {
         sleep(1.seconds); // suspends only this fiber
     }
 });
-
-WebSocket chat(string room, Header!"Authorization" auth)
-{
-    if (!allowed(auth.value))
-        throw new HttpError(403, "forbidden");
-    return WebSocket((scope WsConn ws) {
-        foreach (msg; ws)
-            ws.send(room ~ ": " ~ msg.text); // pings and the close handshake are automatic
-    });
-}
 ```
 
-#### Database, HTTP client, offload
+#### HTTP client and offload
 
 ```d
-User u = pgPool(dsn).query("SELECT id, name, age FROM users WHERE id = $1", id).one!User;
-auto quote = httpClient().get("https://api.example.com/quote").body;
-auto png = offload(() => renderChart(data));
+auto quote = httpClient().get("https://api.example.com/quote").body;   // waits without blocking the worker
+auto png = offload(() => renderChart(data));                         // CPU-heavy work on the thread pool
 ```
-
-#### Background jobs
-
-```d
-@Job("mail") @Retries(5)
-struct SendWelcomeEmail
-{
-    string to;
-    long userId;
-
-    void perform(ref JobContext ctx) @safe
-    {
-        // runs on a worker fiber; enqueue(store, SendWelcomeEmail("ana@example.com", 7))
-    }
-}
-```
-
-The same binary runs as an API, a job worker, or both: `--role=api|worker|all`.
 
 #### Crypto
 
@@ -226,6 +197,135 @@ serve(&buildApp, cfg);
 ```
 
 </details>
+
+---
+
+<a id="examples"></a>
+
+## 🧪 Examples: database, WebSockets, jobs
+
+Short and complete enough to copy. Each one links to its full guide.
+
+### 🐘 PostgreSQL
+
+```sdl
+dependency "andaime-pg" path="../dapi/drivers/pg"
+```
+
+```d
+import andaime;
+import andaime.db;
+
+struct User { int id; string name; }
+struct NewUser { @minLength(2) string name; }
+
+PgPool db() => pgPool("host=localhost dbname=app user=app");   // one pool per worker, created on first use
+
+User getUser(int id)                                            // GET /users/{id}
+{
+    auto rows = db.query("select id, name from users where id = $1", id).rowsAs!User;
+    if (rows.length == 0)
+        throw new HttpError(404, "user not found");
+    return rows[0];
+}
+
+@status(201)
+User createUser(JsonBody!NewUser body_)                         // POST /users
+    => db.query("insert into users(name) values ($1) returning id, name", body_.name).one!User;
+```
+
+- ⏳ A query suspends only this request's fiber: the worker keeps serving others
+- 🔁 Transactions: `db.transaction((PgConn c) { ... })`. In tests: `db.rollbackAfter(() { ... })`
+- ➡️ [Database guide](docs/database.md)
+
+### 🔌 WebSockets
+
+```d
+import andaime;
+
+WebSocket chat(string room, Header!"Authorization" auth)        // validated like any other route
+{
+    if (auth.value != "Bearer secret")
+        throw new HttpError(403, "forbidden");                  // a plain 403: no upgrade
+    return WebSocket((scope WsConn ws) {
+        ws.send("welcome to " ~ room);
+        foreach (msg; ws)                                       // every message until the client closes
+            ws.send(msg.text);
+    });                                                         // returning closes the connection (1000)
+}
+
+App buildApp()
+{
+    auto app = new App;
+    app.ws!("/rooms/{room}", chat);                             // over HTTP/1.1 and HTTP/2
+    return app;
+}
+
+unittest                                                        // in memory, no socket
+{
+    auto r = TestClient(buildApp()).websocket("/rooms/a", WsScript().text("hi").close(),
+        hdr("Authorization", "Bearer secret"));
+    assert(r.status == 101 && r.texts == ["welcome to a", "hi"]);
+}
+```
+
+- 💓 Pings, the close handshake, fragmentation and `permessage-deflate` are handled for you
+- 📡 Client side: `wsConnect("wss://...")`
+- ➡️ [WebSockets guide](docs/websocket.md)
+
+### ⏰ Background jobs and cron
+
+```sdl
+dependency "andaime:jobs" path="../dapi"
+```
+
+```d
+import andaime;
+import andaime.jobs;
+
+@Job("mail") @Retry(5, BackoffStrategy.exponential)
+struct SendWelcome
+{
+    string to;
+    void perform(ref JobContext ctx) @safe { /* send the e-mail; throwing schedules a retry */ }
+}
+
+@Job("reports") @Cron("15 6 * * *")                             // every day at 06:15
+struct DailyReport
+{
+    void perform(ref JobContext ctx) @safe { /* ... */ }
+}
+
+InMemoryJobStore store;                                         // PgJobStore (andaime-pg-jobs) for durable queues
+
+string signUp(string email)                                     // POST /signup?email=...
+{
+    enqueue(store, SendWelcome(email));
+    return "queued";
+}
+
+App buildApp()
+{
+    auto app = new App;
+    app.post!("/signup", signUp);
+    return app;
+}
+
+void main(string[] args)                                        // run with --role=all: API and jobs in one process
+{
+    store = new InMemoryJobStore;
+    auto startup = parseStartup(args);
+    ServerConfig cfg;
+    cfg.workers = 1;                                            // the in-memory store is one thread
+    applyJobGrace(cfg);
+    serve(&buildApp, cfg, supervisorHook!(SendWelcome, DailyReport)(store, startup));
+}
+```
+
+- 🧭 One binary, three roles: `--role=api` (only enqueues), `--role=worker` (only runs jobs), `--role=all`
+- 🛡️ `@UniqueJob(15.minutes)` drops duplicates, `@Offload` runs CPU-heavy jobs on the thread pool, `@Every(...)` for intervals
+- 🧪 `TestJobStore` with `assertEnqueued` and `drainJobs` for tests
+- ➡️ [Jobs and cron guide](docs/jobs-and-cron.md)
 
 ---
 

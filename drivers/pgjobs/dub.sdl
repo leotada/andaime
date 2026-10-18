@@ -9,4 +9,4 @@ importPaths "source"
 dependency "andaime:jobs" version="*"
 dependency "andaime:pg" version="*"
 
-toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"
+toolchainRequirements dmd=">=2.112.0" ldc=">=1.42.0" gdc="no"

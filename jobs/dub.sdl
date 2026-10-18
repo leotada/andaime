@@ -7,4 +7,4 @@ targetType "library"
 dependency "andaime:web" version="*"
 dependency "andaime:engine" version="*"
 
-toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"
+toolchainRequirements dmd=">=2.112.0" ldc=">=1.42.0" gdc="no"

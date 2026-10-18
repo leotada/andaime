@@ -39,7 +39,7 @@ one fiber per request on an epoll loop, readable one-line compile errors.
   `@trusted` helper says why (`unscoped` in `jsonvalue.d`, `readToken` in `multipart.d`, `unpad` in `h2.d`). Tests that keep
   such views (a parsed `Request`, a middleware that captures state) use heap or module-level storage, not stack locals.
 - Use only one import of a name per module (a private selective import next to a `public import` of the same name made
-  `is(T == X!U, U)` false on DMD 2.109).
+  `is(T == X!U, U)` false on DMD 2.109, before the minimum moved to 2.112; the rule is kept because it is cheap).
 - Never use `pkill -f` with a pattern that appears in your own command line.
 - `real` is a reserved word in D.
 
@@ -142,10 +142,10 @@ Read the matching file before touching its area. The rules in those files are no
 - dlopen function tables must live in a `struct` held by a `__gshared` instance (`pq`, `tls`, `z`), never in loose `extern (C)` variables
   (they become global symbols that the C library then calls itself).
 - A user helper named `get`/`put`/`post`/`ws` hides andaime's free functions; use `andaime.get!(...)(app)`.
-- DMD 2.109 segfaults on a call that relies on a default argument placed before a variadic parameter (`f(string a, S s = S.init,
-  T[] rest...)`): use an overload instead (`TestClient.websocket`, `TestClient.request`), and test the short call on DMD.
-  It also crashes, instead of reporting it, on some name clashes between imported enums: when DMD dies with a segfault, try
-  LDC for the real error message.
+- DMD segfaulted (seen on 2.109, before the minimum moved to 2.112; not re-checked since) on a call that relies on a default
+  argument placed before a variadic parameter (`f(string a, S s = S.init, T[] rest...)`): use an overload instead
+  (`TestClient.websocket`, `TestClient.request`), and test the short call on DMD. It also crashed, instead of reporting it, on
+  some name clashes between imported enums: when DMD dies with a segfault, try LDC for the real error message.
 - A libFuzzer target has no D `main`: one that needs druntime (the monotonic clock, say) calls `rt_init` in
   `LLVMFuzzerInitialize` (`tests/fuzz/libfuzzer_ws.d`).
 - Middleware applies to every route of its App/Group whatever the registration order; the app freezes when it starts serving

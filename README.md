@@ -679,7 +679,7 @@ instead: `git clone https://github.com/leotada/andaime`, then `dependency "andai
 
 ```d
 // check
-module app;
+module app 2025;
 
 @safe:
 

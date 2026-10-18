@@ -41,7 +41,7 @@ without touching it. `andaime check` verifies the rule from the compiler's own i
 **Domain**: plain structs and functions. No framework, no status codes.
 
 ```d
-module domain.users;
+module domain.users 2025;
 
 struct User { long id; string name; string email; }
 struct NewUser { string name; string email; }
@@ -54,7 +54,7 @@ void checkRules(const NewUser user) { }
 the port is an `interface` declared next to the use cases that need it (the use cases own it, the adapters implement it).
 
 ```d
-module usecases.users;
+module usecases.users 2025;
 
 interface UserRepository
 {
@@ -83,7 +83,7 @@ final class GetUser
 OpenAPI), mapped to and from the domain:
 
 ```d
-module adapters.http.users;
+module adapters.http.users 2025;
 
 struct UserIn { string name; string email; }
 struct UserOut { long id; string name; string email; }

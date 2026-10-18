@@ -128,8 +128,11 @@ port=$(( 18000 + RANDOM % 1000 ))
 (cd "$work/clean" && DATABASE_URL="$db" PORT=$port exec ./clean --role=all) > "$work/server.log" 2>&1 &
 server=$!
 base="http://127.0.0.1:$port/api/v1"
-status() { curl -s -o /dev/null -w "%{http_code}" "$@"; }
-curl -s --retry-connrefused --retry 30 --retry-delay 1 -o /dev/null "$base/users" || true
+status() { curl -s -o /dev/null -w "%{http_code}" "$@" || true; } # (a refused connection answers 000, not a dead script)
+if ! curl -s --retry-connrefused --retry 30 --retry-delay 1 -o /dev/null "$base/users"; then
+    echo "FAILED: the binary did not answer on port $port; it is ${server:+pid $server, }$(kill -0 $server 2> /dev/null && echo running || echo gone):"
+    cat "$work/server.log"; kill -TERM $server 2> /dev/null || true; exit 1
+fi
 c1=$(status -X POST "$base/users" -d '{"name":"Ana","email":"ana@example.com"}')
 c2=$(status -X POST "$base/users" -d '{"name":"Bia","email":"ana@example.com"}')
 c3=$(status "$base/users/999")

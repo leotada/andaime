@@ -9,10 +9,9 @@ on:
   workflow_dispatch:
 
 env:
-  # tools/check.sh: a skipped section fails the run, except the browser test (own job below) and the language-edition
-  # section, which compilers older than DMD 2.112 skip (the "edition" job below runs it on 2.112.0).
+  # tools/check.sh: a skipped section fails the run, except the browser test (own job below).
   ANDAIME_STRICT: "1"
-  ANDAIME_ALLOW_SKIP: "browser edition"
+  ANDAIME_ALLOW_SKIP: "browser"
   # Shared runners are noisy: the compile-time budget is printed but does not fail the run.
   ANDAIME_CI: "1"
   H2SPEC_VERSION: "2.6.0"
@@ -28,10 +27,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # the minimum versions (see toolchainRequirements in dub.sdl) and the latest releases
-          - { name: "DMD 2.109.1", compiler: dmd, version: "2.109.1", dc: dmd }
+          # The code is on language edition 2025 (`module x 2025;`), so the minimum is DMD 2.112.0 (see toolchainRequirements
+          # in dub.sdl). LDC 1.42.0 is the oldest LDC with editions; it is not tested, the latest LDC is.
+          - { name: "DMD 2.112.0", compiler: dmd, version: "2.112.0", dc: dmd }
           - { name: "DMD latest", compiler: dmd, version: latest, dc: dmd }
-          - { name: "LDC 1.40.1", compiler: ldc, version: "1.40.1", dc: ldmd2 }
           - { name: "LDC latest", compiler: ldc, version: latest, dc: ldmd2 }
     name: check (${{ matrix.name }})
     services:
@@ -86,23 +85,6 @@ jobs:
         # which is what check.sh expects
         run: DC="${DMD:-$DC}" tools/check.sh
 
-  # The newest language edition (`module x 2025;`) on the oldest compiler that has it. The code stays on the baseline
-  # edition; check.sh type-checks a copy with the module declarations rewritten. Here a skip is a failure.
-  edition:
-    runs-on: ubuntu-24.04
-    env:
-      DC: dmd
-      ANDAIME_STRICT: "1"
-      ANDAIME_ALLOW_SKIP: ""
-      ANDAIME_ONLY: "edition"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dlang-community/setup-dlang@v2
-        with:
-          compiler: dmd-2.112.0
-      - name: tools/check.sh (edition section)
-        run: tools/check.sh
-
   # The real-browser test needs Chromium (a large download), so it has its own job: weekly and on demand.
   browser:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -135,7 +117,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [parse, h2, ws]
+        target: [parse, h2, ws, json]
     steps:
       - uses: actions/checkout@v4
       - uses: dlang-community/setup-dlang@v2

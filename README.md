@@ -652,11 +652,13 @@ cd my-api
 dub add andaime                                  # adds: dependency "andaime" version="~>0.1.0"
 ```
 
-`dub.sdl` now reads:
+Open `dub.sdl` and add the two lines marked below. `main` goes in its own file because `dub test` leaves the
+`mainSourceFile` out of the test build:
 
 ```sdl
 name "my-api"
-targetType "executable"
+targetType "executable"                          # added
+mainSourceFile "source/main.d"                   # added
 dependency "andaime" version="~>0.1.0"
 ```
 
@@ -678,6 +680,8 @@ instead: `git clone https://github.com/leotada/andaime`, then `dependency "andai
 
 ```d
 // check
+module app;
+
 @safe:
 
 import andaime;
@@ -691,15 +695,21 @@ App buildApp()
     return app;
 }
 
-version (unittest) {} else
-void main() { serve(&buildApp, 8080); }
-
 unittest
 {
     auto client = TestClient(buildApp());
     assert(client.get("/hello").body == "hello, world");
     assert(client.get("/hello?name=Ana").body == "hello, Ana");
 }
+```
+
+and the entry point in `source/main.d`:
+
+```d
+import andaime;
+import app : buildApp;
+
+void main() { serve(&buildApp, 8080); }
 ```
 
 **3. Run it.**

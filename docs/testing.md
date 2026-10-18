@@ -21,10 +21,15 @@ unittest
 }
 ```
 
-Run them with `dub test`. If the tests live in the same module as `main`, keep `main` out of the test build:
+Run them with `dub test`. DUB leaves the `mainSourceFile` out of the test build, so a `unittest` in that file never runs
+(and a failing `assert` there still reports success). Keep `main` in its own file, `source/main.d`, name it in `dub.sdl`
+(`mainSourceFile "source/main.d"`), and put the app and its tests in the other modules:
 
 ```d
-version (unittest) {} else
+// source/main.d
+import andaime;
+import app : buildApp;
+
 void main() { serve(&buildApp, 8080); }
 ```
 
@@ -91,8 +96,6 @@ unittest
     c.post("/login", "");
     assert(c.cookie("session") == "s1" && c.get("/me").body == "s1");
 }
-
-version (unittest) {} else void main() { serve(&buildApp); }
 ```
 
 - `postJson`, `putJson`, `patchJson(path, value, headers...)` send any JSON-serializable value (or JSON text as is) with

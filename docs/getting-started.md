@@ -155,7 +155,7 @@ one worker. Real applications keep shared state in a database ([database.md](dat
 
 ## A test, without a network
 
-`TestClient` drives the app in memory. Put this in the same file and run `dub test`:
+`TestClient` drives the app in memory. Put this in `source/app.d`, next to `buildApp`, and run `dub test`:
 
 ```d
 unittest
@@ -168,7 +168,9 @@ unittest
 }
 ```
 
-With a `unittest` block in `app.d`, wrap `main` in `version (unittest) {} else` so `dub test` does not start the server. More in
+`dub test` leaves the `mainSourceFile` (`source/app.d` by default) out of the test build, and a `unittest` in an excluded file
+never runs. So move `main` into its own file, `source/main.d` (`import app : buildApp; void main() { serve(&buildApp, cfg); }`),
+and name it in `dub.sdl`: `mainSourceFile "source/main.d"`. `app.d` then holds everything that is tested. More in
 [testing.md](testing.md).
 
 ## When the signature is wrong

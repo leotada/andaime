@@ -99,9 +99,9 @@ app.d(12): andaime: handler 'getUser' in GET /users/{id}: the route declares {id
 ### 🎯 Ergonomics
 - ✅ **Signature = contract**: path, query, headers, cookies, JSON, forms and multipart bound by name and type
 - ✅ **Declarative validation** (`@minLength`, `@inRange`, ...) with a FastAPI-style **422** listing every error
-- ✅ **OpenAPI 3.1 + Swagger UI** generated from the same signatures
+- ✅ **OpenAPI 3 + Swagger UI** generated from the same signatures
 - ✅ **Return what you mean**: `void` → 204, `string` → text, structs/arrays → JSON, `@status(201)`, `Response`
-- ✅ **One-line compile errors** for every invalid handler signature
+- ✅ **One-line compile errors** for every invalid handler signature, each pinned by a `tests/compile_fail` case
 - ✅ `PatchField` (omitted vs `null`), `Optional`, `JsonValue`, `Local!T` for middleware state
 
 ### 🌐 Protocols (no reverse proxy needed)
@@ -125,6 +125,7 @@ app.d(12): andaime: handler 'getUser' in GET /users/{id}: the route declares {id
 ### 🛡️ Safety and quality
 - ✅ **`@safe` by default**, checked with `-preview=dip1000` on DMD and LDC; your handlers may still call C libraries
 - ✅ **In-memory `TestClient`**: test routes without opening a socket
+- ✅ **Executable docs**: every `// check` example in this README and in `docs/` is compiled in CI
 - ✅ `h2spec` **146/146** over TLS, continuous **libFuzzer + ASan** on the HTTP/1, HTTP/2, WebSocket and JSON parsers
 - ✅ **Zero DUB dependencies** in the core. OpenSSL, libpq and zlib are loaded at run time (`dlopen`), never needed to build
 
@@ -329,6 +330,68 @@ void main(string[] args)                                        // run with --ro
 
 ---
 
+## 🔗 A backend for TypeScript frontends
+
+JSON, the `422` body and the OpenAPI document are all generated from the same structs, so the types your frontend
+generates are the types on the wire. There is no schema to keep in sync by hand.
+
+```d
+// check
+@safe:
+
+import andaime;
+
+struct ProfilePatch
+{
+    @minLength(2) PatchField!string displayName;  // absent: keep it, null: clear it, a value: set it
+    PatchField!string bio;
+}
+
+struct Profile { long userId; string displayName; Optional!string bio; }
+
+Profile current = Profile(7, "Ana", Optional!string("mathematician"));  // stands in for a database row
+
+Profile patchProfile(long id, JsonBody!ProfilePatch patch)               // PATCH /profiles/{id}
+{
+    if (patch.displayName.hasValue)
+        current.displayName = patch.displayName.value;
+    if (patch.bio.isNull)
+        current.bio = Optional!string.none;
+    else if (patch.bio.hasValue)
+        current.bio = Optional!string(patch.bio.value);
+    return current;
+}
+
+App buildApp()
+{
+    auto app = new App;
+    app.patch!("/profiles/{id}", patchProfile);
+    app.serveOpenApi(OpenApiInfo("Profiles", "1.0.0"));
+    return app;
+}
+
+void main() { serve(&buildApp, 8080); }
+```
+
+```sh
+npx openapi-typescript http://localhost:8080/openapi.json -o api.d.ts
+```
+
+```ts
+Profile:      { userId: number; displayName: string; bio?: string | null }
+ProfilePatch: { displayName?: string | null; bio?: string | null }   // plus the 422 body, HTTPValidationError
+```
+
+- 🩹 **True `PATCH`**: `PatchField` tells an omitted field from an explicit `null`, and becomes optional and nullable in the
+  schema. ➡️ [Partial updates](docs/requests.md#partial-updates-patchfield)
+- 🏷️ **Wire names in one place**: D's camelCase fields are already what TypeScript expects. For another convention,
+  `@naming(Naming.snakeCase)` on a struct renames its fields in JSON, query strings, the `422` `loc` and OpenAPI at once.
+  ➡️ [Wire names](docs/requests.md#wire-names-naming-and-wirename)
+- 🧾 **Errors that map to inputs**: every `422` entry has a `loc` such as `["body", "displayName"]`, so a form can show each
+  message next to its field.
+
+---
+
 ## 🧩 Modular by design
 
 The name says it: a small scaffold you build on. `import andaime;` gives you the server. Everything else is a separate
@@ -358,7 +421,7 @@ flowchart LR
 | Package | Import | What you get |
 |---------|--------|--------------|
 | 🏗️ `andaime` | `import andaime;` | The server: `http` + `web` + `engine`, `serve`, static files |
-| 📨 `andaime:http` | `import andaime.http;` | Zero-copy HTTP/1.1 parser, HTTP/2 session and HPACK, WebSocket codec, `Optional`, `PatchField` |
+| 📨 `andaime:http` | `import andaime.http;` | Zero-copy HTTP/1.1 parser, HTTP/2 session and HPACK, WebSocket codec, `Optional`, `PatchField`. No I/O, so it also works on its own, inside your own event loop |
 | 🧭 `andaime:web` | `import andaime.web;` | `App`, router, compile-time handler introspection, JSON, OpenAPI, middleware, logs, `TestClient` |
 | ⚙️ `andaime:engine` | `import andaime.engine;` | Event loop, fibers, buffer pool, `offload`, HTTP/WebSocket clients, OpenSSL and zlib loaders |
 | ⏰ `andaime:jobs` | `import andaime.jobs;` | Background jobs, retries, uniqueness, cron, in-memory and test stores |

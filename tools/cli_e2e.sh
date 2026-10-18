@@ -123,6 +123,8 @@ run psql "$ANDAIME_PG" -v ON_ERROR_STOP=1 -qc "drop database if exists andaime_c
 run psql "$db" -v ON_ERROR_STOP=1 -q -f "$work/clean/migrations/0001_users.sql"
 (cd "$work/clean" && TEST_DATABASE_URL="$db" run dub test $dubc -q)
 echo "ok  Postgres: the repository contract"
+# (dub test writes its test runner to ./clean, the app's own path: build the app again before starting it)
+(cd "$work/clean" && run dub build $dubc -q)
 
 port=$(( 18000 + RANDOM % 1000 ))
 (cd "$work/clean" && DATABASE_URL="$db" PORT=$port exec ./clean --role=all) > "$work/server.log" 2>&1 &

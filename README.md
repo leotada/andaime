@@ -575,17 +575,19 @@ How it stays fast:
 
 Built-in features only, without third-party plugins.
 
-| | 🏗️ andaime (D) | vibe.d (D) | FastAPI (Python) | Express (Node.js) | Gin (Go) |
-|---|:-:|:-:|:-:|:-:|:-:|
-| Parameters bound from the signature | ✅ | ⚠️ REST interfaces | ✅ | ❌ | ⚠️ struct tags |
-| Declarative validation, automatic 422 | ✅ | ❌ | ✅ | ❌ | ⚠️ |
-| OpenAPI + Swagger UI from the code | ✅ | ❌ | ✅ | ❌ | ❌ |
-| Signature mistakes caught at compile time | ✅ | ✅ | ❌ | ❌ | ⚠️ |
-| Native binary, no interpreter | ✅ | ✅ | ❌ | ❌ | ✅ |
-| Sequential code, no `async`/`await` | ✅ fibers | ✅ fibers | ❌ | ❌ | ✅ goroutines |
-| WebSockets | ✅ | ✅ | ✅ | ❌ | ❌ |
-| Background jobs and cron | ✅ | ❌ | ⚠️ background tasks | ❌ | ❌ |
-| In-memory test client | ✅ | ⚠️ | ✅ | ❌ | ✅ `httptest` |
+| | 🏗️ andaime (D) | vibe.d (D) | FastAPI (Python) | Express (Node.js) | Gin (Go) | Rails (Ruby) |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| Parameters bound from the signature | ✅ | ⚠️ REST interfaces | ✅ | ❌ | ⚠️ struct tags | ❌ `params` hash |
+| Declarative validation, automatic 422 | ✅ | ❌ | ✅ | ❌ | ⚠️ | ⚠️ model validations |
+| OpenAPI + Swagger UI from the code | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| Signature mistakes caught at compile time | ✅ | ✅ | ❌ | ❌ | ⚠️ | ❌ |
+| Native binary, no interpreter | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
+| Sequential code, no `async`/`await` | ✅ fibers | ✅ fibers | ❌ | ❌ | ✅ goroutines | ✅ threads |
+| WebSockets | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ Action Cable |
+| Background jobs and cron | ✅ | ❌ | ⚠️ background tasks | ❌ | ❌ | ✅ Active Job |
+| In-memory test client | ✅ | ⚠️ | ✅ | ❌ | ✅ `httptest` | ✅ integration tests |
+| Generators for a project structure | ✅ optional `andaime` CLI | ⚠️ `dub init` skeleton | ❌ | ⚠️ `express-generator` skeleton | ❌ | ✅ |
+| ORM and migration runner | ❌ SQL files from the CLI | ❌ | ❌ | ❌ | ❌ | ✅ Active Record |
 
 ✅ built in · ⚠️ partial · ❌ needs a library or not available
 

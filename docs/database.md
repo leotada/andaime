@@ -1,6 +1,6 @@
-# PostgreSQL (`andaime-pg`)
+# PostgreSQL (`andaime:pg`)
 
-`andaime-pg` is a PostgreSQL driver over asynchronous libpq: a query suspends only the request's fiber, and the worker keeps
+`andaime:pg` is a PostgreSQL driver over asynchronous libpq: a query suspends only the request's fiber, and the worker keeps
 serving other requests meanwhile. It is a separate DUB package, and libpq is loaded at run time, so applications that do not
 use it neither link nor install it.
 
@@ -10,7 +10,7 @@ use it neither link nor install it.
 
 ```sdl
 dependency "andaime" path="../andaime"
-dependency "andaime-pg" path="../andaime/drivers/pg"
+dependency "andaime:pg" path="../andaime"
 ```
 
 The machine needs libpq (`libpq5` on Debian/Ubuntu, `libpq5` or `postgresql-libs` elsewhere). `pgAvailable()` says whether

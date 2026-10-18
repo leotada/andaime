@@ -60,7 +60,7 @@ Inside a handler, everything that waits must go through andaime:
 | To | Use |
 |----|-----|
 | pause | `sleep(500.msecs)` (from `core.time`), not `Thread.sleep` |
-| query PostgreSQL | `andaime-pg` ([database.md](database.md)) |
+| query PostgreSQL | `andaime:pg` ([database.md](database.md)) |
 | call an HTTP API | `httpClient()` ([http-client.md](http-client.md)) |
 | wait for a file descriptor (your own driver) | `awaitFd(fd, IoEvent.readable, timeout)` |
 | run CPU-heavy work or a blocking C library | `offload(...)` (below) |

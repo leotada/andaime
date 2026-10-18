@@ -11,7 +11,7 @@ improvement plan and its decision log. Everything is written in English: code, c
 | `andaime:http` (`http/`) | HTTP types, `Optional`, text types, zero-copy HTTP/1.1 parser and writer, chunked decoder, HTTP/2 session and HPACK, WebSocket frames and messages. No I/O. | — |
 | `andaime:web` (`web/`) | `App`, router, handler introspection, JSON, OpenAPI, middleware, cookies, streaming, WebSocket routes, `TestClient`. No sockets. | http |
 | `andaime:engine` (`engine/`) | epoll loop, fibers, buffers, `offload`, HTTP/HTTPS and WebSocket client, OpenSSL, zlib. No routes. | http |
-| `andaime-pg` (`drivers/pg/`) | PostgreSQL driver over async libpq. An independent package: the core never depends on it. | andaime:engine |
+| `andaime:pg` (`drivers/pg/`) | PostgreSQL driver over async libpq. An independent package: the core never depends on it. | andaime:engine |
 | `andaime` (`source/andaime/`) | `import andaime;`, `server.d` (the only glue between web and engine), static files | all |
 | `andaime:cli` (`cli/`) | The optional `andaime` command and its templates (`cli/templates/`). `examples/clean` is its exact output. | — |
 
@@ -43,7 +43,7 @@ Without them the matching sections are skipped. A setup that runs every section 
 
 | Tool | For | How |
 |------|-----|-----|
-| PostgreSQL | `andaime-pg`, the API example | a local server (found automatically), or a container: `podman run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55432:5432 postgres:16` and `ANDAIME_PG="host=127.0.0.1 port=55432 user=postgres dbname=postgres"` |
+| PostgreSQL | `andaime:pg`, the API example | a local server (found automatically), or a container: `podman run -d --rm -e POSTGRES_HOST_AUTH_METHOD=trust -p 127.0.0.1:55432:5432 postgres:16` and `ANDAIME_PG="host=127.0.0.1 port=55432 user=postgres dbname=postgres"` |
 | python3 + `h2`, `openapi-spec-validator`, `websockets` (13+) | HTTP/2 and WebSocket interop, OpenAPI validity | `pip install h2 openapi-spec-validator 'websockets>=13'` (a venv is fine: put its `bin` first on `PATH`) |
 | h2spec 2.6.0 | HTTP/2 conformance | the release binary; `H2SPEC=/path/to/h2spec` |
 | Caddy 2 | h2c reverse-proxy test | the release binary; `CADDY=/path/to/caddy` |
@@ -82,3 +82,15 @@ tools/bench.sh 10                    # requests per second of one worker, for be
   User docs live in `docs/` (index: [docs/README.md](docs/README.md)); keep them in sync with behavior.
 - In test clients, D's GC interrupts blocking `read`/`send` with `EINTR`: retry on it.
 - One commit per item, each leaving `check.sh` green on both compilers.
+
+## Releasing to the DUB registry
+
+The repository is one registry package, `andaime`; everything else is a subpackage of it (`andaime:http`, `:web`, `:engine`,
+`:jobs`, `:crypto`, `:pg`, `:pgjobs`, `:cli`) and shares its version. DUB reads versions from git tags.
+
+1. `tools/check.sh` passes on DMD and LDC.
+2. Tag the commit with a semantic version, `git tag v0.1.0`, and push it: `git push origin v0.1.0`.
+3. First release only: register the repository at <https://code.dlang.org/register>. Later tags are picked up on their own.
+4. When the major or minor version changes, update `andaimeVersion` in `cli/source/andaime/cli/main.d` (the `~>` range new
+   projects depend on) and the `version="~>0.1.0"` lines in the README and `docs/getting-started.md`.
+

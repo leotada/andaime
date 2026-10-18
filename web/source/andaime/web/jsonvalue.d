@@ -628,7 +628,7 @@ string toJson(T)(auto ref const T value)
     return b.data.idup;
 }
 
-/// A `T` that travels as JSON text where a value is text: a `json`/`jsonb` column (`andaime-pg`'s `rowsAs` and parameters),
+/// A `T` that travels as JSON text where a value is text: a `json`/`jsonb` column (`andaime:pg`'s `rowsAs` and parameters),
 /// a query or path parameter. In a JSON body or response it is plain `T` (no extra quoting), and OpenAPI describes `T`.
 ///
 ///     struct TaskRow { long id; Json!(TagRef[]) tags; Optional!(Json!JsonValue) meta; }

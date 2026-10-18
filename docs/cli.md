@@ -7,11 +7,17 @@ project still builds.
 
 ## Install
 
-andaime is not on code.dlang.org yet, so build the command from your checkout:
+Run it straight from the registry, with nothing to install:
+
+```sh
+dub run andaime:cli -- new my-api
+```
+
+Or build it once from a checkout and put it on your `PATH`:
 
 ```sh
 cd andaime
-dub build :cli                 # cli/bin/andaime; put it on your PATH
+dub build :cli                 # cli/bin/andaime
 ```
 
 ## `andaime new`
@@ -26,8 +32,8 @@ andaime new my-api --template ../my-template
 
 - `--template`: `clean` (the default, [architecture.md](architecture.md)), `minimal`, or the folder of your own template.
 - `--db`: `pg` (the default) or `none`.
-- `--andaime-path`: where the project finds andaime, written into its `dub.sdl`. By default it is the checkout the command
-  was built from.
+- `--andaime-path`: where the project finds andaime, written into its `dub.sdl` as `path=`. Without it the project depends
+  on the registry release series (`version="~>0.1.0"`); pass a path to work against a checkout.
 
 The folder's name is the package name. The project gets an `andaime.json` that records the template, the options and
 the layer rules of `andaime check`.

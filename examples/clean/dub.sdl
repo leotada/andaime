@@ -3,9 +3,9 @@ description "An andaime application (clean template)"
 targetType "executable"
 mainSourceFile "source/main.d"
 dependency "andaime" path="../.."
-dependency "andaime-pg" path="../../drivers/pg"
+dependency "andaime:pg" path="../.."
 dependency "andaime:jobs" path="../.."
-dependency "andaime-pg-jobs" path="../../drivers/pgjobs"
+dependency "andaime:pgjobs" path="../.."
 // andaime:dependencies
 
 configuration "application" {

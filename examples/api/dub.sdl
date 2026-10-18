@@ -3,4 +3,4 @@ description "Example of a real API: Postgres, external API, auth, CORS, static f
 targetType "executable"
 sourcePaths "source"
 dependency "andaime" path="../.."
-dependency "andaime-pg" path="../../drivers/pg"
+dependency "andaime:pg" path="../.."

@@ -16,7 +16,7 @@ import std.file : dirEntries, exists, isDir, readText, remove, SpanMode, tempDir
 import std.format : format;
 import std.getopt : getopt, GetOptException;
 import std.json : JSONType, JSONValue, parseJSON;
-import std.path : absolutePath, baseName, buildNormalizedPath, buildPath, dirName, relativePath;
+import std.path : absolutePath, baseName, buildPath, dirName;
 import std.process : Config, environment, execute;
 import std.regex : matchFirst, regex;
 import std.stdio : stderr, stdout, writeln;
@@ -42,11 +42,8 @@ plural of a resource: users, blog_posts.
   check     the dependency rule: each import against the layers of andaime.json
 `;
 
-/// The repository this program was built from: the default `--andaime-path` of new projects.
-private string repositoryRoot()
-{
-    return buildNormalizedPath(dirName(__FILE_FULL_PATH__), "..", "..", "..", "..");
-}
+/// What a new project depends on when it is not given `--andaime-path`: this release series, from the registry.
+private enum andaimeVersion = "~>0.1.0";
 
 int main(string[] args)
 {
@@ -130,6 +127,8 @@ private Scope projectScope(string name, string templateName, string db, string a
     auto s = new Scope;
     s.set("app", name).set("appSnake", snake(name)).set("template", templateName).set("db", db);
     s.set("andaimePath", andaimePath).flag("pg", db == "pg").flag("jobs", jobs);
+    // the attributes of every `dependency "andaime..."` line: a checkout, or the registry
+    s.set("andaimeSource", andaimePath.length ? `path="` ~ andaimePath ~ `"` : `version="` ~ andaimeVersion ~ `"`);
     return s;
 }
 
@@ -172,8 +171,6 @@ private int cmdNew(string[] args)
                 ~ "folder)");
         templateName = folder;
     }
-    if (andaimePath.length == 0)
-        andaimePath = relativePath(repositoryRoot, absolutePath(dir)).replace("\\", "/");
 
     // `jobs` tells the new files what is coming (the README); the install step itself sets it in andaime.json
     auto vars = projectScope(name, templateName, db, andaimePath, jobs);

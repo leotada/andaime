@@ -432,7 +432,7 @@ s_compile_fail() {
 }
 
 # DUB packaging: sub-package dependencies and layering (andaime:web must not import andaime:engine, so building it alone
-# proves the direction), the andaime-pg and andaime-pg-jobs path dependencies and both examples.
+# proves the direction), the andaime:pg and andaime:pgjobs path dependencies and both examples.
 s_dub() {
     if ! command -v dub > /dev/null; then echo "skip: dub not installed" >&2; return 77; fi
     local rc=0
@@ -443,13 +443,13 @@ s_dub() {
     dub build $dubc -q :engine || rc=1
     dub build $dubc -q :jobs || rc=1
     dub build $dubc -q :crypto || rc=1
-    (cd drivers/pg && dub build $dubc -q) || rc=1
-    dub build $dubc -q --root=drivers/pgjobs || rc=1
+    dub build $dubc -q :pg || rc=1
+    dub build $dubc -q :pgjobs || rc=1
     (cd examples/hello && dub build $dubc -q) || rc=1
     (cd examples/api && dub build $dubc -q) || rc=1
     (cd examples/clean && dub build $dubc -q) || rc=1
     dub build $dubc -q :cli || rc=1
-    # the core must never import a driver; jobs depends on web and engine, not on andaime-pg
+    # the core must never import a driver; jobs depends on web and engine, not on andaime:pg
     if grep -rn "import andaime\.db" http web engine source jobs crypto --include=*.d; then
         echo "FAILED: the core, andaime:jobs or andaime:crypto imports a driver (andaime.db)"; rc=1
     fi

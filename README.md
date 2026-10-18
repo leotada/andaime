@@ -171,8 +171,8 @@ app.d(12): andaime: handler 'getUser' in GET /users/{id}: the route declares {id
 - ✅ Deadlines, cancellation of abandoned requests, graceful shutdown
 
 ### 🧩 Modules you attach when needed
-- 🐘 **PostgreSQL** async driver and pool (`andaime-pg`)
-- ⏰ **Background jobs and cron** with retries and uniqueness, in memory or on Postgres (`andaime:jobs`, `andaime-pg-jobs`)
+- 🐘 **PostgreSQL** async driver and pool (`andaime:pg`)
+- ⏰ **Background jobs and cron** with retries and uniqueness, in memory or on Postgres (`andaime:jobs`, `andaime:pgjobs`)
 - 🔐 **Crypto**: bcrypt, SHA-256, HMAC, HKDF, AES-GCM, ES256 (JWT), ECDH, Web Push (`andaime:crypto`)
 - 📡 **HTTP/HTTPS and WebSocket clients**, static files, CORS, request ids, structured logs (`text`, `kv`, `json`)
 
@@ -264,7 +264,7 @@ Short and complete enough to copy. Each one links to its full guide.
 ### 🐘 PostgreSQL
 
 ```sdl
-dependency "andaime-pg" path="../andaime/drivers/pg"
+dependency "andaime:pg" path="../andaime"
 ```
 
 ```d
@@ -351,7 +351,7 @@ struct DailyReport
     void perform(ref JobContext ctx) @safe { /* ... */ }
 }
 
-InMemoryJobStore store;                                         // PgJobStore (andaime-pg-jobs) for durable queues
+InMemoryJobStore store;                                         // PgJobStore (andaime:pgjobs) for durable queues
 
 string signUp(string email)                                     // POST /signup?email=...
 {
@@ -459,8 +459,8 @@ flowchart LR
     root(["andaime<br/>import andaime;"])
     jobs["andaime:jobs<br/>jobs and cron"]
     crypto["andaime:crypto<br/>bcrypt, JWT, AES-GCM"]
-    pg["andaime-pg<br/>PostgreSQL"]
-    pgjobs["andaime-pg-jobs<br/>durable job queue"]
+    pg["andaime:pg<br/>PostgreSQL"]
+    pgjobs["andaime:pgjobs<br/>durable job queue"]
 
     http --> web --> root
     http --> engine --> root
@@ -480,8 +480,8 @@ flowchart LR
 | ⚙️ `andaime:engine` | `import andaime.engine;` | Event loop, fibers, buffer pool, `offload`, HTTP/WebSocket clients, OpenSSL and zlib loaders |
 | ⏰ `andaime:jobs` | `import andaime.jobs;` | Background jobs, retries, uniqueness, cron, in-memory and test stores |
 | 🔐 `andaime:crypto` | `import andaime.crypto;` | bcrypt, SHA-256, HMAC, HKDF, AES-128-GCM, P-256 (ES256, ECDH), Web Push encryption |
-| 🐘 `andaime-pg` | `import andaime.db.pg;` | Async PostgreSQL driver and pool over `libpq` |
-| 🗄️ `andaime-pg-jobs` | `import andaime.jobs.pg;` | Durable job queue: `SKIP LOCKED`, `LISTEN`/`NOTIFY`, one cron run across processes |
+| 🐘 `andaime:pg` | `import andaime.db.pg;` | Async PostgreSQL driver and pool over `libpq` |
+| 🗄️ `andaime:pgjobs` | `import andaime.jobs.pg;` | Durable job queue: `SKIP LOCKED`, `LISTEN`/`NOTIFY`, one cron run across processes |
 | 🛠️ `andaime:cli` | `dub build :cli` | The `andaime` command: new projects, generators, the route table, the dependency rule |
 
 ---
@@ -644,20 +644,35 @@ curl -fsS https://dlang.org/install.sh | bash -s dmd   # or ldc; see https://dla
 - 📦 Optional, loaded only when used: OpenSSL 3 (HTTPS, crypto), `libpq.so.5` (PostgreSQL), zlib (WebSocket compression),
   `libcrypt.so.1` (bcrypt)
 
-**1. Create a project.** andaime is not on `code.dlang.org` yet, so depend on a checkout:
+**1. Create a project and add andaime with DUB.**
 
 ```sh
-git clone https://github.com/leotada/andaime
-mkdir my-api && cd my-api
+dub init my-api --type=minimal -n --format=sdl   # a folder with dub.sdl and source/app.d
+cd my-api
+dub add andaime                                  # adds: dependency "andaime" version="~>0.1.0"
 ```
 
-`dub.sdl`:
+`dub.sdl` now reads:
 
 ```sdl
 name "my-api"
 targetType "executable"
-dependency "andaime" path="../andaime"
+dependency "andaime" version="~>0.1.0"
 ```
+
+`import andaime;` is the core: HTTP, routing, JSON, validation, OpenAPI and the server. The rest is opt-in, one
+subpackage each, so you only compile and ship what you use:
+
+| Add with | For |
+|---|---|
+| `dub add andaime:jobs` | background jobs and cron |
+| `dub add andaime:pg` | the PostgreSQL driver (`import andaime.db.pg;`) |
+| `dub add andaime:pgjobs` | the durable Postgres job queue (needs `andaime:jobs` and `andaime:pg`) |
+| `dub add andaime:crypto` | bcrypt, HMAC, AES-GCM, ES256 and more |
+
+Prefer a ready structure? `dub run andaime:cli -- new my-api` creates a whole project in layers
+([the `andaime` command](docs/cli.md)). To work on andaime itself, or to try an unreleased change, depend on a checkout
+instead: `git clone https://github.com/leotada/andaime`, then `dependency "andaime" path="../andaime"`.
 
 **2. Write a route and its test** in `source/app.d`:
 

@@ -2,9 +2,9 @@ name "{{app}}"
 description "An andaime application (clean template)"
 targetType "executable"
 mainSourceFile "source/main.d"
-dependency "andaime" path="{{andaimePath}}"
+dependency "andaime" {{andaimeSource}}
 {{#pg}}
-dependency "andaime-pg" path="{{andaimePath}}/drivers/pg"
+dependency "andaime:pg" {{andaimeSource}}
 {{/pg}}
 // andaime:dependencies
 

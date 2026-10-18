@@ -18,7 +18,7 @@ things up.
 | [WebSockets](websocket.md) | `WebSocket` routes, `WsConn`, broadcasting, limits, compression, the `wsConnect` client, testing, proxies |
 | [Static files and OpenAPI](static-files-and-openapi.md) | `serveStatic`, `/openapi.json` and Swagger UI, documenting statuses |
 | [Concurrency](concurrency.md) | Workers, fibers, state between workers, waiting without blocking, `offload`, cancellation |
-| [Database](database.md) | The PostgreSQL driver (`andaime-pg`) |
+| [Database](database.md) | The PostgreSQL driver (`andaime:pg`) |
 | [Jobs and cron](jobs-and-cron.md) | Background jobs (`andaime:jobs`), retries, uniqueness, cron, process roles, Postgres queue |
 | [HTTP client](http-client.md) | Calling other APIs from a handler, reading their JSON (`fromJson`, `parseJson`) |
 | [Cryptography](crypto.md) | `andaime:crypto`: bcrypt, SHA-256/HMAC/HKDF, AES-GCM, ES256 (JWT), ECDH, Web Push encryption |

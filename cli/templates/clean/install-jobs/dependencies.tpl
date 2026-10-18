@@ -1,4 +1,4 @@
-dependency "andaime:jobs" path="{{andaimePath}}"
+dependency "andaime:jobs" {{andaimeSource}}
 {{#pg}}
-dependency "andaime-pg-jobs" path="{{andaimePath}}/drivers/pgjobs"
+dependency "andaime:pgjobs" {{andaimeSource}}
 {{/pg}}

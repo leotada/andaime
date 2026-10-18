@@ -1,9 +1,9 @@
-name "andaime-pg-jobs"
-description "Postgres job queue for andaime: SKIP LOCKED claims, LISTEN/NOTIFY, a lease reaper and one cron slot across processes. A separate package: the core does not depend on it."
+name "pgjobs"
+description "Postgres job queue for andaime: SKIP LOCKED claims, LISTEN/NOTIFY, a lease reaper and one cron slot across processes. A separate subpackage: the core does not depend on it."
 targetType "library"
 sourcePaths "source"
 importPaths "source"
-dependency "andaime:jobs" path="../../"
-dependency "andaime-pg" path="../pg"
+dependency "andaime:jobs" version="*"
+dependency "andaime:pg" version="*"
 
 toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

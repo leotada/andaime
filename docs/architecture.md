@@ -17,7 +17,7 @@ source/
   domain/users.d            entities and business rules
   usecases/users.d          what the application does, and the ports it needs
   adapters/http/users.d     a controller, the JSON a client sends and receives
-  adapters/postgres/users.d a repository over andaime-pg
+  adapters/postgres/users.d a repository over andaime:pg
   adapters/memory/users.d   the same repository in memory (tests, running without a database)
   adapters/jobs/users.d     background jobs
   app.d                     the composition root: which adapter implements each port, which routes the app serves

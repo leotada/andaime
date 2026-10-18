@@ -80,13 +80,13 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 
 | Path | Role |
 |------|------|
-| `http/` (`andaime:http`) | HTTP types, `Optional`, `PatchField`, text types, wire names (`@naming`, `@wireName`: `naming.d`, shared by JSON, OpenAPI and andaime-pg), IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64, base64url (`base64url.d`). No I/O. |
+| `http/` (`andaime:http`) | HTTP types, `Optional`, `PatchField`, text types, wire names (`@naming`, `@wireName`: `naming.d`, shared by JSON, OpenAPI and andaime:pg), IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64, base64url (`base64url.d`). No I/O. |
 | `web/` (`andaime:web`) | `App`, `Group`, router, handler introspection, JSON and `JsonValue`, OpenAPI, CORS, cookies, streaming, WebSocket routes, models, middleware, `TestClient`, and the logger `andaime.log` (`web/source/andaime/log.d`: in `andaime:web` so `jobs` and the root package use it; it writes to fd 2 unless a `LogSink` is set (`setLogSink`, or `setThreadLogSink` for tests): the sink gets a `LogRecord` whose slices are valid only during the call, and a line logged from inside a sink is dropped). No sockets. |
 | `engine/` (`andaime:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload`, `randomBytes` (getrandom, `random.d`), HTTP/HTTPS client (and `httpfake.d`, a scripted `HttpTransport` for tests), WebSocket client (`wsclient.d`), OpenSSL (dlopen, `tls.d`), zlib (dlopen, `zlib.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
 | `crypto/` (`andaime:crypto`) | Cryptographic primitives over OpenSSL 3's libcrypto and libxcrypt (both dlopen, own `__gshared` tables): SHA-256, HMAC, HKDF, AES-128-GCM, P-256 ECDSA (ES256) and ECDH, Web Push encryption (RFC 8291), bcrypt. Depends on `andaime:http` and `andaime:engine` (`random.d`, `offload`). Nothing else depends on it. |
 | `jobs/` (`andaime:jobs`) | Background jobs: `@Job` / `perform`, in-memory and test queues, cron, `--role` and `--queues`. Depends on `andaime:web` and `andaime:engine`. The root package does not depend on it. |
-| `drivers/pg/` (`andaime-pg`) | PostgreSQL driver over async libpq (dlopen). **Independent package; the core must never depend on it.** |
-| `drivers/pgjobs/` (`andaime-pg-jobs`) | Postgres `JobStore` (`PgJobStore`): `SKIP LOCKED` claims, `LISTEN`/`NOTIFY`, a lease reaper, one cron slot across processes. Depends on `andaime:jobs` and `andaime-pg`. |
+| `drivers/pg/` (`andaime:pg`) | PostgreSQL driver over async libpq (dlopen). **Independent package; the core must never depend on it.** |
+| `drivers/pgjobs/` (`andaime:pgjobs`) | Postgres `JobStore` (`PgJobStore`): `SKIP LOCKED` claims, `LISTEN`/`NOTIFY`, a lease reaper, one cron slot across processes. Depends on `andaime:jobs` and `andaime:pg`. |
 | `source/andaime/` (`andaime`) | `import andaime;`, `server.d` (the only glue between web and engine), `staticfiles.d`. |
 | `examples/hello`, `examples/api`, `examples/clean` | In-memory CRUD; a real API with Postgres, external API, CORS, static files, OpenAPI; an app in layers (domain, use cases, adapters) that is the exact output of the CLI's clean template (`tools/cli_e2e.sh` diffs it). |
 | `cli/` (`andaime:cli`) | The optional `andaime` command: `new`, `generate`, `routes`, `check`. Templates live in `cli/templates/<name>/`, one folder per generator, embedded through each template's `MANIFEST`. A tool, not the core: Phobos is fine here. |
@@ -97,7 +97,7 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 | `.github/workflows/check.yml` | CI: DMD and LDC at the minimum and latest versions, strict mode; the `edition` section on DMD 2.112.0 in its own job; the browser test and fuzzing in their own jobs, nightly or on a manual run only. |
 
 Dependency direction: `http` <- `web`, `http` <- `engine` <- `drivers/pg`. `jobs` depends on `web` and `engine`, not on `pg`.
-`drivers/pgjobs` depends on `jobs` and `andaime-pg`. `crypto` depends on `http` and `engine`; nothing in the core or `jobs`
+`drivers/pgjobs` depends on `jobs` and `andaime:pg`. `crypto` depends on `http` and `engine`; nothing in the core or `jobs`
 imports it (`check.sh` greps for it). The root `andaime` package does not depend on `jobs`. `andaime:cli` imports
 nothing from andaime, and nothing depends on it. `web` does not depend on `engine`. `source/andaime/server.d` is the only module that knows both `web` and `engine`. Do not introduce a dependency from the
 core to any driver.

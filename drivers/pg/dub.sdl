@@ -1,8 +1,8 @@
-name "andaime-pg"
-description "Cooperative (fiber-based) PostgreSQL driver for andaime, over asynchronous libpq loaded via dlopen. A separate package: the core does not depend on it."
+name "pg"
+description "Cooperative (fiber-based) PostgreSQL driver for andaime, over asynchronous libpq loaded via dlopen. A separate subpackage: the core does not depend on it."
 targetType "library"
 sourcePaths "source"
 importPaths "source"
-dependency "andaime:engine" path="../.."
+dependency "andaime:engine" version="*"
 
 toolchainRequirements dmd=">=2.109.1" ldc=">=1.40.1" gdc="no"

@@ -39,6 +39,15 @@ for t in cli/templates/*/; do
 done
 echo "ok  every template's MANIFEST lists its files"
 
+# without --andaime-path a project depends on the registry release series, not on a path
+run "$A" new "$work/registry" --db pg --jobs
+if ! grep -q 'dependency "andaime" version="~>' "$work/registry/dub.sdl" \
+    || ! grep -q 'dependency "andaime:pgjobs" version="~>' "$work/registry/dub.sdl" \
+    || grep -q 'path=' "$work/registry/dub.sdl"; then
+    echo "FAILED: a new project without --andaime-path should depend on the registry:"; cat "$work/registry/dub.sdl"; exit 1
+fi
+echo "ok  a new project depends on the registry release by default"
+
 # ---------------------------------------------------------------- 1. clean, Postgres and jobs: the golden example
 run "$A" new "$work/clean" --db pg --jobs --andaime-path ../..
 (cd "$work/clean" && run "$A" generate resource user name:string email:string:unique \
@@ -73,7 +82,7 @@ cp examples/clean/source/domain/users.d "$work/clean/source/domain/users.d"
 echo "ok  andaime check passes the layers, and names a forbidden import in one line"
 
 # ---------------------------------------------------------------- 2. no database: every generator, jobs installed late
-run "$A" new "$work/nodb" --db none
+run "$A" new "$work/nodb" --db none --andaime-path ../..
 (
     cd "$work/nodb"
     run "$A" g r blog_post title:string "body:string?" views:int published:bool rating:double
@@ -98,7 +107,7 @@ run "$A" new "$work/nodb" --db none
 echo "ok  no database: resource, usecase and jobs (installed by the first one) generate, test, build and check"
 
 # ---------------------------------------------------------------- 3. minimal, and an app the CLI did not make
-run "$A" new "$work/mini" --template minimal
+run "$A" new "$work/mini" --template minimal --andaime-path ../..
 (cd "$work/mini" && run dub test $dubc -q && run dub build $dubc -q)
 grep -q "^POST    /items  *app.createItem$" <(cd "$work/mini" && "$A" routes) || { echo "FAILED: minimal routes"; exit 1; }
 grep -q "^GET     /users/{id}  *app.getUser$" <(cd examples/hello && "$A" routes) || { echo "FAILED: hello routes"; exit 1; }

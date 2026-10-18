@@ -15,11 +15,12 @@ Linux x86_64.
 
 ## A new project
 
-andaime is not on code.dlang.org yet, so depend on a checkout:
+Create a folder with DUB and add andaime:
 
 ```sh
-git clone https://github.com/leotada/andaime
-mkdir my-api && cd my-api
+dub init my-api --type=minimal -n --format=sdl
+cd my-api
+dub add andaime
 ```
 
 `dub.sdl`:
@@ -27,8 +28,11 @@ mkdir my-api && cd my-api
 ```sdl
 name "my-api"
 targetType "executable"
-dependency "andaime" path="../andaime"
+dependency "andaime" version="~>0.1.0"
 ```
+
+The other packages are subpackages of it: `dub add andaime:jobs`, `andaime:pg`, `andaime:pgjobs`, `andaime:crypto`. To work
+on andaime itself, depend on a checkout instead (`dependency "andaime" path="../andaime"`).
 
 This page builds a project by hand, to show how andaime works. The optional `andaime` command can also create one:
 `andaime new my-api --template minimal` for a single module, or `andaime new my-api` for a project in layers

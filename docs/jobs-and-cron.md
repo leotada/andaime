@@ -5,7 +5,7 @@ drive retries, uniqueness, cron and the OpenAPI-free compile-time checks. Enqueu
 the same one in development) claims and runs the work on the epoll loop.
 
 The package is `andaime:jobs` (`import andaime.jobs;`). It does not talk to Postgres. The durable queue is
-`andaime-pg-jobs` (`import andaime.jobs.pg;`), covered at the end. The root `andaime` package depends on neither, so
+`andaime:pgjobs` (`import andaime.jobs.pg;`), covered at the end. The root `andaime` package depends on neither, so
 `import andaime;` does not pull jobs in. Background jobs need the Linux epoll loop; `runJobs` refuses the blocking
 development server.
 
@@ -218,7 +218,7 @@ In memory, the supervisor enqueues a due slot once per process. `TestJobStore` d
 by hand, and `drainJobs` runs the row.
 
 On Postgres the supervisor calls `claimCron` first. Only the process that inserts `(job_name, scheduled_slot)` into
-`andaime_cron_executions` enqueues the job. See [Postgres](#postgres-andaime-pg-jobs) below.
+`andaime_cron_executions` enqueues the job. See [Postgres](#postgres-andaimepgjobs) below.
 
 ### Schedules from configuration: `JobSchedule`
 
@@ -379,12 +379,12 @@ When `shutdownGraceMs` is still the 10 second default, `--role=worker` (`runJobs
 before `serve`) raise it to 30 seconds so a running job can finish or be released. A value you already set, including 0,
 is kept. `--role=api` leaves the API's grace alone.
 
-## Postgres (`andaime-pg-jobs`)
+## Postgres (`andaime:pgjobs`)
 
 ```sdl
 dependency "andaime:jobs" path="../andaime"
-dependency "andaime-pg" path="../andaime/drivers/pg"
-dependency "andaime-pg-jobs" path="../andaime/drivers/pgjobs"
+dependency "andaime:pg" path="../andaime"
+dependency "andaime:pgjobs" path="../andaime"
 ```
 
 `PgJobStore` (`import andaime.jobs.pg;`) is the durable `JobStore`. One store per worker thread: it uses that thread's

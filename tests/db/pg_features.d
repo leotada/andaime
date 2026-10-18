@@ -1,4 +1,4 @@
-/// andaime-pg features against a real server (ANDAIME_PG = conninfo): array parameters. Without ANDAIME_PG the test declares itself
+/// andaime:pg features against a real server (ANDAIME_PG = conninfo): array parameters. Without ANDAIME_PG the test declares itself
 /// skipped (prints `skip: <reason>` and exits 77).
 module pg_features;
 

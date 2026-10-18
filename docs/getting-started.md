@@ -7,9 +7,10 @@ Linux x86_64.
 
 ## Requirements
 
-- A D compiler (DMD 2.109.1+ or LDC 1.40.1+) and DUB.
-- Linux for the production server (epoll). On other systems `serve` falls back to a blocking development server, good enough
-  to try things out.
+- A D compiler (DMD 2.109.1+ or LDC 1.40.1+) and DUB. The code also type-checks as language edition 2025 (DMD 2.112+), and
+  your application may be written in that edition (see [Memory safety](safety.md)).
+- Linux for the production server (epoll). The event loop also has macOS (kqueue) and Windows (WSAPoll) backends: CI
+  type-checks them, but does not run them yet.
 - Optional, loaded at run time only when used: OpenSSL 3 for HTTPS, libpq5 for the PostgreSQL driver.
 
 ## A new project

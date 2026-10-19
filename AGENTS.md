@@ -81,7 +81,7 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 
 | Path | Role |
 |------|------|
-| `http/` (`andaime:http`) | HTTP types, `Optional`, `PatchField`, text types, wire names (`@naming`, `@wireName`: `naming.d`, shared by JSON, OpenAPI and andaime:pg), IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64, base64url (`base64url.d`). No I/O. |
+| `http/` (`andaime:http`) | HTTP types; `andaime.values` (`Optional`, `PatchField`, `JsonValue`, `Uuid`: pure values a domain may import; the old `andaime.http.optional`/`patchfield` and `andaime.web.jsonvalue` paths re-export them); the JSON text layer (`jsontext.d`: escaping, `JsonReader`), field errors (`fielderrors.d`), `numtext`/`numparse`; `Accept` matching (`accept.d`); text types, wire names (`@naming`, `@wireName`: `naming.d`, shared by JSON, OpenAPI and andaime:pg), IP/CIDR, UTF-8, zero-copy HTTP/1.1 parser, chunked decoder, response head/sink, writer, byte buffer, HTTP/2 session (`h2.d`) and HPACK, WebSocket frames/handshake/`WsConn` (`websocket.d`), SHA-1 and base64, base64url (`base64url.d`). No I/O. |
 | `web/` (`andaime:web`) | `App`, `Group`, router, handler introspection, JSON and `JsonValue`, OpenAPI, CORS, cookies, streaming, WebSocket routes, models, middleware, `TestClient`, and the logger `andaime.log` (`web/source/andaime/log.d`: in `andaime:web` so `jobs` and the root package use it; it writes to fd 2 unless a `LogSink` is set (`setLogSink`, or `setThreadLogSink` for tests): the sink gets a `LogRecord` whose slices are valid only during the call, and a line logged from inside a sink is dropped). No sockets. |
 | `engine/` (`andaime:engine`) | epoll loop, fibers (`sleep`/`awaitFd`), buffer pool, `offload`, `randomBytes` (getrandom, `random.d`), HTTP/HTTPS client (and `httpfake.d`, a scripted `HttpTransport` for tests), WebSocket client (`wsclient.d`), OpenSSL (dlopen, `tls.d`), zlib (dlopen, `zlib.d`), the server's TLS listener (`tlsserver.d`). No routes or DTOs. |
 | `crypto/` (`andaime:crypto`) | Cryptographic primitives over OpenSSL 3's libcrypto and libxcrypt (both dlopen, own `__gshared` tables): SHA-256, HMAC, HKDF, AES-128-GCM, P-256 ECDSA (ES256) and ECDH, Web Push encryption (RFC 8291), bcrypt. Depends on `andaime:http` and `andaime:engine` (`random.d`, `offload`). Nothing else depends on it. |
@@ -120,7 +120,7 @@ tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SP
 - **Skips**: a test or helper that cannot run prints `skip: <reason>` to stderr and exits **77**; `check.sh` lists the skips in its
   summary. `dmd -run` turns every non-zero code into 1, so tests that can skip are built first and run afterwards.
 - Timing checks are noisy: the compile budget fails above 440 ms (target 400), the HTTPS memory ceiling is 80 MB (OpenSSL 3.5).
-- Parser changes: add corpus files and run `tools/fuzz.sh 300 parse`. JSON reader changes (`json.d`, `jsonvalue.d`): run
+- Parser changes: add corpus files and run `tools/fuzz.sh 300 parse`. JSON reader changes (`json.d`, `http/.../jsontext.d`, `values/jsonvalue.d`): run
   `tools/fuzz.sh 300 json` (`JsonValue` recursion is bounded by `JsonLimits.maxDepth`; keep it so). HTTP/2 and WebSocket
   changes: see [Subsystem notes](#subsystem-notes).
 

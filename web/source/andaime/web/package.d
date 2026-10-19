@@ -14,6 +14,7 @@ public import andaime.web.handler_traits : writeDefaultValidationErrors;
 public import andaime.web.jsonvalue : JsonValue, JsonMember, JsonType, JsonError, JsonLimits, parseJson, fromJson, toJson,
     Json;
 public import andaime.web.json : writeJson;
+public import andaime.values.uuid : Uuid;
 public import andaime.log;
 public import andaime.web.testing;
 public import andaime.web.cors;

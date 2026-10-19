@@ -333,26 +333,52 @@ cfg.forwardedHeader = "X-Forwarded-For";               // the default
 (`app.trustProxies([...])` does the same for one App, for example in tests.) From any other peer the header is ignored,
 because anyone can send it. `ctx.clientIp()` gives the same answer inside middleware. `accessLog()` logs it.
 
-## Your own types (UUIDs, dates, money)
+## UUIDs: `Uuid`
+
+`Uuid` (from `andaime.values.uuid`, also in `import andaime;`) is a text type: it works as a path or query parameter, in
+JSON, in `Query!T`/`Form!T` and as a `uuid` column with `rowsAs`; OpenAPI says `"format": "uuid"`, and a bad one is a 422
+with the message `expected a UUID (8-4-4-4-12 hexadecimal digits)`.
+
+```d
+Order getOrder(Uuid id) { ... }                   // /orders/017f22e2-79b0-7cc3-98c4-dc0c0c07398f
+struct Order { Uuid id; Optional!Uuid parent; }   // JSON strings
+
+auto id = uuid7();   // time-ordered (version 7): sorts by creation, a good primary key
+auto key = uuid4();  // random (version 4)
+```
+
+`uuid4()` and `uuid7()` (`andaime.engine.random`) use the system's secure generator and the clock; within one thread,
+`uuid7` values always increase. `Uuid.v4(randomBytes)` and `Uuid.v7(unixMs, randomBytes)` build one from given bits, for a
+domain that receives randomness and time through a port. `id.version_`, `id.unixMillis` (v7), `id.toString`, `<`.
+
+## Your own types (dates, money)
 
 A struct that can read and write itself as text works wherever a string does: path, query, header, `Query!T`/`Form!T` fields,
 JSON fields and database columns. There is nothing to register; the compiler checks the shape:
 
 ```d
-struct Uuid
+struct Day
 {
-    ubyte[16] bytes;
-    static bool fromString(scope const(char)[] text, out Uuid v) { ... }               // false = invalid
+    int y, m, d;
+    static bool fromString(scope const(char)[] text, out Day v) { ... }                // false = invalid
     void toString(scope void delegate(scope const(char)[]) @safe sink) const { ... }  // writes the text
-    enum openApiFormat = "uuid";                                         // optional: the OpenAPI "format"
-    enum invalidMessage = "expected a UUID like 123e4567-...";           // optional: the 422 message
+    enum openApiFormat = "date";                                         // optional: the OpenAPI "format"
+    enum invalidMessage = "expected a date like 2025-12-31";             // optional: the 422 message
 }
 
-Order getOrder(Uuid id) { ... }                           // a bad id is a 422 with type "value_error"
-struct Order { Uuid id; Optional!Uuid parent; }           // JSON strings with "format": "uuid" in OpenAPI
+Order[] since(Day day) { ... }                            // a bad day is a 422 with type "value_error"
+struct Order { Uuid id; Day placed; }                     // JSON strings with "format": "date" in OpenAPI
 ```
 
-Inside `fromString`/`toString` use any library you like (`std.datetime`, `std.uuid`).
+Inside `fromString`/`toString` use any library you like (`std.datetime`).
+
+## Values a domain may import: `andaime.values`
+
+`Optional`, `PatchField`, `JsonValue` (with `parseJson` and `toString`) and `Uuid` are plain values, with no I/O and no
+dependency on the web, engine or database layers. They live in `andaime.values` (in the `andaime:http` package), so a
+project's `domain/` and `usecases/` may import them without importing the framework. The old module paths
+(`andaime.http.optional`, `andaime.http.patchfield`, `andaime.web.jsonvalue`) still work. `fromJson!T`, `toJson` and
+`Json!T` need andaime's typed JSON codec, so they stay in `andaime.web.jsonvalue`.
 
 ## The raw request: `Context`
 

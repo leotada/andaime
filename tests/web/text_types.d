@@ -1,4 +1,4 @@
-/// Text types (`fromString` + `toString`): a Uuid and an ISO date travel through path, query, header, JSON and OpenAPI.
+/// Text types (`fromString` + `toString`): andaime's Uuid and an ISO date travel through path, query, header, JSON and OpenAPI.
 module text_types 2025;
 
 @safe:
@@ -6,52 +6,6 @@ module text_types 2025;
 import andaime;
 import andaime.web.testing;
 import std.json : parseJSON;
-
-struct Uuid
-{
-    ubyte[16] bytes;
-
-    static bool fromString(scope const(char)[] t, out Uuid v)
-    {
-        if (t.length != 36)
-            return false;
-        size_t o;
-        for (size_t i = 0; i < 36; i++)
-        {
-            if (i == 8 || i == 13 || i == 18 || i == 23)
-            {
-                if (t[i] != '-')
-                    return false;
-                continue;
-            }
-            immutable int d = t[i] >= '0' && t[i] <= '9' ? t[i] - '0' : (t[i] >= 'a' && t[i] <= 'f' ? t[i] - 'a' + 10
-                : (t[i] >= 'A' && t[i] <= 'F' ? t[i] - 'A' + 10 : -1));
-            if (d < 0)
-                return false;
-            if (o % 2 == 0) v.bytes[o / 2] = cast(ubyte)(d << 4); else v.bytes[o / 2] |= cast(ubyte) d;
-            o++;
-        }
-        return true;
-    }
-
-    void toString(scope void delegate(scope const(char)[]) @safe sink) const
-    {
-        static immutable hex = "0123456789abcdef";
-        char[36] t;
-        size_t k;
-        foreach (i, b; bytes)
-        {
-            if (i == 4 || i == 6 || i == 8 || i == 10)
-                t[k++] = '-';
-            t[k++] = hex[b >> 4];
-            t[k++] = hex[b & 15];
-        }
-        sink(t[]);
-    }
-
-    enum openApiFormat = "uuid";
-    enum invalidMessage = "expected a UUID like 123e4567-e89b-12d3-a456-426614174000";
-}
 
 /// A date as year/month/day: no format string, just a different shape and the default message.
 struct Day
@@ -141,7 +95,7 @@ unittest
     // fromString says no: value_error, with the type's own message or the default one
     auto r = c.get("/u/not-a-uuid");
     assert(r.status == 422);
-    assert(r.body == `{"detail":[{"type":"value_error","loc":["path","id"],"msg":"expected a UUID like 123e4567-e89b-12d3-a456-426614174000"}]}`, r.body);
+    assert(r.body == `{"detail":[{"type":"value_error","loc":["path","id"],"msg":"expected a UUID (8-4-4-4-12 hexadecimal digits)"}]}`, r.body);
     r = c.get("/q?since=yesterday");
     assert(r.body == `{"detail":[{"type":"value_error","loc":["query","since"],"msg":"invalid Day"}]}`, r.body);
 

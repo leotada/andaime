@@ -10,6 +10,8 @@ public import andaime.engine.loop : ServerConfig, TlsConfig, ErrorBody, jsonErro
 public import andaime.engine.fiberio : sleep, awaitFd, IoEvent, RequestCancelled, spawn, stopping, workerIndex;
 // Per-fiber values for code below a handler or a job (one per class type)
 public import andaime.engine.fiberio : fiberLocal, setFiberLocal, clearFiberLocal;
+// New identifiers (the `Uuid` type itself comes with andaime.web, from andaime.values)
+public import andaime.engine.random : uuid4, uuid7;
 // Blocking work (DNS, CPU, C libs) and outgoing HTTP calls, both cooperative
 public import andaime.engine.offload : offload, configureOffload, PoolSaturated;
 public import andaime.engine.httpclient : httpClient, HttpClient, HttpClientConfig, HttpClientError,

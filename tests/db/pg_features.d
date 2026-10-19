@@ -470,6 +470,23 @@ void testStaleConnections()
     ok("pool: idle connections the server closed are dropped before use (pingAfter)");
 }
 
+/// andaime's `Uuid` (a text type) as a `uuid` column: a parameter, and back through `rowsAs`.
+void testLibraryUuid()
+{
+    import andaime.values.uuid : LibUuid = Uuid;
+
+    struct Row { LibUuid id; string name; }
+    auto c = connect();
+    scope (exit) c.shutdown();
+    c.exec("create temp table t_uuid(id uuid primary key, name text)");
+    auto id = uuid7();
+    c.exec("insert into t_uuid values ($1, $2)", id, "ana");
+    auto rows = c.query("select id, name from t_uuid where id = $1", id).rowsAs!Row;
+    assert(rows.length == 1 && rows[0].id == id && rows[0].name == "ana");
+    assert(c.query("select id::text from t_uuid").get!string(0, 0) == id.toString);
+    ok("Uuid: a uuid column through parameters and rowsAs");
+}
+
 int rowsIn(PgConn c, string table) => c.query("select count(*)::int from " ~ table).get!int(0, 0);
 
 /// The ambient transaction, on the calling thread (no fiber: the thread's table): code that only holds the pool joins it.
@@ -699,6 +716,7 @@ void main()
     testSavepoints();
     testRollbackHarness();
     testStaleConnections();
+    testLibraryUuid();
     testAmbient();
     testAmbientFibers();
     printf("all Postgres feature tests passed\n");

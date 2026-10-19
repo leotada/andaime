@@ -193,7 +193,7 @@ ports below 1024 as an ordinary user (redo it after each new build).
   couple of seconds before judging.
 - Background jobs on Postgres: completed rows are purged after a day and discarded ones after 14 days
   (`PgJobStore.completedRetention`, `discardedRetention`). A job whose payload carries a code or a token should be
-  `@Job("...", dropOnSuccess: true)`, so it leaves nothing in `andaime_jobs` once sent (see
+  `@Job("...") @DropOnSuccess`, so it leaves nothing in `andaime_jobs` once sent (see
   [Background jobs](jobs-and-cron.md#retention)).
 
 ## Behind a reverse proxy

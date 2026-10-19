@@ -1,5 +1,6 @@
 
-/// The payload of {{Name}}: what is stored, nothing else.
+/// The payload of {{Name}}: what is stored, nothing else. Options are UDAs of their own, next to `@Job`:
+/// `@Retry(3, BackoffStrategy.exponential)`, `@UniqueJob(15.minutes)`, `@DropOnSuccess` (a payload with a secret).
 @Job("{{queue}}")
 {{#schedule}}
 {{schedule}}

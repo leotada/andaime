@@ -20,6 +20,8 @@ env:
   # tools/proxy_interop.sh: andaime behind Caddy over h2c
   CADDY_VERSION: "2.11.7"
   CADDY_SHA512: "a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7"
+  # tools/check.sh: libdparse (D-Scanner, dfmt, DCD, serve-d) must parse every job UDA
+  DSCANNER_VERSION: "0.15.2"
 
 jobs:
   check:
@@ -80,6 +82,12 @@ jobs:
           echo "${CADDY_SHA512}  caddy.tgz" | sha512sum -c -
           tar xzf caddy.tgz -C "$RUNNER_TEMP" caddy
           echo "CADDY=$RUNNER_TEMP/caddy" >> "$GITHUB_ENV"
+
+      - name: D-Scanner
+        # no release binary for 0.15.2: DUB fetches the tagged source and builds it (about 20 s)
+        run: |
+          dub build -q -y "dscanner@${DSCANNER_VERSION}"
+          echo "DSCANNER=$(dub describe -q "dscanner@${DSCANNER_VERSION}" --data=target-path --data-list | head -1)dscanner" >> "$GITHUB_ENV"
 
       - name: tools/check.sh
         # setup-dlang overrides DC with the compiler's own driver (ldc2 for LDC); $DMD is the DMD-style one (ldmd2),

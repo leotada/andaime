@@ -40,6 +40,9 @@ one fiber per request on an epoll loop, readable one-line compile errors.
   such views (a parsed `Request`, a middleware that captures state) use heap or module-level storage, not stack locals.
 - Use only one import of a name per module (a private selective import next to a `public import` of the same name made
   `is(T == X!U, U)` false on DMD 2.109, before the minimum moved to 2.112; the rule is kept because it is cheap).
+- No API option may be readable only as a named argument inside a UDA (`@Job("x", drop: true)`): libdparse, the parser
+  under D-Scanner, dfmt, DCD and serve-d, rejects it. Make the option a UDA of its own (`@DropOnSuccess`). `check.sh`
+  runs D-Scanner (`DSCANNER=/path`) over `tests/jobs/job_udas_syntax.d`, which uses every job UDA.
 - Never use `pkill -f` with a pattern that appears in your own command line.
 - `real` is a reserved word in D.
 

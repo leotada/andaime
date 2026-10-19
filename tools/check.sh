@@ -145,6 +145,17 @@ s_jobs() {
     return $rc
 }
 
+# libdparse (D-Scanner, dfmt, DCD, serve-d) must parse every job option in its documented form: an option that is
+# only readable as a named argument inside a UDA (`@Job("x", drop: true)`) is a parse error there. libdparse does not
+# know language editions either, so the copy it reads says `module x;` instead of `module x 2025;`.
+s_dscanner() {
+    local ds="${DSCANNER:-$(command -v dscanner || true)}"
+    if [[ -z "$ds" ]]; then echo "skip: D-Scanner not found (DSCANNER=/path/to/dscanner)" >&2; return 77; fi
+    sed 's/^module \([A-Za-z0-9_.]*\) 2025;/module \1;/' tests/jobs/job_udas_syntax.d > "$work/job_udas_syntax.d"
+    "$ds" --syntaxCheck "$work/job_udas_syntax.d"
+    echo "ok  $("$ds" --version) parses tests/jobs/job_udas_syntax.d"
+}
+
 s_docs() {
     tools/doc_examples.sh
 }
@@ -504,6 +515,7 @@ section "module unittests" s_unittests
 section "-preview=dip1000: the library, tests and examples type-check" s_dip1000
 section "web-layer features (groups, locals, onError, CORS, static files, OpenAPI, middlewares)" s_web
 section "background jobs (memory store, retry, unique window)" s_jobs
+section "D-Scanner parses every job UDA (no named argument inside a UDA)" s_dscanner
 section "documentation examples compile (blocks marked // check)" s_docs
 section "OpenAPI document validity (openapi-spec-validator)" s_openapi
 section "HTTP parser: attack corpus and mutation fuzz" s_parser

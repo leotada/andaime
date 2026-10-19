@@ -1,5 +1,6 @@
-/// `@Job(..., dropOnSuccess: true)`: a completed job leaves no payload in the memory store. A unique one keeps its row,
-/// emptied, so its window still deduplicates. A failed one keeps its payload.
+/// `@Job("mail") @DropOnSuccess`: a completed job leaves no payload in the memory store. A unique one keeps its row,
+/// emptied, so its window still deduplicates. A failed one keeps its payload. The older field form,
+/// `@Job("mail", dropOnSuccess: true)`, still works.
 module drop_on_success 2025;
 
 @safe:
@@ -7,21 +8,21 @@ module drop_on_success 2025;
 import core.time : hours;
 import andaime.jobs;
 
-@Job("mail", dropOnSuccess: true)
+@Job("mail") @DropOnSuccess
 struct MagicLink
 {
     string token;
     void perform(ref JobContext) {}
 }
 
-@Job("mail", dropOnSuccess: true) @UniqueJob(1.hours)
+@Job("mail") @DropOnSuccess @UniqueJob(1.hours)
 struct Invite
 {
     string token;
     void perform(ref JobContext) {}
 }
 
-@Job("mail", dropOnSuccess: true)
+@Job("mail") @DropOnSuccess
 struct Broken
 {
     string token;
@@ -35,16 +36,24 @@ struct Plain
     void perform(ref JobContext) {}
 }
 
+@Job("mail", dropOnSuccess: true)
+struct FieldForm
+{
+    string token;
+    void perform(ref JobContext) {}
+}
+
 unittest
 {
-    static assert(jobDropOnSuccess!MagicLink && !jobDropOnSuccess!Plain);
+    static assert(jobDropOnSuccess!MagicLink && jobDropOnSuccess!FieldForm && !jobDropOnSuccess!Plain);
 
     auto store = new TestJobStore;
     enqueue(store, MagicLink("secret-1"));
     enqueue(store, Invite("secret-2"));
     enqueue(store, Broken("secret-3"));
     enqueue(store, Plain("kept"));
-    store.drainJobs!(MagicLink, Invite, Broken, Plain)();
+    enqueue(store, FieldForm("secret-4"));
+    store.drainJobs!(MagicLink, Invite, Broken, Plain, FieldForm)();
 
     string[] payloads;
     foreach (r; store.jobs())

@@ -9,7 +9,8 @@ import andaime.jobs;
 import core.time; // the periods of @Every
 import usecases.users;
 
-/// The payload of SendWelcome: what is stored, nothing else.
+/// The payload of SendWelcome: what is stored, nothing else. Options are UDAs of their own, next to `@Job`:
+/// `@Retry(3, BackoffStrategy.exponential)`, `@UniqueJob(15.minutes)`, `@DropOnSuccess` (a payload with a secret).
 @Job("default")
 struct SendWelcomeJob
 {

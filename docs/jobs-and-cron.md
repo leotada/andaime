@@ -563,13 +563,17 @@ services start. Without a supervisor (your own claim loop), call `store.purge()`
 A payload that carries a secret (a one-time code, a magic link, an invitation token) should not wait for the purge:
 
 ```d
-@Job("mail", dropOnSuccess: true)
+@Job("mail") @DropOnSuccess
 struct SendLoginCode { string email; string code; void perform(ref JobContext ctx) { ... } }
 ```
 
-With `dropOnSuccess`, a successful run deletes the row. A `@UniqueJob` keeps its row, with the payload replaced by `{}`, so
+With `@DropOnSuccess`, a successful run deletes the row. A `@UniqueJob` keeps its row, with the payload replaced by `{}`, so
 its window still deduplicates. A failed or discarded run keeps the payload as any job does. The memory stores do the same.
 A custom `JobStore` opts in by implementing `JobPayloadDrop`; without it the row is completed normally.
+
+The older spelling, `@Job("mail", dropOnSuccess: true)`, still compiles. Prefer the separate UDA: libdparse, the parser
+under D-Scanner, dfmt, DCD and serve-d, cannot read a named argument inside a UDA, so linters and editors report the
+older form as a syntax error. Every job option is its own UDA for that reason.
 
 ### Cron across processes
 

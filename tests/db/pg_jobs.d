@@ -395,7 +395,7 @@ void testLease(PgConn admin)
     assert(again.length == 1 && again[0].id == old.id && again[0].attempt == 2);
 }
 
-@Job("secret", dropOnSuccess: true)
+@Job("secret") @DropOnSuccess
 struct SendCode
 {
     string code;
@@ -405,7 +405,7 @@ struct SendCode
     }
 }
 
-@Job("secret", dropOnSuccess: true) @UniqueJob(1.hours)
+@Job("secret") @DropOnSuccess @UniqueJob(1.hours)
 struct SendUniqueCode
 {
     string code;
@@ -415,7 +415,7 @@ struct SendUniqueCode
     }
 }
 
-/// `dropOnSuccess` leaves no payload; the reaper's purge deletes old completed and discarded rows and old cron slots.
+/// `@DropOnSuccess` leaves no payload; the reaper's purge deletes old completed and discarded rows and old cron slots.
 void testRetention(PgConn admin)
 {
     reset(admin);
@@ -629,7 +629,7 @@ void main()
     testNotify(admin);
     ok("notify wakes the listener");
     testRetention(admin);
-    ok("dropOnSuccess leaves no payload; purge deletes old completed and discarded rows and cron slots");
+    ok("@DropOnSuccess leaves no payload; purge deletes old completed and discarded rows and cron slots");
     testAmbientEnqueue(admin);
     ok("enqueue joins the pool's transaction: rolled back with it, claimed after its commit");
     testLegacyTables(admin);

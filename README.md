@@ -386,7 +386,7 @@ void main(string[] args)                                        // run with --ro
 - 🛡️ `@UniqueJob(15.minutes)` drops duplicates, `@Offload` runs CPU-heavy jobs on the thread pool, `@Every(...)` for intervals
 - 🧩 A job may be a plain payload with a **handler** that receives its use case (`JobHandlers`), built per worker like the routes
 - 📮 Inside a Postgres transaction, `enqueue` joins it: the **transactional outbox** with no connection passed around
-- 🧹 Finished jobs are purged after a retention period; `@Job("mail", dropOnSuccess: true)` leaves no payload behind
+- 🧹 Finished jobs are purged after a retention period; `@Job("mail") @DropOnSuccess` leaves no payload behind
 - 🧪 `TestJobStore` with `assertEnqueued` and `drainJobs` for tests
 - ➡️ [Jobs and cron guide](docs/jobs-and-cron.md)
 

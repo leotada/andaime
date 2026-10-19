@@ -29,11 +29,15 @@ enum BackoffStrategy
 struct Job
 {
     string queue;
-    /// Leave nothing behind once the job succeeds: `@Job("mail", dropOnSuccess: true)`. The store deletes the row (a
-    /// `@UniqueJob` keeps it with an empty payload, so its window still holds). For payloads that carry a secret (a
-    /// one-time code, a magic link) and must not stay in the table until the retention purge.
+    /// The older spelling of `@DropOnSuccess`, kept so existing code compiles. Write `@Job("mail") @DropOnSuccess`
+    /// instead: libdparse (D-Scanner, dfmt, DCD, serve-d) cannot parse a named argument inside a UDA.
     bool dropOnSuccess;
 }
+
+/// Leave nothing behind once the job succeeds: `@Job("mail") @DropOnSuccess`. The store deletes the row (a
+/// `@UniqueJob` keeps it with an empty payload, so its window still holds). For payloads that carry a secret (a
+/// one-time code, a magic link) and must not stay in the table until the retention purge.
+enum DropOnSuccess;
 
 /// Attempts, counting the first run. `maxAttempts` must be >= 1.
 /// Without this UDA the job runs once and a failure is discarded.
@@ -106,7 +110,7 @@ private template jobAttrs(T)
                 static if (is(typeof(a) == Job))
                 {
                     m.queue = a.queue;
-                    m.dropOnSuccess = a.dropOnSuccess;
+                    m.dropOnSuccess |= a.dropOnSuccess;
                 }
                 else static if (is(typeof(a) == Retry))
                 {
@@ -121,6 +125,8 @@ private template jobAttrs(T)
                     m.cronExpr = a.expr;
                 else static if (is(a == Offload) || is(typeof(a) == Offload))
                     m.offload = true;
+                else static if (is(a == DropOnSuccess) || is(typeof(a) == DropOnSuccess))
+                    m.dropOnSuccess = true;
             }
             return m;
         }();
@@ -147,7 +153,7 @@ enum string jobCronExpr(T) = jobAttrs!T.cronExpr;
 /// True when the job struct carries `@Offload`.
 enum bool jobOffload(T) = jobAttrs!T.offload;
 
-/// `dropOnSuccess` from `@Job`.
+/// True when the job struct carries `@DropOnSuccess` (or the older `@Job(..., dropOnSuccess: true)`).
 enum bool jobDropOnSuccess(T) = jobAttrs!T.dropOnSuccess;
 
 // =====================================================================

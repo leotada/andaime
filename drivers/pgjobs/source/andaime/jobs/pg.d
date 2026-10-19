@@ -30,6 +30,7 @@ import andaime.jobs.backend : EnqueueResult, JobRecord, JobRuntime, JobSpec, Job
     JobTransaction, assignUnique, jobSpec, logJobFailure, unixNowUs;
 import andaime.web.json : writeJsonString;
 import andaime.web.numtext : itoa;
+import andaime.log : LogLevel, logAndaime;
 
 /// Channel both the insert and `listen` use. `NOTIFY` is delivered at COMMIT and dropped by ROLLBACK.
 private enum string notifyChannel = "andaime_jobs_notify";
@@ -97,10 +98,22 @@ final class PgJobStore : JobStore, JobRuntime
         conn.exec("select pg_advisory_lock(hashtext('andaime_jobs_schema')::bigint)");
         scope (exit)
             unlockSchema(conn);
+        warnLegacyTables(conn);
         conn.exec(createJobsSql);
         conn.exec(createUniqueSql);
         conn.exec(createCronSql);
         schemaReady = true;
+    }
+
+    /// A database from before the rename has `vela_jobs`: the new empty `andaime_jobs` would hide its rows, so say so
+    /// once, before creating it.
+    private void warnLegacyTables(PgConn conn)
+    {
+        auto r = conn.query("select to_regclass('vela_jobs') is not null and to_regclass('andaime_jobs') is null");
+        if (r.get!bool(0, 0))
+            logAndaime(LogLevel.warn, "andaime.jobs: the database has vela_jobs but no andaime_jobs; the jobs of the old "
+                ~ "table are not read (rename vela_jobs to andaime_jobs and vela_cron_executions to "
+                ~ "andaime_cron_executions before starting)", "vela_jobs exists but andaime_jobs does not");
     }
 
     /// Inserts on a pooled connection and commits, including the notify.

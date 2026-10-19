@@ -28,7 +28,7 @@ module andaime.jobs.worker 2025;
 import core.time : Duration, msecs, seconds;
 import std.datetime.systime : Clock, SysTime;
 import andaime.engine.fiberio : fiberLocal, sleep, spawn, stopping, workerIndex;
-import andaime.log : LogScope, setLogFiberSource;
+import andaime.log : LogScope, setLogFiberSource, warnLegacyEnvironment;
 import andaime.engine.loop : HandlerFactory, RequestCallback, ServerConfig, TlsConfig, WorkerInit;
 import andaime.http.response : ResponseSink;
 import andaime.http.types : Method, Request;
@@ -160,6 +160,7 @@ void runJobs(Jobs...)(JobStore store, Startup startup, ServerConfig cfg = Server
     checkQueues(startup);
     cast(void) scheduledJobs!Jobs(hooks.schedule); // throws now, not on worker 0 once the loop runs
     idleBackoff = normalizeBackoff(idleBackoff);
+    warnLegacyEnvironment();
     configureWorker(cfg, singleThread, healthPort);
     WorkerInit init = () {
         setLogFiberSource(&jobFiberLog); // andaime.log reads the running job from its fiber

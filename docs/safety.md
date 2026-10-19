@@ -34,7 +34,8 @@ To require `@safe` handlers in the whole app, add to `dub.sdl`:
 versions "AndaimeStrictSafe"
 ```
 
-A `@system` handler then fails to compile with a one-line message.
+A `@system` handler then fails to compile with a one-line message. The old name, `VelaStrictSafe`, is an error that says
+to rename it (it used to compile and drop the check).
 
 ### `-preview=dip1000`
 

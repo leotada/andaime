@@ -121,13 +121,25 @@ version (AndaimeStrictSafe)
 else
     private enum strictSafe = false;
 
+// The old name compiled and silently dropped the check. Kept as an error during the deprecation period.
+version (VelaStrictSafe)
+    private enum legacyStrictSafe = true;
+else
+    private enum legacyStrictSafe = false;
+private enum legacyStrictSafeMessage = "andaime: version VelaStrictSafe was renamed to AndaimeStrictSafe: "
+    ~ "write `versions \"AndaimeStrictSafe\"` in dub.sdl (or -version=AndaimeStrictSafe)";
+static if (legacyStrictSafe)
+    static assert(0, legacyStrictSafeMessage);
+
 /// `websocket`: the route was registered with `ws!` (a GET that must return `WebSocket`).
 template handlerError(Method method, string path, alias fn, string file, size_t line, bool websocket = false)
 {
     enum string head = file ~ "(" ~ ctNum(line) ~ "): andaime: handler '"
         ~ __traits(identifier, fn) ~ "' in " ~ (websocket ? "WS" : methodName(method)) ~ " " ~ path ~ ": ";
 
-    static if (__traits(isTemplate, fn) || !is(typeof(fn)))
+    static if (legacyStrictSafe)
+        enum handlerError = legacyStrictSafeMessage;
+    else static if (__traits(isTemplate, fn) || !is(typeof(fn)))
         enum handlerError = head ~ "the handler has no concrete type. If it is a lambda, "
             ~ "declare the parameter types: (int id) => ...";
     else static if (strictSafe && !isSafeHandler!fn)

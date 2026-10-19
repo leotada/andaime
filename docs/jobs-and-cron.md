@@ -407,7 +407,9 @@ PgJobStore jobs()
 
 `ensureSchema` creates `andaime_jobs` and `andaime_cron_executions` if they are missing. Call it on a connection that is not
 already inside a transaction, before a caller opens one. `enqueue(JobSpec)`, `claimBatch`, `listen`, `reap` and
-`claimCronSlot` do that on first use. `enqueue(PgConn, JobSpec)` does not.
+`claimCronSlot` do that on first use. `enqueue(PgConn, JobSpec)` does not. On a database from before the rename, where
+`vela_jobs` exists and `andaime_jobs` does not, it logs one warning: rename the two tables before starting, or the old jobs
+are not read.
 
 ```d
 import andaime.db;

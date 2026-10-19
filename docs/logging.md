@@ -67,7 +67,8 @@ Text values that are not a plain word are quoted and escaped like JSON strings, 
 `kv` and `json`. Time is UTC with milliseconds.
 
 The environment overrides the code, so a deployment can change them without a rebuild: `ANDAIME_LOG_LEVEL` (`debug`, `info`,
-`warn`, `error`, `off`) and `ANDAIME_LOG_FORMAT` (`text`, `kv` or `logfmt`, `json`).
+`warn`, `error`, `off`) and `ANDAIME_LOG_FORMAT` (`text`, `kv` or `logfmt`, `json`). A project from before the rename that
+still sets `VELA_LOG_LEVEL` or `VELA_LOG_FORMAT` gets one warning at startup naming them: they are not read.
 
 ## The request id
 

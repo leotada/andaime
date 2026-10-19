@@ -118,6 +118,21 @@ bool contains(string s, string part) pure
     return false;
 }
 
+/// A database from before the rename (vela_jobs, no andaime_jobs) gets one warning from ensureSchema.
+void testLegacyTables(PgConn admin)
+{
+    reset(admin);
+    admin.exec("drop table if exists vela_jobs");
+    admin.exec("create table vela_jobs (id bigint)");
+    scope (exit)
+        admin.exec("drop table if exists vela_jobs");
+    auto logs = captureLog({ newStore(admin); });
+    assert(logs.length == 1 && logs[0].level == LogLevel.warn, "ensureSchema should warn about vela_jobs");
+    assert(logs[0].message == "vela_jobs exists but andaime_jobs does not", logs[0].message);
+    // andaime_jobs exists now: no warning on the next start
+    assert(captureLog({ newStore(admin); }).length == 0);
+}
+
 /// ROLLBACK drops the inserted row and does not leave a job `claimBatch` can see.
 void testRollback(PgConn admin)
 {
@@ -518,5 +533,7 @@ void main()
     ok("lease returns an abandoned running row to retryable");
     testNotify(admin);
     ok("notify wakes the listener");
+    testLegacyTables(admin);
+    ok("ensureSchema warns once about a vela_jobs table");
     printf("all Postgres job tests passed\n");
 }

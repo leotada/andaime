@@ -680,6 +680,53 @@ private void applyEnvironment() nothrow @nogc @trusted
     atomicStore(gEnvRead, true);
 }
 
+private shared bool gLegacyEnvChecked;
+
+version (Posix)
+    private extern (C) extern __gshared const(char*)* environ; // libc's; declared, not defined here
+
+/// One warning per process when a `VELA_*` variable is set: since the rename they are ignored without a word, so an old
+/// deployment's `VELA_LOG_LEVEL` would quietly stop working. `serve` and `runJobs` call it before the workers start.
+package(andaime) void warnLegacyEnvironment() nothrow
+{
+    import core.atomic : cas;
+
+    if (!cas(&gLegacyEnvChecked, false, true))
+        return;
+    const(char)[] names;
+    try
+        names = legacyVariables();
+    catch (Exception)
+        return;
+    if (names.length)
+        logAndaime(LogLevel.warn, "andaime: " ~ names ~ " set but ignored: andaime reads ANDAIME_* (ANDAIME_LOG_LEVEL, "
+            ~ "ANDAIME_LOG_FORMAT, ANDAIME_PG...)", "VELA_* variables are ignored; use their ANDAIME_* names",
+            "variables", names);
+}
+
+/// The names of the `VELA_*` variables in the environment, separated by commas.
+private const(char)[] legacyVariables() @trusted
+{
+    // @trusted: environ is the process's NULL-terminated array of NUL-terminated strings; they are only read here and
+    // copied into a new string
+    version (Posix)
+    {
+        const(char)[] names;
+        for (auto e = environ; e !is null && *e !is null; e++)
+        {
+            auto p = *e;
+            size_t n;
+            while (p[n] && p[n] != '=')
+                n++;
+            if (n > 5 && p[0 .. 5] == "VELA_")
+                names ~= (names.length ? "," : "") ~ p[0 .. n];
+        }
+        return names;
+    }
+    else
+        return null;
+}
+
 
 // ------------------------------------------------------------ tests
 
@@ -781,4 +828,24 @@ unittest
     assert(!logEnabled(LogLevel.info) && logEnabled(LogLevel.warn) && logEnabled(LogLevel.error) && !logEnabled(LogLevel.off));
     atomicStore(gLevel, cast(ubyte) LogLevel.off);
     assert(!logEnabled(LogLevel.error));
+}
+
+// a VELA_* variable is named in one warning, once per process
+version (Posix) unittest
+{
+    import core.sys.posix.stdlib : setenv, unsetenv;
+
+    () @trusted { setenv("VELA_LOG_LEVEL", "debug", 1); }();
+    scope (exit)
+        () @trusted { unsetenv("VELA_LOG_LEVEL"); }();
+    string[] got;
+    auto prev = setThreadLogSink((scope ref const LogRecord r) { got ~= r.message.idup; });
+    scope (exit)
+        setThreadLogSink(prev);
+    warnLegacyEnvironment();
+    warnLegacyEnvironment();
+    assert(got.length == 1, "one warning per process");
+    assert(got[0] == "VELA_* variables are ignored; use their ANDAIME_* names", got[0]);
+    auto names = legacyVariables();
+    assert(names == "VELA_LOG_LEVEL" || names.length > 14, names);
 }

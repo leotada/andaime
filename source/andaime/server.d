@@ -10,7 +10,7 @@ import andaime.web.stream : sendResponse;
 import andaime.web.context : Context;
 import andaime.engine.loop : ServerConfig, HandlerFactory, RequestCallback, WorkerInit;
 import andaime.engine.fiberio : workerIndex, fiberLocal, setFiberLocal, clearFiberLocal, inLocalFiber;
-import andaime.log : LogScope, setLogFiberSource;
+import andaime.log : LogScope, setLogFiberSource, warnLegacyEnvironment;
 
 /// andaime.log's context inside an engine fiber: the id of the Context the running request fiber carries, or the LogScope
 /// of a job (`--role=all` runs jobs on worker 0). True when running in such a fiber (even without an id), so the logger
@@ -117,6 +117,7 @@ bool tryServe(App delegate() @system build, ServerConfig cfg, void delegate() @s
         writeStdout(app.routeTable());
         return true;
     }
+    warnLegacyEnvironment(); // VELA_* variables of a project from before the rename
     // a bad proxy entry fails startup with one line, before any worker builds anything
     foreach (c; cfg.trustedProxies)
     {

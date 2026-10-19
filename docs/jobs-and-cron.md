@@ -487,6 +487,29 @@ claim fiber.
 `reap` returns `running` rows whose `attempted_at` is older than the lease (default 15 minutes, `store.lease`) to
 `retryable` without changing `attempt`. A job that runs longer than the lease can be claimed again and run twice.
 
+### Retention
+
+A finished row is not kept forever. After each `reap`, the reaper runs `purge`, which deletes in batches of 1,000:
+
+- `completed` rows older than `store.completedRetention` (default 1 day, by `completed_at`);
+- `discarded` rows older than `store.discardedRetention` (default 14 days, by their last attempt): they keep their payload
+  and errors until then, for diagnosis;
+- `andaime_cron_executions` slots older than `discardedRetention`.
+
+Rows still waiting (`available`, `scheduled`, `retryable`) or `running` are never purged. Set the two durations before the
+services start. Without a supervisor (your own claim loop), call `store.purge()` on a timer.
+
+A payload that carries a secret (a one-time code, a magic link, an invitation token) should not wait for the purge:
+
+```d
+@Job("mail", dropOnSuccess: true)
+struct SendLoginCode { string email; string code; void perform(ref JobContext ctx) { ... } }
+```
+
+With `dropOnSuccess`, a successful run deletes the row. A `@UniqueJob` keeps its row, with the payload replaced by `{}`, so
+its window still deduplicates. A failed or discarded run keeps the payload as any job does. The memory stores do the same.
+A custom `JobStore` opts in by implementing `JobPayloadDrop`; without it the row is completed normally.
+
 ### Cron across processes
 
 The supervisor calls `claimCronSlot` before it enqueues a due `@Cron` / `@Every` slot. Only the insert that wins

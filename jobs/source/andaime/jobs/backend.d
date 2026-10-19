@@ -158,6 +158,16 @@ interface JobRuntime
     void waitIdle(Duration maxWait);
 }
 
+/// What a store adds for `@Job(..., dropOnSuccess: true)`: completing a job without keeping its payload. Optional (the
+/// runner checks with `cast(JobPayloadDrop)`), so a custom `JobStore` keeps compiling; one without it keeps the row as
+/// `complete` does.
+interface JobPayloadDrop
+{
+    /// Like `complete`, then the row is deleted, or kept with an empty payload when it holds a unique window
+    /// (`uniqueKey` set), so the window still deduplicates.
+    void completeDropping(long id);
+}
+
 /// One line through `andaime.log` at the `error` level: `andaime.jobs: <where>: <message>` in the `text` format,
 /// `msg="job failure"` with `where` and `error` in `kv`/`json`. The consumer and the cron fiber log and keep running.
 void logJobFailure(string where, Exception e) nothrow
@@ -301,7 +311,7 @@ EnqueueResult enqueueAt(T)(JobTransaction tx, auto ref const T job, long runAtUs
 
 /// Single-threaded queue. Methods do not wait, so fibers on this thread run them one at a time.
 /// `now` null uses the wall clock. Tests pass a clock they can step; nothing here sleeps.
-class InMemoryJobStore : JobStore
+class InMemoryJobStore : JobStore, JobPayloadDrop
 {
     private JobRecord[] rows;
     private long nextId;
@@ -390,6 +400,19 @@ class InMemoryJobStore : JobStore
         immutable i = mustRunning(id);
         rows[i].state = JobState.completed;
         rows[i].lastError = null;
+    }
+
+    override void completeDropping(long id) @safe
+    {
+        immutable i = mustRunning(id);
+        if (rows[i].uniqueKey.length)
+        {
+            rows[i].state = JobState.completed;
+            rows[i].lastError = null;
+            rows[i].payload = "{}";
+            return;
+        }
+        rows = rows[0 .. i] ~ rows[i + 1 .. $];
     }
 
     override void fail(long id, Duration delay, string reason) @safe
@@ -666,6 +689,9 @@ private void runTyped(J)(JobStore store, JobRecord rec) @safe
     }
 
     running = false;
+    static if (jobDropOnSuccess!J)
+        if (auto d = cast(JobPayloadDrop) store)
+            return d.completeDropping(rec.id);
     store.complete(rec.id);
 }
 

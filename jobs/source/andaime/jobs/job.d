@@ -29,6 +29,10 @@ enum BackoffStrategy
 struct Job
 {
     string queue;
+    /// Leave nothing behind once the job succeeds: `@Job("mail", dropOnSuccess: true)`. The store deletes the row (a
+    /// `@UniqueJob` keeps it with an empty payload, so its window still holds). For payloads that carry a secret (a
+    /// one-time code, a magic link) and must not stay in the table until the retention purge.
+    bool dropOnSuccess;
 }
 
 /// Attempts, counting the first run. `maxAttempts` must be >= 1.
@@ -87,6 +91,7 @@ private struct JobAttrs
     Duration everyPeriod;
     string cronExpr;
     bool offload;
+    bool dropOnSuccess;
 }
 
 private template jobAttrs(T)
@@ -99,7 +104,10 @@ private template jobAttrs(T)
             static foreach (a; __traits(getAttributes, T))
             {
                 static if (is(typeof(a) == Job))
+                {
                     m.queue = a.queue;
+                    m.dropOnSuccess = a.dropOnSuccess;
+                }
                 else static if (is(typeof(a) == Retry))
                 {
                     m.maxAttempts = a.maxAttempts;
@@ -138,6 +146,9 @@ enum string jobCronExpr(T) = jobAttrs!T.cronExpr;
 
 /// True when the job struct carries `@Offload`.
 enum bool jobOffload(T) = jobAttrs!T.offload;
+
+/// `dropOnSuccess` from `@Job`.
+enum bool jobDropOnSuccess(T) = jobAttrs!T.dropOnSuccess;
 
 // =====================================================================
 // JSON shape (the same set `writeJson` accepts)

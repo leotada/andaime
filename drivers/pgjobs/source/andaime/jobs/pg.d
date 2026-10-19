@@ -20,14 +20,14 @@ module andaime.jobs.pg 2025;
 
 @safe:
 
-import core.time : Duration, MonoTime, minutes, msecs, seconds;
+import core.time : Duration, MonoTime, days, minutes, msecs, seconds;
 
 import andaime.db : Optional, PgConfig, PgConn, PgPool, PgResult, pgPool;
 import andaime.engine.fiberio : awaitFd, IoEvent, RequestCancelled, sleep, spawn, stopping;
 import andaime.http.buffer : ByteBuffer;
 import andaime.http.naming : Naming, naming;
-import andaime.jobs.backend : EnqueueResult, JobRecord, JobRuntime, JobSpec, JobState, JobStore, JobStoreError,
-    JobTransaction, assignUnique, jobSpec, logJobFailure, unixNowUs;
+import andaime.jobs.backend : EnqueueResult, JobPayloadDrop, JobRecord, JobRuntime, JobSpec, JobState, JobStore,
+    JobStoreError, JobTransaction, assignUnique, jobSpec, logJobFailure, unixNowUs;
 import andaime.web.json : writeJsonString;
 import andaime.web.numtext : itoa;
 import andaime.log : LogLevel, logAndaime;
@@ -49,7 +49,7 @@ private enum long unixEpochStdTime = 621_355_968_000_000_000L;
 // =====================================================================
 
 /// Queue in `andaime_jobs`. Claims commit before the caller runs `perform`, so the row lock is not held across the work.
-final class PgJobStore : JobStore, JobRuntime
+final class PgJobStore : JobStore, JobRuntime, JobPayloadDrop
 {
     private PgConfig cfg;
     private PgPool pool;
@@ -172,6 +172,51 @@ final class PgJobStore : JobStore, JobRuntime
         touchRunning(id, (PgConn c) => c.query(completeSql, id));
     }
 
+    /// `@Job(..., dropOnSuccess: true)`: deletes the row, or empties the payload of a unique job (its row holds the
+    /// window).
+    override void completeDropping(long id)
+    {
+        touchRunning(id, (PgConn c) {
+            auto del = c.query(dropCompletedSql, id);
+            if (del.affected == "1")
+                return del;
+            del.close();
+            return c.query(emptyCompletedSql, id);
+        });
+    }
+
+    /// How long a `completed` row stays before the reaper deletes it (default 1 day). Set before the services start.
+    Duration completedRetention = 1.days;
+    /// How long a `discarded` row stays, errors and payload included, for diagnosis (default 14 days). Also the age
+    /// past which `andaime_cron_executions` slots are deleted.
+    Duration discardedRetention = 14.days;
+
+    /// Deletes `completed` rows older than `completedRetention`, `discarded` ones older than `discardedRetention`, and
+    /// old cron slots, at most `batch` rows per statement until none is left. Returns how many job rows went. The
+    /// reaper calls it after `reap`; call it yourself on a timer if you run no supervisor.
+    long purge(int batch = 1000)
+    {
+        ready();
+        long total;
+        auto l = pool.lease();
+        static immutable string[2] sqls = [purgeCompletedSql, purgeDiscardedSql];
+        foreach (i, sql; sqls)
+        {
+            immutable keep = delayUs(i == 0 ? completedRetention : discardedRetention);
+            for (;;)
+            {
+                auto r = l.conn.query(sql, keep, batch);
+                immutable n = r.rows;
+                r.close();
+                total += n;
+                if (n < batch)
+                    break;
+            }
+        }
+        l.conn.exec(purgeCronSql, delayUs(discardedRetention));
+        return total;
+    }
+
     /// `retryable` at `now + delay`. The attempt `claimBatch` already counted stays spent.
     override void fail(long id, Duration delay, string reason)
     {
@@ -242,6 +287,10 @@ final class PgJobStore : JobStore, JobRuntime
                     reap();
                 catch (Exception e)
                     logJobFailure("reap", e);
+                try
+                    purge();
+                catch (Exception e)
+                    logJobFailure("purge", e);
             }
         });
     }
@@ -699,6 +748,44 @@ private enum completeSql = q"SQL
 update andaime_jobs
 set state = 'completed', completed_at = now()
 where id = $1 and state = 'running'
+SQL";
+
+private enum dropCompletedSql = q"SQL
+delete from andaime_jobs
+where id = $1 and state = 'running' and unique_key is null
+returning id
+SQL";
+
+private enum emptyCompletedSql = q"SQL
+update andaime_jobs
+set state = 'completed', completed_at = now(), payload = '{}'::jsonb
+where id = $1 and state = 'running'
+SQL";
+
+// `returning id` so `rows` counts the deleted rows
+private enum purgeCompletedSql = q"SQL
+delete from andaime_jobs
+where id in (
+    select id from andaime_jobs
+    where state = 'completed' and completed_at < now() - ($1::bigint * interval '1 microsecond')
+    limit $2)
+returning id
+SQL";
+
+// a discarded row has no timestamp of its own: its last attempt (or its due time, if it never ran)
+private enum purgeDiscardedSql = q"SQL
+delete from andaime_jobs
+where id in (
+    select id from andaime_jobs
+    where state = 'discarded'
+      and coalesce(attempted_at, run_at) < now() - ($1::bigint * interval '1 microsecond')
+    limit $2)
+returning id
+SQL";
+
+private enum purgeCronSql = q"SQL
+delete from andaime_cron_executions
+where scheduled_slot < now() - ($1::bigint * interval '1 microsecond')
 SQL";
 
 private enum failSql = q"SQL

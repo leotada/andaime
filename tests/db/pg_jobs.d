@@ -16,7 +16,7 @@ import core.stdc.stdio : printf, fprintf, fflush, stdout, stderr;
 import core.stdc.stdlib : getenv, exit;
 import core.stdc.string : strlen;
 import core.thread : Thread;
-import core.time : Duration, minutes, msecs, seconds;
+import core.time : Duration, hours, minutes, msecs, seconds;
 import andaime.web.numtext : itoa;
 import std.datetime.date : DateTime;
 import std.datetime.systime : SysTime;
@@ -395,6 +395,64 @@ void testLease(PgConn admin)
     assert(again.length == 1 && again[0].id == old.id && again[0].attempt == 2);
 }
 
+@Job("secret", dropOnSuccess: true)
+struct SendCode
+{
+    string code;
+
+    void perform(ref JobContext) @safe
+    {
+    }
+}
+
+@Job("secret", dropOnSuccess: true) @UniqueJob(1.hours)
+struct SendUniqueCode
+{
+    string code;
+
+    void perform(ref JobContext) @safe
+    {
+    }
+}
+
+/// `dropOnSuccess` leaves no payload; the reaper's purge deletes old completed and discarded rows and old cron slots.
+void testRetention(PgConn admin)
+{
+    reset(admin);
+    auto store = newStore(admin);
+    enqueue(store, SendCode("123456"));
+    enqueue(store, SendUniqueCode("654321"));
+    foreach (rec; store.claimBatch("secret", 10))
+        runClaimed!(SendCode, SendUniqueCode)(store, rec);
+    assert(qint(admin, "select count(*)::int from andaime_jobs where job_name like '%SendCode'") == 0, "row deleted");
+    assert(qstr(admin, "select payload::text || ' ' || state from andaime_jobs where job_name like $1",
+        "%SendUniqueCode") == "{} completed", "a unique job keeps its row, without the payload");
+    assert(enqueue(store, SendUniqueCode("654321")).inserted == false, "its window still deduplicates");
+
+    reset(admin);
+    store = newStore(admin);
+    auto old = store.enqueue(spec("r", "old"));
+    auto fresh = store.enqueue(spec("r", "fresh"));
+    auto bad = store.enqueue(spec("r", "bad"));
+    auto recent = store.enqueue(spec("r", "recent-bad"));
+    auto waiting = store.enqueue(spec("r", "waiting"));
+    foreach (rec; store.claimBatch("r", 4))
+    {
+        if (rec.id == bad.id || rec.id == recent.id)
+            store.discard(rec.id, "no");
+        else if (rec.id != waiting.id)
+            store.complete(rec.id);
+    }
+    admin.exec("update andaime_jobs set completed_at = now() - interval '2 days' where id = $1", old.id);
+    admin.exec("update andaime_jobs set attempted_at = now() - interval '20 days' where id = $1", bad.id);
+    assert(store.claimCronSlot("old-slot", SysTime(DateTime(2020, 1, 1, 0, 0, 0), UTC()).stdTime));
+    assert(store.claimCronSlot("new-slot", SysTime(DateTime(2100, 1, 1, 0, 0, 0), UTC()).stdTime));
+    assert(store.purge(1) == 2, "one old completed and one old discarded row, one row per batch");
+    auto left = admin.query("select string_agg(job_name, ',' order by id) from andaime_jobs").get!string(0, 0);
+    assert(left == "fresh,recent-bad,waiting", left);
+    assert(admin.query("select string_agg(job_name, ',') from andaime_cron_executions").get!string(0, 0) == "new-slot");
+}
+
 PgJobStore listenStore;
 
 void onWake()
@@ -570,6 +628,8 @@ void main()
     ok("lease returns an abandoned running row to retryable");
     testNotify(admin);
     ok("notify wakes the listener");
+    testRetention(admin);
+    ok("dropOnSuccess leaves no payload; purge deletes old completed and discarded rows and cron slots");
     testAmbientEnqueue(admin);
     ok("enqueue joins the pool's transaction: rolled back with it, claimed after its commit");
     testLegacyTables(admin);

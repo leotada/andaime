@@ -191,6 +191,10 @@ ports below 1024 as an ordinary user (redo it after each new build).
   setting to raise (`ServerConfig.fiberStackBytes`, 256 KiB by default).
 - Memory returns to the OS after a burst (a quiet second, then a collection); if RSS looks high right after a traffic spike, wait a
   couple of seconds before judging.
+- Background jobs on Postgres: completed rows are purged after a day and discarded ones after 14 days
+  (`PgJobStore.completedRetention`, `discardedRetention`). A job whose payload carries a code or a token should be
+  `@Job("...", dropOnSuccess: true)`, so it leaves nothing in `andaime_jobs` once sent (see
+  [Background jobs](jobs-and-cron.md#retention)).
 
 ## Behind a reverse proxy
 

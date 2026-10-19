@@ -27,3 +27,25 @@ final class {{Name}}Handler
         useCase.execute({{jobArgs}});
     }
 }
+
+/// `{{Name}}Scheduler` over the job store: the job is a row in the same database. Inside a `PgUnitOfWork` the enqueue
+/// joins its transaction (the outbox: stored and woken only if the work commits); a `MemoryUnitOfWork` that tracks the
+/// store takes it back on a rollback.
+final class Queued{{Name}} : {{Name}}Scheduler
+{
+    private JobStore store;
+
+    this(JobStore store)
+    {
+        this.store = store;
+    }
+
+    void schedule({{params}})
+    {
+        {{Name}}Job job;
+{{#fields}}
+        job.{{name}} = {{name}};
+{{/fields}}
+        enqueue(store, job);
+    }
+}

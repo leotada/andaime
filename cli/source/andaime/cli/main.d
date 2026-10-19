@@ -381,6 +381,7 @@ private int generateJob(Project project, string feature, string word, string[] s
     vars.set("schedule", cron.length ? `@Cron("` ~ cron.strip ~ `")` : every.length ? "@Every(" ~ every ~ ")" : "");
     vars.set("payload", fields.length ? `"` ~ fields[0].column ~ `":` ~ fields[0].sampleJson(1) : "");
     vars.set("jobArgs", fields.map!(f => "job." ~ f.name).join(", "));
+    vars.set("sampleArgs", dArgs(fields, f => 1));
     print(runGenerator(projectTemplate(project.root, project.templateName), "job", project.root, vars, opt));
     return 0;
 }

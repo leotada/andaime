@@ -12,7 +12,7 @@
     { "path": "source/app.d", "marker": "// andaime:imports", "from": "app_imports.tpl" },
     { "path": "source/app.d", "marker": "// andaime:adapters", "text": "{{Name}}Repository {{pluralCamel}};\n" },
     { "path": "source/app.d", "marker": "// andaime:postgres", "text": "a.{{pluralCamel}} = new Pg{{Name}}Repository(db);\n", "if": "pg" },
-    { "path": "source/app.d", "marker": "// andaime:memory", "text": "a.{{pluralCamel}} = new Memory{{Name}}Repository;\n" },
+    { "path": "source/app.d", "marker": "// andaime:memory", "text": "a.{{pluralCamel}} = uow.track(new Memory{{Name}}Repository);\n" },
     { "path": "source/app.d", "marker": "// andaime:mount", "from": "app_mount.tpl" }
   ]
 }

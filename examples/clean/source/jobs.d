@@ -1,15 +1,13 @@
-/// Background jobs: the process roles, the job store, the jobs of the application and the composition root of their
-/// handlers. `main` calls `serveWithJobs` instead of `serve`.
+/// Background jobs: the process roles, the jobs of the application and the composition root of their handlers. `main`
+/// calls `serveWithJobs` instead of `serve`.
 module jobs 2025;
 
 @safe:
 
 import andaime;
 import andaime.jobs;
-import andaime.jobs.pg : PgJobStore;
 import std.meta : AliasSeq;
 import app : buildApp, currentAdapters;
-import config : config, Store;
 import adapters.jobs.users : SendWelcomeJob, SendWelcomeHandler;
 import usecases.users : SendWelcome;
 // andaime:imports
@@ -38,19 +36,9 @@ WorkerHooks jobHooks()
     return hooks;
 }
 
-/// This thread's job store: Postgres, or an in-memory one with `STORE=memory`.
-JobStore jobStore()
-{
-    static JobStore store; // thread-local: one per worker
-    if (store is null)
-    {
-        if (config.store == Store.memory)
-            store = new InMemoryJobStore;
-        else
-            store = new PgJobStore(config.databaseUrl);
-    }
-    return store;
-}
+/// This thread's job store: the one its adapters enqueue into (`Adapters.jobStore` in `app.d`). The runners call it on the
+/// thread that runs the jobs.
+JobStore jobStore() => currentAdapters().jobStore;
 
 /// `serve`, in the role given on the command line:
 ///
@@ -69,11 +57,11 @@ void serveWithJobs(string[] args, ServerConfig cfg)
             serve(&buildApp, cfg);
             break;
         case ProcessRole.worker:
-            runJobs!AllJobs(jobStore(), startup, cfg, true, 0, jobHooks());
+            runJobs!AllJobs(() => jobStore(), startup, cfg, true, 0, jobHooks());
             break;
         case ProcessRole.all:
             applyJobGrace(cfg);
-            serve(&buildApp, cfg, supervisorHook!AllJobs(jobStore(), startup, jobHooks()));
+            serve(&buildApp, cfg, supervisorHook!AllJobs(() => jobStore(), startup, jobHooks()));
             break;
     }
 }

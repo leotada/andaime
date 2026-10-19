@@ -36,3 +36,7 @@ new/files/source/usecases/system.d.tpl
 new/files/source/adapters/system/clock.d.tpl
 new/files/source/adapters/system/random.d.tpl
 new/files/tests/fakes.d.tpl
+new/files/source/usecases/uow.d.tpl
+new/files/source/adapters/memory/uow.d.tpl
+new/postgres_uow.d.tpl
+job/scheduler.d.tpl

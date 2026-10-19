@@ -7,4 +7,5 @@ import andaime;
 import andaime.jobs;
 import adapters.jobs.{{feature}};
 import adapters.memory.{{feature}} : Memory{{Entity}}Repository;
+import adapters.memory.uow : MemoryUnitOfWork;
 import usecases.{{feature}};

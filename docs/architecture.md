@@ -155,6 +155,46 @@ Changed, because of andaime and D:
 - What the business decides (an e-mail that must be unique, an order that cannot be cancelled once shipped) belongs to the
   domain and the use cases: they throw `RuleViolation` or `Conflict`.
 
+## Transactions: the unit of work
+
+A use case that writes through two repositories, or writes and schedules a job, owns the boundary of its transaction
+through a port, `usecases/uow.d`:
+
+```d
+interface UnitOfWork
+{
+    void run(scope void delegate() @safe work);       // all of it, or none of it
+    void readOnly(scope void delegate() @safe work);  // one consistent view
+}
+T inUnitOfWork(T)(UnitOfWork uow, scope T delegate() @safe work);   // for work that returns a value
+
+final class CreateCompany
+{
+    // ... the constructor takes uow, companies, memberships
+    Company execute(Actor actor, NewCompany input)
+    {
+        return inUnitOfWork(uow, () {
+            auto company = companies.add(input);
+            memberships.add(Membership(company.id, actor.userId, Role.owner));
+            return company;
+        });
+    }
+}
+```
+
+The use case sees no connection and no framework. The adapters decide what a transaction is:
+
+- `PgUnitOfWork` (`adapters/postgres/uow.d`) runs `work` in `db.transaction`. andaime:pg's transactions are ambient: while
+  `work` runs, every repository built over the worker's pool, and the job store over the same conninfo, runs its
+  statements on that transaction's connection ([database.md](database.md#one-transaction-across-repositories)). So the
+  composition root still builds the repositories once per worker, and a nested `run` is a savepoint.
+- `MemoryUnitOfWork` (`adapters/memory/uow.d`) snapshots every store it tracks (`uow.track(new MemoryUserRepository)`,
+  and the in-memory job store) and puts them back when `work` throws, so the tests in memory see the same rollback.
+
+What does not join: a query inside `offload` (another thread; andaime asserts on it), and another fiber (`spawn`, another
+request). `PgConfig.requireTransaction` makes a statement outside any unit of work an error, for teams that want every
+write inside one.
+
 ## Background jobs
 
 A job is an entry point, like a controller. It comes in two parts: the payload (the `@Job` struct: what is stored) and its
@@ -186,20 +226,24 @@ JobHandlers buildJobs()
 No global, no `@trusted`: the tests build a handler over in-memory adapters and pass it to `drainJobs`
 ([jobs-and-cron.md](jobs-and-cron.md#jobs-that-receive-their-dependencies-handlers)).
 
-The other direction, a use case that schedules a job, is a port like any other effect on the outside world:
+The other direction, a use case that schedules a job, is a port like any other effect on the outside world. `generate job`
+writes it next to the use case, and its adapter next to the job:
 
 ```d
 // usecases/users.d
-interface WelcomeMail { void schedule(long userId); }
+interface SendWelcomeScheduler { void schedule(long userId); }
 
 // adapters/jobs/users.d
-final class QueuedWelcomeMail : WelcomeMail
+final class QueuedSendWelcome : SendWelcomeScheduler
 {
     private JobStore store;
     this(JobStore store) { this.store = store; }
-    void schedule(long userId) { enqueue(store, SendWelcomeJob(userId)); }
+    void schedule(long userId) { SendWelcomeJob job; job.userId = userId; enqueue(store, job); }
 }
 ```
+
+Called inside a unit of work (below), the job is part of the transaction: the transactional outbox, with no connection in
+sight. A rollback leaves no job; a commit stores it and wakes a worker.
 
 `jobs.d` also holds the process roles: `--role=api` serves HTTP, `--role=worker` runs the jobs, `--role=all` does both
 ([jobs-and-cron.md](jobs-and-cron.md#process-roles)).

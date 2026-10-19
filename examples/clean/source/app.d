@@ -9,22 +9,31 @@ import andaime.db : pgPool;
 import config : config, Store;
 import domain.errors : Conflict, NotFound, RuleViolation;
 import usecases.system : Clock, IdGenerator, TokenGenerator;
+import usecases.uow : UnitOfWork;
 import adapters.http.errors : apiError;
+import adapters.memory.uow : MemoryUnitOfWork;
+import adapters.postgres.uow : PgUnitOfWork;
 import adapters.system.clock : SystemClock;
 import adapters.system.random : RandomTokens, Uuid7Ids;
+import andaime.jobs : InMemoryJobStore, JobStore;
+import andaime.jobs.pg : PgJobStore;
 import usecases.users;
 import adapters.http.users : UserController;
 import adapters.memory.users : MemoryUserRepository;
 import adapters.postgres.users : PgUserRepository;
+import adapters.jobs.users : QueuedSendWelcome;
 // andaime:imports
 
 /// The adapter behind each port.
 struct Adapters
 {
+    UnitOfWork uow;
     Clock clock;
     IdGenerator ids;
     TokenGenerator tokens;
+    JobStore jobStore;
     UserRepository users;
+    SendWelcomeScheduler sendWelcome;
     // andaime:adapters
 }
 
@@ -42,7 +51,10 @@ Adapters postgresAdapters()
     auto db = pgPool(config.databaseUrl);
     Adapters a;
     systemAdapters(a);
+    a.uow = new PgUnitOfWork(db); // ambient: the repositories over `db` join its transactions
+    a.jobStore = new PgJobStore(config.databaseUrl); // the same conninfo as `db`: an enqueue joins its transaction
     a.users = new PgUserRepository(db);
+    a.sendWelcome = new QueuedSendWelcome(a.jobStore);
     // andaime:postgres
     return a;
 }
@@ -52,7 +64,11 @@ Adapters memoryAdapters()
 {
     Adapters a;
     systemAdapters(a);
-    a.users = new MemoryUserRepository;
+    auto uow = new MemoryUnitOfWork; // each store it tracks rolls back with the others
+    a.uow = uow;
+    a.jobStore = uow.track(new InMemoryJobStore);
+    a.users = uow.track(new MemoryUserRepository);
+    a.sendWelcome = new QueuedSendWelcome(a.jobStore); // a rollback of `uow` takes its jobs back
     // andaime:memory
     return a;
 }

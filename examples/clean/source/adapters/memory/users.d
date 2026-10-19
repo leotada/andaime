@@ -14,6 +14,14 @@ final class MemoryUserRepository : UserRepository
     private User[] rows; // ordered by id
     private long lastId;
 
+    /// What the store holds now, as a function that puts it back (`MemoryUnitOfWork` rolls back with it). Ids are not
+    /// reused, like a sequence's.
+    void delegate() @safe snapshot()
+    {
+        auto saved = rows.dup;
+        return () { rows = saved.dup; };
+    }
+
     User[] list(int limit, int offset)
     {
         immutable from = offset < rows.length ? cast(size_t) offset : rows.length;

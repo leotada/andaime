@@ -160,6 +160,17 @@ void runJobs(Jobs...)(JobStore store, Startup startup, ServerConfig cfg = Server
 {
     if (store is null)
         throw new Exception("andaime.jobs: runJobs needs a store");
+    runJobs!Jobs(() => store, startup, cfg, singleThread, healthPort, hooks, idleBackoff);
+}
+
+/// ditto, with the store made on the thread that runs the jobs (worker 0), like the application's adapters: there it can
+/// be the store those adapters enqueue into, over that thread's pool.
+void runJobs(Jobs...)(JobStore delegate() @safe makeStore, Startup startup, ServerConfig cfg = ServerConfig.init,
+        bool singleThread = true, ushort healthPort = 0, WorkerHooks hooks = WorkerHooks.init,
+        Duration idleBackoff = defaultIdleBackoff) @safe
+{
+    if (makeStore is null)
+        throw new Exception("andaime.jobs: runJobs needs a store");
     if (startup.role != ProcessRole.worker)
         throw new Exception("andaime.jobs: runJobs is for --role=worker, not " ~ roleText(startup.role));
     checkQueues(startup);
@@ -172,7 +183,7 @@ void runJobs(Jobs...)(JobStore store, Startup startup, ServerConfig cfg = Server
     WorkerInit init = () {
         setLogFiberSource(&jobFiberLog); // andaime.log reads the running job from its fiber
         if (workerIndex == 0)
-            startSupervisor!Jobs(store, startup, hooks, idleBackoff);
+            startSupervisor!Jobs(madeStore(makeStore), startup, hooks, idleBackoff);
         if (healthPort == 0)
             return () => (ref Request, ResponseSink) {};
         auto app = healthApp();
@@ -209,6 +220,17 @@ void delegate() @safe supervisorHook(Jobs...)(JobStore store, Startup startup,
 {
     if (store is null)
         throw new Exception("andaime.jobs: supervisorHook needs a store");
+    return supervisorHook!Jobs(() => store, startup, hooks, idleBackoff);
+}
+
+/// ditto, with the store made on worker 0 when the supervisor starts, like the application's adapters: there it is the
+/// store worker 0's request handlers enqueue into (an `InMemoryJobStore` is per thread; a `PgJobStore` uses the pool of
+/// the thread that made it).
+void delegate() @safe supervisorHook(Jobs...)(JobStore delegate() @safe makeStore, Startup startup,
+        WorkerHooks hooks = WorkerHooks.init, Duration idleBackoff = defaultIdleBackoff) @safe
+{
+    if (makeStore is null)
+        throw new Exception("andaime.jobs: supervisorHook needs a store");
     if (startup.role != ProcessRole.all)
         throw new Exception("andaime.jobs: supervisorHook is for --role=all, not " ~ roleText(startup.role));
     checkQueues(startup);
@@ -216,7 +238,15 @@ void delegate() @safe supervisorHook(Jobs...)(JobStore store, Startup startup,
     if (hooks.handlers is null)
         checkHandlers!Jobs(null);
     idleBackoff = normalizeBackoff(idleBackoff);
-    return () @safe { startSupervisor!Jobs(store, startup, hooks, idleBackoff); };
+    return () @safe { startSupervisor!Jobs(madeStore(makeStore), startup, hooks, idleBackoff); };
+}
+
+private JobStore madeStore(JobStore delegate() @safe makeStore) @safe
+{
+    auto store = makeStore();
+    if (store is null)
+        throw new Exception("andaime.jobs: the store function returned null");
+    return store;
 }
 
 // =====================================================================
@@ -989,7 +1019,7 @@ unittest
     auto store = new TestJobStore;
     bool badRun = false;
     try
-        runJobs!UnitWork(null, parseStartup(["prog", "--role=worker"]));
+        runJobs!UnitWork(cast(JobStore) null, parseStartup(["prog", "--role=worker"]));
     catch (Exception e)
     {
         badRun = true;
@@ -1019,7 +1049,7 @@ unittest
 
     badHook = false;
     try
-        supervisorHook!UnitWork(null, parseStartup(["prog", "--role=all"]));
+        supervisorHook!UnitWork(cast(JobStore) null, parseStartup(["prog", "--role=all"]));
     catch (Exception e)
     {
         badHook = e.msg.length >= 13 && e.msg[0 .. 13] == "andaime.jobs:";

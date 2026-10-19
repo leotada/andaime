@@ -3,7 +3,14 @@
     { "path": "source/jobs.d", "from": "jobs.d.tpl" }
   ],
   "insert": [
-    { "path": "dub.sdl", "marker": "// andaime:dependencies", "from": "dependencies.tpl" }
+    { "path": "dub.sdl", "marker": "// andaime:dependencies", "from": "dependencies.tpl" },
+    { "path": "source/app.d", "marker": "// andaime:imports", "text": "import andaime.jobs : InMemoryJobStore, JobStore;\n" },
+    { "path": "source/app.d", "marker": "// andaime:imports", "text": "import andaime.jobs.pg : PgJobStore;\n", "if": "pg" },
+    { "path": "source/app.d", "marker": "// andaime:adapters", "text": "JobStore jobStore;\n" },
+    { "path": "source/app.d", "marker": "// andaime:postgres",
+      "text": "a.jobStore = new PgJobStore(config.databaseUrl); // the same conninfo as `db`: an enqueue joins its transaction\n",
+      "if": "pg" },
+    { "path": "source/app.d", "marker": "// andaime:memory", "text": "a.jobStore = uow.track(new InMemoryJobStore);\n" }
   ],
   "replace": [
     { "path": "source/main.d", "text": "import app : buildApp;", "with": "import jobs : serveWithJobs;" },

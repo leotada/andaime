@@ -1,6 +1,7 @@
 {
   "append": [
     { "path": "source/usecases/{{feature}}.d", "from": "../usecase/usecase.d.tpl", "unless": "class {{Name}}\n" },
+    { "path": "source/usecases/{{feature}}.d", "from": "scheduler.d.tpl", "unless": "interface {{Name}}Scheduler\n" },
     { "path": "source/adapters/jobs/{{feature}}.d", "header": "jobs_header.d.tpl", "from": "job.d.tpl",
       "unless": "struct {{Name}}Job\n" },
     { "path": "tests/{{feature}}_jobs.d", "header": "test_header.d.tpl", "from": "test.d.tpl",
@@ -11,6 +12,12 @@
       "text": "import adapters.jobs.{{feature}} : {{Name}}Job, {{Name}}Handler;\nimport usecases.{{feature}} : {{Name}};\n" },
     { "path": "source/jobs.d", "marker": "// andaime:jobs", "text": "{{Name}}Job,\n" },
     { "path": "source/jobs.d", "marker": "// andaime:handlers",
-      "text": "handlers.handle!{{Name}}Job(new {{Name}}Handler(new {{Name}}(currentAdapters().{{featureCamel}})));\n" }
+      "text": "handlers.handle!{{Name}}Job(new {{Name}}Handler(new {{Name}}(currentAdapters().{{featureCamel}})));\n" },
+    { "path": "source/app.d", "marker": "// andaime:imports", "text": "import adapters.jobs.{{feature}} : Queued{{Name}};\n" },
+    { "path": "source/app.d", "marker": "// andaime:adapters", "text": "{{Name}}Scheduler {{instance}};\n" },
+    { "path": "source/app.d", "marker": "// andaime:postgres", "text": "a.{{instance}} = new Queued{{Name}}(a.jobStore);\n",
+      "if": "pg" },
+    { "path": "source/app.d", "marker": "// andaime:memory",
+      "text": "a.{{instance}} = new Queued{{Name}}(a.jobStore); // a rollback of `uow` takes its jobs back\n" }
   ]
 }

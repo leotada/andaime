@@ -7,6 +7,7 @@ import andaime;
 import andaime.jobs;
 import adapters.jobs.users;
 import adapters.memory.users : MemoryUserRepository;
+import adapters.memory.uow : MemoryUnitOfWork;
 import usecases.users;
 
 unittest // SendWelcomeJob carries its payload, and its handler runs SendWelcome
@@ -19,4 +20,19 @@ unittest // SendWelcomeJob carries its payload, and its handler runs SendWelcome
     enqueue(store, job);
     store.assertEnqueued!SendWelcomeJob(`"user_id":1`);
     store.drainJobs!SendWelcomeJob(handlers);
+}
+
+unittest // QueuedSendWelcome schedules within the unit of work: a rollback takes the job back
+{
+    auto uow = new MemoryUnitOfWork;
+    auto store = uow.track(new TestJobStore);
+    auto scheduler = new QueuedSendWelcome(store);
+    try
+        uow.run(() { scheduler.schedule(1); throw new Exception("the use case failed"); });
+    catch (Exception)
+    {
+    }
+    assert(store.jobs().length == 0);
+    uow.run(() { scheduler.schedule(1); });
+    store.assertEnqueued!SendWelcomeJob(`"user_id":1`);
 }

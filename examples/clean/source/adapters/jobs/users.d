@@ -32,3 +32,23 @@ final class SendWelcomeHandler
         useCase.execute(job.userId);
     }
 }
+
+/// `SendWelcomeScheduler` over the job store: the job is a row in the same database. Inside a `PgUnitOfWork` the enqueue
+/// joins its transaction (the outbox: stored and woken only if the work commits); a `MemoryUnitOfWork` that tracks the
+/// store takes it back on a rollback.
+final class QueuedSendWelcome : SendWelcomeScheduler
+{
+    private JobStore store;
+
+    this(JobStore store)
+    {
+        this.store = store;
+    }
+
+    void schedule(long userId)
+    {
+        SendWelcomeJob job;
+        job.userId = userId;
+        enqueue(store, job);
+    }
+}

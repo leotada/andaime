@@ -11,7 +11,12 @@ import config : config, Store;
 {{/pg}}
 import domain.errors : Conflict, NotFound, RuleViolation;
 import usecases.system : Clock, IdGenerator, TokenGenerator;
+import usecases.uow : UnitOfWork;
 import adapters.http.errors : apiError;
+import adapters.memory.uow : MemoryUnitOfWork;
+{{#pg}}
+import adapters.postgres.uow : PgUnitOfWork;
+{{/pg}}
 import adapters.system.clock : SystemClock;
 import adapters.system.random : RandomTokens, Uuid7Ids;
 // andaime:imports
@@ -19,6 +24,7 @@ import adapters.system.random : RandomTokens, Uuid7Ids;
 /// The adapter behind each port.
 struct Adapters
 {
+    UnitOfWork uow;
     Clock clock;
     IdGenerator ids;
     TokenGenerator tokens;
@@ -40,6 +46,7 @@ Adapters postgresAdapters()
     auto db = pgPool(config.databaseUrl);
     Adapters a;
     systemAdapters(a);
+    a.uow = new PgUnitOfWork(db); // ambient: the repositories over `db` join its transactions
     // andaime:postgres
     return a;
 }
@@ -50,6 +57,8 @@ Adapters memoryAdapters()
 {
     Adapters a;
     systemAdapters(a);
+    auto uow = new MemoryUnitOfWork; // each store it tracks rolls back with the others
+    a.uow = uow;
     // andaime:memory
     return a;
 }

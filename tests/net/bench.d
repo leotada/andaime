@@ -2,8 +2,8 @@
 /// own epoll loop. Every connection keeps `depth` requests outstanding (1 = no pipelining) and the client counts complete
 /// responses (it understands Content-Length and chunked bodies).
 ///
-/// Usage: bench <port> <path> [connections=64] [seconds=5] [threads=4] [depth=1]
-/// Prints requests per second and the latency percentiles (depth 1 only). Exits with 1 if a response is not a 200.
+/// Usage: bench <port> <path> [connections=64] [seconds=5] [threads=4] [depth=1] [body file]
+/// A body file makes every request a `POST` with that JSON body. Prints requests per second and the latency percentiles (depth 1 only). Exits with 1 if a response is not a 200.
 module bench 2025;
 
 import core.thread, core.time, core.atomic;
@@ -12,6 +12,7 @@ import core.sys.posix.sys.socket, core.sys.posix.netinet.in_, core.sys.posix.net
 import core.sys.posix.arpa.inet, core.sys.linux.epoll;
 import std.algorithm : sort;
 import std.conv : to;
+import std.file;
 
 enum SOCK_NONBLOCK = 0x800, SOCK_CLOEXEC = 0x80000;
 
@@ -94,9 +95,12 @@ ptrdiff_t responseLength(const(char)[] b, out bool ok)
 
 extern (C) void* memmem(const(void)*, size_t, const(void)*, size_t) nothrow @nogc;
 
-void worker(ushort port, string path, size_t nconns, size_t depth, Result* res)
+void worker(ushort port, string path, string body_, size_t nconns, size_t depth, Result* res)
 {
-    auto req = "GET " ~ path ~ " HTTP/1.1\r\nHost: localhost\r\nUser-Agent: andaime-bench\r\nAccept: */*\r\n\r\n";
+    auto req = body_.length
+        ? "POST " ~ path ~ " HTTP/1.1\r\nHost: localhost\r\nUser-Agent: andaime-bench\r\nAccept: */*\r\n"
+            ~ "Content-Type: application/json\r\nContent-Length: " ~ body_.length.to!string ~ "\r\n\r\n" ~ body_
+        : "GET " ~ path ~ " HTTP/1.1\r\nHost: localhost\r\nUser-Agent: andaime-bench\r\nAccept: */*\r\n\r\n";
     char[] batch;
     foreach (_; 0 .. depth)
         batch ~= req;
@@ -209,6 +213,7 @@ int main(string[] args)
     immutable secs = args.length > 4 ? args[4].to!double : 5;
     immutable threads = args.length > 5 ? args[5].to!size_t : 4;
     immutable depth = args.length > 6 ? args[6].to!size_t : 1;
+    immutable body_ = args.length > 7 ? cast(string) std.file.read(args[7]) : ""; // a file: sent as a POST body
 
     auto results = new Result[threads];
     Thread[] ts;
@@ -216,7 +221,7 @@ int main(string[] args)
     {
         immutable mine = conns / threads + (t < conns % threads ? 1 : 0);
         auto r = &results[t];
-        ts ~= new Thread(() { worker(port, path, mine, depth, r); }).start();
+        ts ~= new Thread(() { worker(port, path, body_, mine, depth, r); }).start();
     }
     // warm-up second, then measure
     Thread.sleep(1.seconds);

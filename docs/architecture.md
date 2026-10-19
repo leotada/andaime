@@ -227,3 +227,33 @@ that is in no layer is reported too. Edit the rules to fit your own architecture
   transaction cannot span two of them yet. Put such a write in one repository method that opens `db.transaction`.
 - **When not to use this**: a service with a handful of routes and no business rules gains little from four layers.
   `andaime new --template minimal` keeps the routes, handlers and tests in one module.
+
+## Why andaime has its own JSON
+
+andaime reads and writes JSON with its own code (`web/source/andaime/web/json.d` and `jsonvalue.d`), not with `std.json`.
+`std.json` is only used in tests, as an independent parser that checks what andaime writes. The reasons:
+
+- **Typed decoding and encoding.** `std.json` parses a tree and leaves copying it into your struct to you (and building a
+  tree to write). andaime decodes a body straight into a DTO, with its validation attributes and one error per field, and
+  writes a DTO straight into the response buffer.
+- **No garbage on the hot path.** A handler's return value is written into a pooled buffer, and `tests/alloc` fails the
+  build if serving a request allocates. A tree-based writer cannot do that.
+- **`@safe` and bounded input.** `std.json`'s accessors are `@system`. andaime's reader is `@safe`, limits nesting
+  (`JsonLimits.maxDepth`) and is fuzzed (`tools/fuzz.sh json`).
+- **Compile time.** Pulling in `std.json` and the Phobos modules around it costs more than the 400 ms budget can spare.
+
+Measured with `tools/json_bench.sh` and `tools/json_load.sh` (LDC `-O`, a 1.7 KB order with 20 items, one worker on one
+core, 64 connections, 60 s). The `std.json` side does what a handler would have to do by hand: parse, then copy.
+
+| | andaime | `std.json` |
+|---|---:|---:|
+| Decode into a struct | 23 µs, 8.9 KB garbage | 74 µs, 37 KB garbage |
+| Encode a struct | 7.4 µs, 5.9 KB garbage | 50 µs, 25 KB garbage |
+| Parse to a generic tree | 42 µs, 45 KB garbage | 60 µs, 30 KB garbage |
+| Compile time of one decode call | 181 ms | 373 ms |
+| POST that decodes and encodes the order | **23,300 req/s**, p99 3.1 ms | 7,300 req/s, p99 12.5 ms |
+
+What this does not show: generic `JsonValue` trees allocate more than `std.json`'s, so the memory gain is for typed DTOs.
+Peak RSS was the same in the one-minute run (9 MB), and the long-run effect of less garbage (fewer GC pauses) is reasoned,
+not measured. If most of your handlers wait on a database, JSON is a small part of each request. Numbers depend on the
+machine: run the scripts twice and compare before/after, not across machines.

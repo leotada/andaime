@@ -28,8 +28,8 @@ source/
 
 | Layer | May import |
 |-------|-----------|
-| `domain/` | druntime, Phobos, `andaime.http.optional` (a value type with no I/O) |
-| `usecases/` | `domain/`, `andaime.http.optional` |
+| `domain/` | druntime, Phobos, `andaime.values` (`Optional`, `PatchField`, `JsonValue`, `Uuid`: values with no I/O) |
+| `usecases/` | `domain/`, `andaime.values` |
 | `adapters/` | `usecases/`, `domain/`, andaime |
 | `app.d`, `main.d`, `jobs.d`, `config.d` | anything |
 
@@ -136,9 +136,17 @@ Changed, because of andaime and D:
   a runtime one.
 - **Interfaces, not templates, for ports.** Templated use cases would be compiled again for each use, slow the build and
   make the error messages worse. A virtual call costs nanoseconds next to a database round trip.
-- **Exceptions for business errors.** `domain/errors.d` has `NotFound`, `Conflict` and `RuleViolation`; `app.mapError`
-  answers each with its status and `{"detail": "..."}`, without logging them as failures
-  ([middleware.md](middleware.md#error-handling)).
+- **Exceptions for business errors.** `domain/errors.d` has `NotFound`, `Conflict` and `RuleViolation`, each with a
+  `code`; `app.mapError` answers each with its status, without logging them as failures, and `app.errorBody(&apiError)`
+  (`adapters/http/errors.d`) gives every error the API answers one body, `{"message": "...", "code": "..."}`
+  ([validation.md](validation.md#one-body-format-for-every-error-errorbody)).
+- **Wire names are the adapters' business.** `dub.sdl` sets `versions "AndaimeNamingSnakeCase"`: JSON, query strings,
+  OpenAPI and columns spell `createdAt` as `created_at`, and the domain's structs carry no andaime attribute
+  ([requests.md](requests.md#one-policy-for-the-whole-project)). Where a DTO differs from a domain type by a few fields,
+  `copyAs!UserOut(user)` copies the rest.
+- **Time, identifiers and tokens are ports.** `usecases/system.d` declares `Clock`, `IdGenerator` and `TokenGenerator`;
+  `adapters/system/` implements them over the system (`uuid7()`, the secure random generator) and `tests/fakes.d` gives
+  fixed ones, so a use case that stamps a date or creates an id is tested exactly.
 
 ## Validation: format at the edge, rules in the domain
 
@@ -213,8 +221,8 @@ final class QueuedWelcomeMail : WelcomeMail
 
 ```json
 "layers": {
-  "domain":   { "modules": ["domain.*"],   "may_import": ["andaime.http.optional"] },
-  "usecases": { "modules": ["usecases.*"], "may_import": ["domain", "andaime.http.optional"] },
+  "domain":   { "modules": ["domain.*"],   "may_import": ["andaime.values.*"] },
+  "usecases": { "modules": ["usecases.*"], "may_import": ["domain", "andaime.values.*"] },
   "adapters": { "modules": ["adapters.*"], "may_import": ["usecases", "domain", "andaime.*"] },
   "main":     { "modules": ["main", "app", "config", "jobs"], "may_import": ["*"] }
 }
@@ -222,7 +230,7 @@ final class QueuedWelcomeMail : WelcomeMail
 
 `andaime check` compiles `source/` with `-deps` (no code is generated) and prints one line for each import that breaks
 a rule, for example `andaime check: domain.users imports andaime.web.application (domain may import:
-andaime.http.optional)`. A layer may always import its own modules, druntime and Phobos are always allowed, and a module
+andaime.values.*)`. A layer may always import its own modules, druntime and Phobos are always allowed, and a module
 that is in no layer is reported too. Edit the rules to fit your own architecture: hexagonal, layered or anything else.
 
 ## Growing

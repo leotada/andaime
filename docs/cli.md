@@ -89,7 +89,7 @@ returns without opening a port ([routing.md](routing.md#debugging)). Code in `ma
 
 ```sh
 andaime check
-andaime check: domain.users imports andaime.web.application (domain may import: andaime.http.optional)
+andaime check: domain.users imports andaime.web.application (domain may import: andaime.values.*)
 ```
 
 It compiles `source/` with `-deps` (type-checking only) and checks every import against the `layers` of `andaime.json`

@@ -243,8 +243,8 @@ private string jsonObject(Field[] fields, int delegate(Field) pick, string id = 
     string[] parts;
     if (id.length)
         parts ~= `"id":` ~ id;
-    foreach (f; fields)
-        parts ~= `"` ~ f.name ~ `":` ~ f.sampleJson(pick(f));
+    foreach (f; fields) // the wire name: the clean template sets versions "AndaimeNamingSnakeCase"
+        parts ~= `"` ~ f.column ~ `":` ~ f.sampleJson(pick(f));
     return "{" ~ parts.join(",") ~ "}";
 }
 
@@ -279,9 +279,9 @@ private int generateResource(Project project, string word, string[] specs, strin
     vars.set("uniqueText", unique.map!(f => f.column).join(" or "));
 
     // SQL
-    string[] select = ["id"];
+    string[] select = ["id"]; // rowsAs reads snake_case columns into the fields (versions "AndaimeNamingSnakeCase")
     foreach (f; fields)
-        select ~= f.column == f.name ? f.column : f.column ~ ` as "` ~ f.name ~ `"`;
+        select ~= f.column;
     vars.set("selectList", select.join(", "));
     vars.set("insertColumns", fields.map!(f => f.column).join(", "));
     string[] params, sets;
@@ -379,7 +379,7 @@ private int generateJob(Project project, string feature, string word, string[] s
         "Run by the job `{{Name}}Job` (`adapters/jobs/{{feature}}.d`).");
     vars.set("queue", queue);
     vars.set("schedule", cron.length ? `@Cron("` ~ cron.strip ~ `")` : every.length ? "@Every(" ~ every ~ ")" : "");
-    vars.set("payload", fields.length ? `"` ~ fields[0].name ~ `":` ~ fields[0].sampleJson(1) : "");
+    vars.set("payload", fields.length ? `"` ~ fields[0].column ~ `":` ~ fields[0].sampleJson(1) : "");
     vars.set("jobArgs", fields.map!(f => "job." ~ f.name).join(", "));
     print(runGenerator(projectTemplate(project.root, project.templateName), "job", project.root, vars, opt));
     return 0;

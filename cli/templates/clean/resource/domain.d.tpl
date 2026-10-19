@@ -4,7 +4,7 @@ module domain.{{plural}} 2025;
 @safe:
 
 {{#hasOptional}}
-import andaime.http.optional : Optional;
+import andaime.values.optional : Optional;
 {{/hasOptional}}
 import domain.errors : RuleViolation;
 

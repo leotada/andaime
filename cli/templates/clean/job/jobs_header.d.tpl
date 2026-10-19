@@ -4,7 +4,7 @@ module adapters.jobs.{{feature}} 2025;
 
 @safe:
 
-import andaime.http.optional : Optional;
+import andaime.values.optional : Optional;
 import andaime.jobs;
 import core.time; // the periods of @Every
 import usecases.{{feature}};

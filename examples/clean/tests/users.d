@@ -32,7 +32,7 @@ unittest // create, read, list, replace and delete through HTTP
     assert(r.status == 204, r.body);
 
     r = c.get("/api/v1/users/1");
-    assert(r.status == 404 && r.body == `{"detail":"user not found"}`, r.body);
+    assert(r.status == 404 && r.body == `{"message":"user not found","code":"not_found"}`, r.body);
 }
 
 unittest // a body without its fields and a bad page are 422; a taken unique value is 409
@@ -42,7 +42,7 @@ unittest // a body without its fields and a bad page are 422; a taken unique val
     assert(c.get("/api/v1/users?limit=0").status == 422);
     assert(c.post("/api/v1/users", `{"name":"name 1","email":"email 1"}`).status == 201);
     auto r = c.post("/api/v1/users", `{"name":"name 2","email":"email 1"}`);
-    assert(r.status == 409 && r.body == `{"detail":"a user with the same email already exists"}`, r.body);
+    assert(r.status == 409 && r.body == `{"message":"a user with the same email already exists","code":"conflict"}`, r.body);
 }
 
 /// What every `UserRepository` must do. Runs on an empty repository.

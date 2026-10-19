@@ -75,7 +75,7 @@ echo "ok  andaime routes lists every route and its handler, and filters"
 (cd "$work/clean" && run "$A" check)
 printf '\nimport andaime : App;\n' >> "$work/clean/source/domain/users.d"
 if out=$(cd "$work/clean" && "$A" check 2>&1); then echo "FAILED: andaime check accepted domain importing andaime"; exit 1; fi
-if [[ "$out" != "andaime check: domain.users imports andaime (domain may import: andaime.http.optional)" ]]; then
+if [[ "$out" != "andaime check: domain.users imports andaime (domain may import: andaime.values.*)" ]]; then
     echo "FAILED: andaime check printed:"; echo "$out"; exit 1
 fi
 cp examples/clean/source/domain/users.d "$work/clean/source/domain/users.d"

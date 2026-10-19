@@ -4,7 +4,7 @@ module adapters.postgres.{{plural}} 2025;
 @safe:
 
 import andaime.db;
-import andaime.http.optional : Optional;
+import andaime.values.optional : Optional;
 {{#hasUnique}}
 import domain.errors : Conflict;
 {{/hasUnique}}

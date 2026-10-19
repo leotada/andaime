@@ -17,6 +17,6 @@ unittest // SendWelcomeJob carries its payload, and its handler runs SendWelcome
     SendWelcomeJob job;
     job.userId = 1;
     enqueue(store, job);
-    store.assertEnqueued!SendWelcomeJob(`"userId":1`);
+    store.assertEnqueued!SendWelcomeJob(`"user_id":1`);
     store.drainJobs!SendWelcomeJob(handlers);
 }

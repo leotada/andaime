@@ -4,7 +4,7 @@ module usecases.{{plural}} 2025;
 
 @safe:
 
-import andaime.http.optional : Optional;
+import andaime.values.optional : Optional;
 import domain.errors : NotFound;
 import domain.{{plural}};
 

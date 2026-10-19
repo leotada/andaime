@@ -172,8 +172,10 @@ s_json_fuzz() {
 s_example_tests() {
     $DC -unittest -main $I -i -run examples/hello/source/app.d > /dev/null
     # examples/clean, as `dub test` runs it: source/ (but main.d) and tests/; the access log of its requests is dropped
-    local clean="$work/clean_tests"
-    $DC -unittest -main $I -Ijobs/source -Idrivers/pgjobs/source -Iexamples/clean/source -i -of"$clean" \
+    local clean="$work/clean_tests" versions
+    # the `versions` of its dub.sdl (the naming default), as dub passes them
+    versions=$(sed -n 's/^versions "\(.*\)"$/-version=\1/p' examples/clean/dub.sdl)
+    $DC -unittest -main $I $versions -Ijobs/source -Idrivers/pgjobs/source -Iexamples/clean/source -i -of"$clean" \
         $(find examples/clean/source -name '*.d' ! -name main.d) examples/clean/tests/*.d > /dev/null
     "$clean" 2> /dev/null
 }

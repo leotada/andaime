@@ -6,7 +6,7 @@ module adapters.memory.{{plural}} 2025;
 
 @safe:
 
-import andaime.http.optional : Optional;
+import andaime.values.optional : Optional;
 {{#hasUnique}}
 import domain.errors : Conflict;
 {{/hasUnique}}

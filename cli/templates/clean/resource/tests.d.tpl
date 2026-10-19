@@ -34,7 +34,7 @@ unittest // create, read, list, replace and delete through HTTP
     assert(r.status == 204, r.body);
 
     r = c.get("/api/v1{{path}}/1");
-    assert(r.status == 404 && r.body == `{"detail":"{{words}} not found"}`, r.body);
+    assert(r.status == 404 && r.body == `{"message":"{{words}} not found","code":"not_found"}`, r.body);
 }
 
 unittest // {{#hasRequired}}a body without its fields and {{/hasRequired}}a bad page {{#hasRequired}}are{{/hasRequired}}{{^hasRequired}}is{{/hasRequired}} 422{{#hasUnique}}; a taken unique value is 409{{/hasUnique}}
@@ -47,7 +47,7 @@ unittest // {{#hasRequired}}a body without its fields and {{/hasRequired}}a bad 
 {{#hasUnique}}
     assert(c.post("/api/v1{{path}}", `{{body1}}`).status == 201);
     auto r = c.post("/api/v1{{path}}", `{{conflictBody}}`);
-    assert(r.status == 409 && r.body == `{"detail":"{{a}} {{words}} with the same {{uniqueText}} already exists"}`, r.body);
+    assert(r.status == 409 && r.body == `{"message":"{{a}} {{words}} with the same {{uniqueText}} already exists","code":"conflict"}`, r.body);
 {{/hasUnique}}
 }
 

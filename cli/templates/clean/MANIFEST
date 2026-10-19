@@ -31,3 +31,8 @@ resource/usecases.d.tpl
 usecase/generator.json
 usecase/test.d.tpl
 usecase/usecase.d.tpl
+new/files/source/adapters/http/errors.d.tpl
+new/files/source/usecases/system.d.tpl
+new/files/source/adapters/system/clock.d.tpl
+new/files/source/adapters/system/random.d.tpl
+new/files/tests/fakes.d.tpl

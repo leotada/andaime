@@ -1,4 +1,4 @@
-/// Users in PostgreSQL (andaime:pg). The table comes from `migrations/0001_users.sql`.
+/// Users in PostgreSQL (andaime:pg). The table comes from `migrations/0002_users.sql`.
 module adapters.postgres.users 2025;
 
 @safe:

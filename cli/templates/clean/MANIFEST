@@ -40,3 +40,14 @@ new/files/source/usecases/uow.d.tpl
 new/files/source/adapters/memory/uow.d.tpl
 new/postgres_uow.d.tpl
 job/scheduler.d.tpl
+tenancy/generator.json
+tenancy/app_mount.tpl
+tenancy/tenancy.d.tpl
+tenancy/companies_domain.d.tpl
+tenancy/companies_usecases.d.tpl
+tenancy/auth.d.tpl
+tenancy/companies_http.d.tpl
+tenancy/companies_memory.d.tpl
+tenancy/companies_postgres.d.tpl
+tenancy/migration.sql.tpl
+tenancy/companies_tests.d.tpl

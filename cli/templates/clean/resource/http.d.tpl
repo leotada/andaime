@@ -26,9 +26,11 @@ struct {{Name}}Out
 {{/fields}}
 }
 
-{{Name}}Out toOut({{Name}} {{camel}}) => {{Name}}Out({{camel}}.id{{#fields}}, {{camel}}.{{name}}{{/fields}});
+// The fields of the same name and type, checked at compile time: a field the domain gains and the DTO lacks stays
+// behind; a DTO field the domain lacks does not compile (write that conversion by hand).
+{{Name}}Out toOut({{Name}} {{camel}}) => copyAs!{{Name}}Out({{camel}});
 
-New{{Name}} toNew({{Name}}In input) => New{{Name}}({{#fields}}input.{{name}}{{^last}}, {{/last}}{{/fields}});
+New{{Name}} toNew({{Name}}In input) => copyAs!New{{Name}}(input);
 
 /// The `{{path}}` routes; `app.d` mounts them under `/api/v1`.
 final class {{Name}}Controller

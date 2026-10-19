@@ -5,7 +5,7 @@ Clean Architecture, and dependencies point inward only:
 
 ```
 source/
-  domain/          entities and business rules              imports nothing from andaime
+  domain/          entities and business rules              imports only andaime.values
   usecases/        what the application does, and its ports  imports domain/
   adapters/        HTTP, Postgres, memory, jobs              imports usecases/, domain/ and andaime
   app.d            the composition root (buildApp)           imports anything

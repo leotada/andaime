@@ -1,0 +1,26 @@
+{
+  "create": [
+    { "path": "source/domain/tenancy.d", "from": "tenancy.d.tpl" },
+    { "path": "source/domain/companies.d", "from": "companies_domain.d.tpl" },
+    { "path": "source/usecases/companies.d", "from": "companies_usecases.d.tpl" },
+    { "path": "source/adapters/http/auth.d", "from": "auth.d.tpl" },
+    { "path": "source/adapters/http/companies.d", "from": "companies_http.d.tpl" },
+    { "path": "source/adapters/memory/companies.d", "from": "companies_memory.d.tpl" },
+    { "path": "source/adapters/postgres/companies.d", "from": "companies_postgres.d.tpl", "if": "pg" },
+    { "path": "migrations/0001_companies.sql", "from": "migration.sql.tpl", "if": "pg" },
+    { "path": "tests/companies.d", "from": "companies_tests.d.tpl" }
+  ],
+  "insert": [
+    { "path": "source/app.d", "marker": "// andaime:imports",
+      "text": "import usecases.companies;\nimport adapters.http.auth : devAuth;\nimport adapters.http.companies : CompanyController;\nimport adapters.memory.companies : MemoryCompanyRepository, MemoryMembershipRepository;\n" },
+    { "path": "source/app.d", "marker": "// andaime:imports",
+      "text": "import adapters.postgres.companies : PgCompanyRepository, PgMembershipRepository;\n", "if": "pg" },
+    { "path": "source/app.d", "marker": "// andaime:adapters",
+      "text": "CompanyRepository companies;\nMembershipRepository memberships;\n" },
+    { "path": "source/app.d", "marker": "// andaime:postgres",
+      "text": "a.companies = new PgCompanyRepository(db);\na.memberships = new PgMembershipRepository(db);\n", "if": "pg" },
+    { "path": "source/app.d", "marker": "// andaime:memory",
+      "text": "a.companies = uow.track(new MemoryCompanyRepository);\na.memberships = uow.track(new MemoryMembershipRepository);\n" },
+    { "path": "source/app.d", "marker": "// andaime:mount", "from": "app_mount.tpl" }
+  ]
+}

@@ -9,7 +9,7 @@ import andaime;
 import andaime.db : pgPool;
 import config : config, Store;
 {{/pg}}
-import domain.errors : Conflict, NotFound, RuleViolation;
+import domain.errors : Conflict, Forbidden, NotFound, RuleViolation;
 import usecases.system : Clock, IdGenerator, TokenGenerator;
 import usecases.uow : UnitOfWork;
 import adapters.http.errors : apiError;
@@ -91,6 +91,7 @@ App buildAppWith(Adapters a)
     app.use(requestId());
     app.use(accessLog());
     app.mapError!NotFound(404);
+    app.mapError!Forbidden(403);
     app.mapError!Conflict(409);
     app.mapError!RuleViolation(422);
     app.errorBody(&apiError); // every error answers {"message": "...", "code": "..."}

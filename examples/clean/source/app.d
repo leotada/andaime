@@ -7,7 +7,7 @@ module app 2025;
 import andaime;
 import andaime.db : pgPool;
 import config : config, Store;
-import domain.errors : Conflict, NotFound, RuleViolation;
+import domain.errors : Conflict, Forbidden, NotFound, RuleViolation;
 import usecases.system : Clock, IdGenerator, TokenGenerator;
 import usecases.uow : UnitOfWork;
 import adapters.http.errors : apiError;
@@ -15,6 +15,11 @@ import adapters.memory.uow : MemoryUnitOfWork;
 import adapters.postgres.uow : PgUnitOfWork;
 import adapters.system.clock : SystemClock;
 import adapters.system.random : RandomTokens, Uuid7Ids;
+import usecases.companies;
+import adapters.http.auth : devAuth;
+import adapters.http.companies : CompanyController;
+import adapters.memory.companies : MemoryCompanyRepository, MemoryMembershipRepository;
+import adapters.postgres.companies : PgCompanyRepository, PgMembershipRepository;
 import andaime.jobs : InMemoryJobStore, JobStore;
 import andaime.jobs.pg : PgJobStore;
 import usecases.users;
@@ -31,6 +36,8 @@ struct Adapters
     Clock clock;
     IdGenerator ids;
     TokenGenerator tokens;
+    CompanyRepository companies;
+    MembershipRepository memberships;
     JobStore jobStore;
     UserRepository users;
     SendWelcomeScheduler sendWelcome;
@@ -52,6 +59,8 @@ Adapters postgresAdapters()
     Adapters a;
     systemAdapters(a);
     a.uow = new PgUnitOfWork(db); // ambient: the repositories over `db` join its transactions
+    a.companies = new PgCompanyRepository(db);
+    a.memberships = new PgMembershipRepository(db);
     a.jobStore = new PgJobStore(config.databaseUrl); // the same conninfo as `db`: an enqueue joins its transaction
     a.users = new PgUserRepository(db);
     a.sendWelcome = new QueuedSendWelcome(a.jobStore);
@@ -66,6 +75,8 @@ Adapters memoryAdapters()
     systemAdapters(a);
     auto uow = new MemoryUnitOfWork; // each store it tracks rolls back with the others
     a.uow = uow;
+    a.companies = uow.track(new MemoryCompanyRepository);
+    a.memberships = uow.track(new MemoryMembershipRepository);
     a.jobStore = uow.track(new InMemoryJobStore);
     a.users = uow.track(new MemoryUserRepository);
     a.sendWelcome = new QueuedSendWelcome(a.jobStore); // a rollback of `uow` takes its jobs back
@@ -96,11 +107,16 @@ App buildAppWith(Adapters a)
     app.use(requestId());
     app.use(accessLog());
     app.mapError!NotFound(404);
+    app.mapError!Forbidden(403);
     app.mapError!Conflict(409);
     app.mapError!RuleViolation(422);
     app.errorBody(&apiError); // every error answers {"message": "...", "code": "..."}
 
     auto api = app.group("/api/v1");
+    auto members = app.group("/api/v1"); // the routes that know who calls (adapters/http/auth.d)
+    members.use(devAuth());
+    members.mount(new CompanyController(new CreateCompany(a.uow, a.companies, a.memberships, a.clock, a.ids),
+        new GetCompany(a.companies), new ListMembers(a.memberships)));
     api.mount(new UserController(new ListUsers(a.users), new GetUser(a.users), new CreateUser(a.users),
         new UpdateUser(a.users), new DeleteUser(a.users)));
     // andaime:mount

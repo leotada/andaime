@@ -5,8 +5,9 @@ your code. Small services are often best as one module (`examples/hello`). For a
 describes a ready-made structure based on Clean Architecture and SOLID. `andaime new` generates it ([cli.md](cli.md)), but
 nothing in andaime depends on it: you can follow it by hand, change it, or ignore it.
 
-`examples/clean` is a complete application in this structure: users over HTTP, Postgres and memory, a background job and
-its tests. It is the exact output of `andaime new` and `andaime generate`.
+`examples/clean` is a complete application in this structure: users over HTTP, Postgres and memory, companies with their
+members (a tenant, the acting user, two tables in one unit of work), a background job scheduled through the transactional
+outbox, and their tests. It is the exact output of `andaime new --tenant` and `andaime generate`.
 
 ## The layers
 
@@ -195,6 +196,31 @@ What does not join: a query inside `offload` (another thread; andaime asserts on
 request). `PgConfig.requireTransaction` makes a statement outside any unit of work an error, for teams that want every
 write inside one.
 
+## Tenants and the acting user
+
+`andaime new --tenant` adds what a multi-tenant application needs from the start, and a feature that uses it
+(companies and their members):
+
+- **`Tenant`** (`domain/tenancy.d`) is a typed value: the company that owns some data. A repository method over data a
+  company owns takes it (`memberships.list(actor.tenant)`), so every query names whose data it reads: forgetting the
+  filter does not compile, where an implicit, scoped repository would leak data between companies when one is missed.
+- **`Actor`** is the user acting on a request: id, active tenant, role. The controller builds it from the request's
+  authentication (`Local!AuthContext`, set by a middleware) and passes it to `execute`; the use case decides with the
+  domain's policies (`require(canSeeMembers(actor), "...")`), which throw `Forbidden` (403). Permissions are business
+  rules, not status codes.
+- **`adapters/http/auth.d`** is a development stand-in that trusts three headers. Replace it with real authentication
+  (a session, a verified token) before production; it only has to set the same `AuthContext`.
+- **`CreateCompany`** writes the company and the owner's membership in one unit of work, with `Clock` and `IdGenerator`
+  for its timestamp and its UUID.
+
+## Read models
+
+A query use case does not have to return entities. When a screen needs a list with data from several tables (tasks with
+their tags and assignees), declare its shape in `usecases/` (`struct TaskListItem { ...; TagRef[] tags; }`) and let the
+Postgres adapter fill it in one statement, with `json_agg`/`array_agg` into `Json!(TagRef[])` or array fields and
+`rowsAs` ([database.md](database.md)). The memory adapter builds the same shape from its stores. One round trip instead of
+one per row, and the entity stays what the business rules need.
+
 ## Background jobs
 
 A job is an entry point, like a controller. It comes in two parts: the payload (the `@Job` struct: what is stored) and its
@@ -283,8 +309,21 @@ that is in no layer is reported too. Edit the rules to fit your own architecture
   `usecases/users/package.d` plus `usecases/users/*.d`. The rules do not change.
 - **One feature using another** goes through a port of the caller: `usecases/orders.d` declares what it needs from users,
   and an adapter (or the composition root) implements it with the users' use cases or repository.
-- **Writes across repositories in one transaction**: the generated repositories each use the worker's pool, so one
-  transaction cannot span two of them yet. Put such a write in one repository method that opens `db.transaction`.
+- **Writes across repositories in one transaction**: run them in the use case's unit of work ([above](#transactions-the-unit-of-work)).
+- **One class per file**: when a feature's use cases outgrow one file, make `usecases/companies/` a package with one
+  module per use case (`create_company.d`, `list_members.d`) and the ports in `usecases/companies/package.d` or
+  `ports.d`. The generators still write one file per layer; move the classes by hand when the file gets long (the rules
+  and the imports of `app.d` do not change if `package.d` imports the modules publicly).
+- **A large `app.d`**: give each feature a composition function next to it (`compose/companies.d`:
+  `void mountCompanies(Group api, ref Adapters a)`), and keep `buildAppWith` a list of calls. Add the folder to the `main`
+  layer of `andaime.json`.
+- **A package prefix**: an application whose modules are `visto.domain.users`, `visto.usecases.users`... uses globs with
+  it in `andaime.json` (`"modules": ["visto.domain.*"]`); the longest matching glob decides a module's layer.
+- **A composition root with many use cases** (an open question): wiring a hundred use cases by hand is noise, but a
+  runtime container hides the wiring and finds a missing registration only at run time. If it hurts, a compile-time
+  `construct!T(adapters)` that fills a constructor's parameters by type from `Adapters`, and fails to compile when one is
+  missing, would keep the checks; andaime does not have it yet, and whether it is worth it is to be decided from a real
+  application's numbers.
 - **When not to use this**: a service with a handful of routes and no business rules gains little from four layers.
   `andaime new --template minimal` keeps the routes, handlers and tests in one module.
 

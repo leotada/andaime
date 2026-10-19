@@ -24,7 +24,7 @@ import std.string : lineSplitter, strip;
 
 enum usage = `andaime: the optional command of the andaime web framework
 
-  andaime new <dir> [--template clean|minimal|<folder>] [--db pg|none] [--jobs] [--andaime-path <path>]
+  andaime new <dir> [--template clean|minimal|<folder>] [--db pg|none] [--jobs] [--tenant] [--andaime-path <path>]
   andaime generate resource <name> <field>... [--plural <word>]
   andaime generate usecase <feature> <Name> [<field>...]
   andaime generate job <feature> <Name> [<field>...] [--queue <name>] [--cron "<m h dom mon dow>" | --every <15.minutes>]
@@ -147,8 +147,8 @@ private void print(GenResult r)
 private int cmdNew(string[] args)
 {
     string templateName = "clean", db = "pg", andaimePath;
-    bool jobs;
-    getopt(args, "template", &templateName, "db", &db, "jobs", &jobs, "andaime-path", &andaimePath);
+    bool jobs, tenant;
+    getopt(args, "template", &templateName, "db", &db, "jobs", &jobs, "tenant", &tenant, "andaime-path", &andaimePath);
     if (args.length != 2)
         throw new Exception("andaime: new takes one folder: andaime new <dir> (andaime --help)");
     auto dir = args[1];
@@ -175,6 +175,12 @@ private int cmdNew(string[] args)
     // `jobs` tells the new files what is coming (the README); the install step itself sets it in andaime.json
     auto vars = projectScope(name, templateName, db, andaimePath, jobs);
     print(runGenerator(files, "new", dir, vars, GenOptions.init));
+    if (tenant)
+    {
+        if ("tenancy/generator.json" !in files)
+            throw new Exception("andaime: the template '" ~ templateName ~ "' has no tenancy (no tenancy generator)");
+        print(runGenerator(files, "tenancy", dir, vars, GenOptions.init));
+    }
     if (jobs)
         installJobs(Project(absolutePath(dir), parseJSON(readText(buildPath(dir, "andaime.json")))), GenOptions.init);
     writeln("\nnext: cd ", dir, " && dub test");

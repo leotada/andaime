@@ -24,9 +24,11 @@ struct UserOut
     string email;
 }
 
-UserOut toOut(User user) => UserOut(user.id, user.name, user.email);
+// The fields of the same name and type, checked at compile time: a field the domain gains and the DTO lacks stays
+// behind; a DTO field the domain lacks does not compile (write that conversion by hand).
+UserOut toOut(User user) => copyAs!UserOut(user);
 
-NewUser toNew(UserIn input) => NewUser(input.name, input.email);
+NewUser toNew(UserIn input) => copyAs!NewUser(input);
 
 /// The `/users` routes; `app.d` mounts them under `/api/v1`.
 final class UserController

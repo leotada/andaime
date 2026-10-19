@@ -26,12 +26,17 @@ dub build :cli                 # cli/bin/andaime
 andaime new my-api                         # the clean template, with PostgreSQL
 andaime new my-api --db none               # in memory only: no database to set up
 andaime new my-api --jobs                  # with background jobs (andaime:jobs) from the start
+andaime new my-api --tenant                # with tenants: companies, members, the acting user
 andaime new my-api --template minimal      # one module of routes and handlers
 andaime new my-api --template ../my-template
 ```
 
 - `--template`: `clean` (the default, [architecture.md](architecture.md)), `minimal`, or the folder of your own template.
 - `--db`: `pg` (the default) or `none`.
+- `--tenant` (clean template): `domain/tenancy.d` (`Tenant`, `Actor`, `Role`, the policies), a companies feature in every
+  layer (`CreateCompany` writes the company and its owner's membership in one unit of work), a development
+  authentication middleware to replace (`adapters/http/auth.d`), its migration and tests
+  ([architecture.md](architecture.md#tenants-and-the-acting-user)).
 - `--andaime-path`: where the project finds andaime, written into its `dub.sdl` as `path=`. Without it the project depends
   on the registry release series (`version="~>0.1.0"`); pass a path to work against a checkout.
 

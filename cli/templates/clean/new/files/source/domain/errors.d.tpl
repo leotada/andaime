@@ -35,6 +35,15 @@ class Conflict : DomainError
     }
 }
 
+/// The one acting may not do this (HTTP 403): a permission the domain's policies refuse.
+class Forbidden : DomainError
+{
+    this(string msg, string code = "forbidden", string file = __FILE__, size_t line = __LINE__) pure nothrow
+    {
+        super(msg, code, file, line);
+    }
+}
+
 /// The input breaks a business rule (HTTP 422).
 class RuleViolation : DomainError
 {

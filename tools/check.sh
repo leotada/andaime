@@ -93,7 +93,9 @@ typecheck_tree() {
         $DC $flags -I"$(dirname "$t")" -i "$t" || { echo "FAILED: $t"; rc=1; }
     done
     for t in examples/*/tests/*.d; do
-        $DC $flags -I"$(dirname "$(dirname "$t")")/source" -unittest -main -i "$t" || { echo "FAILED: $t"; rc=1; }
+        # (its root too: a test may import another, `tests.fakes`)
+        $DC $flags -I"$(dirname "$(dirname "$t")")/source" -I"$(dirname "$(dirname "$t")")" -unittest -main -i "$t" \
+            || { echo "FAILED: $t"; rc=1; }
     done
     return $rc
 }

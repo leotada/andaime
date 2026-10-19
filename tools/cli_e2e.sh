@@ -48,8 +48,8 @@ if ! grep -q 'dependency "andaime" version="~>' "$work/registry/dub.sdl" \
 fi
 echo "ok  a new project depends on the registry release by default"
 
-# ---------------------------------------------------------------- 1. clean, Postgres and jobs: the golden example
-run "$A" new "$work/clean" --db pg --jobs --andaime-path ../..
+# ---------------------------------------------------------------- 1. clean, Postgres, jobs and tenancy: the golden example
+run "$A" new "$work/clean" --db pg --jobs --tenant --andaime-path ../..
 (cd "$work/clean" && run "$A" generate resource user name:string email:string:unique \
     && run "$A" generate job users SendWelcome user_id:long)
 if ! diff -r -u -x .dub -x dub.selections.json -x clean -x 'clean-test-*' examples/clean "$work/clean" > "$log"; then
@@ -61,13 +61,16 @@ echo "ok  examples/clean is exactly the generators' output"
 echo "ok  clean: dub test (HTTP, the memory repository contract, the job) and dub build"
 
 routes=$(cd "$work/clean" && "$A" routes)
-expected="GET     /api/v1/users       adapters.http.users.UserController.list
-GET     /api/v1/users/{id}  adapters.http.users.UserController.get
-POST    /api/v1/users       adapters.http.users.UserController.create
-PUT     /api/v1/users/{id}  adapters.http.users.UserController.update
-DELETE  /api/v1/users/{id}  adapters.http.users.UserController.remove
-GET     /openapi.json       (andaime: OpenAPI)
-GET     /docs               (andaime: Swagger UI)"
+expected="POST    /api/v1/companies                  adapters.http.companies.CompanyController.create
+GET     /api/v1/companies/current          adapters.http.companies.CompanyController.current
+GET     /api/v1/companies/current/members  adapters.http.companies.CompanyController.members
+GET     /api/v1/users                      adapters.http.users.UserController.list
+GET     /api/v1/users/{id}                 adapters.http.users.UserController.get
+POST    /api/v1/users                      adapters.http.users.UserController.create
+PUT     /api/v1/users/{id}                 adapters.http.users.UserController.update
+DELETE  /api/v1/users/{id}                 adapters.http.users.UserController.remove
+GET     /openapi.json                      (andaime: OpenAPI)
+GET     /docs                              (andaime: Swagger UI)"
 if [[ "$routes" != "$expected" ]]; then echo "FAILED: andaime routes printed:"; echo "$routes"; exit 1; fi
 if [[ $(cd "$work/clean" && "$A" routes "{id}" | wc -l) != 3 ]]; then echo "FAILED: andaime routes {id}"; exit 1; fi
 echo "ok  andaime routes lists every route and its handler, and filters"
@@ -82,7 +85,7 @@ cp examples/clean/source/domain/users.d "$work/clean/source/domain/users.d"
 echo "ok  andaime check passes the layers, and names a forbidden import in one line"
 
 # ---------------------------------------------------------------- 2. no database: every generator, jobs installed late
-run "$A" new "$work/nodb" --db none --andaime-path ../..
+run "$A" new "$work/nodb" --db none --tenant --andaime-path ../..
 (
     cd "$work/nodb"
     run "$A" g r blog_post title:string "body:string?" views:int published:bool rating:double
@@ -120,7 +123,7 @@ if [[ -z "${ANDAIME_PG:-}" ]] || ! command -v psql > /dev/null || ! command -v c
 fi
 db="$ANDAIME_PG dbname=andaime_cli_e2e"
 run psql "$ANDAIME_PG" -v ON_ERROR_STOP=1 -qc "drop database if exists andaime_cli_e2e" -c "create database andaime_cli_e2e"
-run psql "$db" -v ON_ERROR_STOP=1 -q -f "$work/clean/migrations/0001_users.sql"
+for m in "$work"/clean/migrations/*.sql; do run psql "$db" -v ON_ERROR_STOP=1 -q -f "$m"; done
 (cd "$work/clean" && TEST_DATABASE_URL="$db" run dub test $dubc -q)
 echo "ok  Postgres: the repository contract"
 # (dub test writes its test runner to ./clean, the app's own path: build the app again before starting it)
@@ -139,11 +142,16 @@ c1=$(status -X POST "$base/users" -d '{"name":"Ana","email":"ana@example.com"}')
 c2=$(status -X POST "$base/users" -d '{"name":"Bia","email":"ana@example.com"}')
 c3=$(status "$base/users/999")
 c4=$(status -X POST "$base/users" -d '{"name":"Ana"}')
+# --tenant: a company and its owner's membership, written in one unit of work; the members are for admins
+company=$(curl -s -X POST "$base/companies" -H 'X-User-Id: 7' -d '{"name":"Acme"}' | sed -n 's/^{"id":"\([^"]*\)".*/\1/p')
+c5=$(status "$base/companies/current/members" -H 'X-User-Id: 7' -H "X-Company-Id: $company" -H 'X-Role: owner')
+c6=$(status "$base/companies/current/members" -H 'X-User-Id: 8' -H "X-Company-Id: $company")
 kill -TERM $server; wait $server || true
-if [[ "$c1 $c2 $c3 $c4" != "201 409 404 422" ]]; then
-    echo "FAILED: on Postgres, create/duplicate/missing/bad answered $c1 $c2 $c3 $c4 (expected 201 409 404 422)"
+if [[ "$c1 $c2 $c3 $c4 $c5 $c6" != "201 409 404 422 200 403" ]]; then
+    echo "FAILED: on Postgres, the users and companies routes answered $c1 $c2 $c3 $c4 $c5 $c6 (expected 201 409 404 422 200 403)"
     tail -20 "$work/server.log"; exit 1
 fi
+run psql "$db" -v ON_ERROR_STOP=1 -qc "select 1 from memberships where user_id = 7 and role = 'owner'" # both tables written
 run psql "$db" -qc "select count(*) from andaime_jobs" # the worker created its queue
 run psql "$ANDAIME_PG" -qc "drop database andaime_cli_e2e"
-echo "ok  Postgres: the binary serves (201, 409 from the unique column, 404, 422) and runs its job worker"
+echo "ok  Postgres: the binary serves (201, 409 from the unique column, 404, 422; a company with its owner, 403) and runs its job worker"

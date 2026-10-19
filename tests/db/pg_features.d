@@ -625,6 +625,7 @@ void testAmbient()
 }
 
 shared int fibersDone, fiberFailures, offloadAsserted;
+int fibersInserted, fibersRead; // the worker thread's: both fibers run on it
 
 /// Two fibers of one worker, each in its own transaction, interleaving at every wait; offload does not see either.
 void ambientFibers() @system
@@ -646,8 +647,14 @@ void ambientFibers() @system
             }
             pool.transaction((PgConn tx) @safe {
                 pool.exec("insert into t_fibers values ($1)", id);
-                sleep(80.msecs); // the other fiber runs its transaction meanwhile
+                // both fibers are inside their transaction, with their row inserted, before either reads or commits
+                fibersInserted++;
+                while (fibersInserted < 2)
+                    sleep(5.msecs);
                 auto seen = pool.query("select string_agg(n::text, ',') from t_fibers").get!string(0, 0);
+                fibersRead++;
+                while (fibersRead < 2)
+                    sleep(5.msecs);
                 if (seen != (id == 1 ? "1" : "2"))
                     atomicOp!"+="(fiberFailures, 1); // saw the other fiber's uncommitted row
                 if (id == 1)

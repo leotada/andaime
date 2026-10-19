@@ -645,6 +645,10 @@ struct PgConfig
     Duration acquireTimeout = 5.seconds;  /// wait for a free connection
     Duration queryTimeout = 30.seconds;   /// deadline of each query
     Duration idleTimeout = 5.minutes;     /// connection idle longer than this is discarded
+    /// A connection idle longer than this is checked before it is handed out: when the server closed it meanwhile (a
+    /// restart, a failover, a proxy timeout) it is dropped and another one is used, so no request fails on it. The check
+    /// is one non-blocking `poll` of the socket. `Duration.zero` checks on every reuse.
+    Duration pingAfter = 1.seconds;
     /// Prepares each SQL the first time and reuses the plan afterwards (up to 128 per
     /// connection). Off by default: PgBouncer in transaction mode and some proxies
     /// do not accept named statements. Turn it on when talking straight to Postgres/RDS.
@@ -716,6 +720,28 @@ final class PgConn
 
     /// libpq's socket, or -1. The descriptor stays owned by the connection: wait on it, do not close it.
     int socket() const nothrow => c is null ? -1 : pq.PQsocket(c);
+
+    /// For an idle connection: false when the server has closed it or sent anything since the last statement (a FATAL
+    /// such as 57P01 on shutdown, then EOF). An idle connection has nothing to read, so readable data means it is going
+    /// away. Never blocks.
+    package bool stillOpen() nothrow @trusted
+    {
+        // @trusted: poll reads one pollfd on the stack for this connection's own socket
+        if (!usable)
+            return false;
+        version (Posix)
+        {
+            import core.sys.posix.poll : poll, pollfd, POLLIN;
+
+            pollfd p = pollfd(socket, POLLIN, 0);
+            immutable r = poll(&p, 1, 0);
+            if (r == 0)
+                return true;
+            return false; // readable (or an error): the server spoke or hung up
+        }
+        else
+            return true;
+    }
 
     /// Pulls bytes already queued on the socket into libpq. False when the connection has failed.
     /// Does not block: the socket is non-blocking, and libpq stops at EAGAIN.
@@ -1175,7 +1201,8 @@ final class PgPool
             {
                 auto c = idle[$ - 1];
                 idle = idle[0 .. $ - 1];
-                if (c.usable && MonoTime.currTime - c.lastUsed < cfg.idleTimeout)
+                immutable idleFor = MonoTime.currTime - c.lastUsed;
+                if (c.usable && idleFor < cfg.idleTimeout && (idleFor < cfg.pingAfter || c.stillOpen()))
                     return c;
                 c.shutdown();
                 open--;

@@ -158,6 +158,7 @@ PgPool db()
     cfg.acquireTimeout = 5.seconds;       // waiting for a free connection
     cfg.queryTimeout = 30.seconds;
     cfg.idleTimeout = 5.minutes;
+    cfg.pingAfter = 1.seconds;            // check an idle connection before reusing it
     cfg.cacheStatements = false;          // prepared statements; not behind PgBouncer in transaction mode
     return pgPool(cfg);
 }
@@ -168,6 +169,11 @@ PgPool db()
 - `cacheStatements = true` prepares each SQL text once per connection (up to 128), and retries when the plan was invalidated.
 - If the client goes away or the deadline passes during a query, the driver asks the server to cancel and discards the
   connection.
+- **Stale connections**: a connection idle for longer than `pingAfter` is checked before it is handed out (one
+  non-blocking `poll`). When the server closed it meanwhile (a restart, a failover, `pg_terminate_backend`, a proxy's idle
+  timeout), it is dropped and another one is used, so no request fails on it. The driver never repeats a statement that was
+  sent. A peer that vanishes without closing the socket (a dead host, a dropped NAT entry) is not seen by that check: add
+  TCP keepalives to the conninfo (`keepalives_idle=30 keepalives_interval=10 keepalives_count=3`).
 
 ### Watching queries: `onQuery`
 

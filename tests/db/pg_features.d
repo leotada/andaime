@@ -421,6 +421,55 @@ void testRollbackHarness()
     ok("test harness: rollbackAfter pins one connection, app transactions become savepoints, nothing survives");
 }
 
+/// Three idle pooled connections are closed by the server (as a restart or a failover does); the next queries still work.
+void testStaleConnections()
+{
+    import core.thread : Thread;
+
+    int[] openThree(PgPool pool)
+    {
+        auto a = pool.lease(), b = pool.lease(), c = pool.lease();
+        int[] pids;
+        foreach (conn; [a.conn, b.conn, c.conn])
+            pids ~= conn.query("select pg_backend_pid()").get!int(0, 0);
+        return pids;
+    }
+
+    void terminate(int[] pids)
+    {
+        auto admin = connect();
+        scope (exit) admin.shutdown();
+        foreach (pid; pids)
+            admin.exec("select pg_terminate_backend($1)", pid);
+        Thread.sleep(100.msecs); // the FATAL and the close reach the idle sockets
+    }
+
+    PgConfig cfg;
+    cfg.conninfo = conninfo;
+    cfg.pingAfter = 50.msecs;
+    auto pool = new PgPool(cfg);
+    auto pids = openThree(pool);
+    assert(pool.idleCount == 3);
+    terminate(pids);
+    foreach (_; 0 .. 3)
+        assert(pool.query("select 1").get!int(0, 0) == 1, "a stale pooled connection reached the caller");
+    assert(pool.openCount == 1, "the three dead connections were dropped and one new one opened");
+    pool.closeAll();
+
+    // without the check (idle for less than pingAfter), the first statement on a dead connection fails
+    cfg.pingAfter = 1.hours;
+    auto unchecked = new PgPool(cfg);
+    terminate(openThree(unchecked));
+    bool failed;
+    try
+        unchecked.query("select 1");
+    catch (PgError)
+        failed = true;
+    assert(failed, "the test did not close the connections");
+    unchecked.closeAll();
+    ok("pool: idle connections the server closed are dropped before use (pingAfter)");
+}
+
 void main()
 {
     auto env = getenv("ANDAIME_PG");
@@ -440,5 +489,6 @@ void main()
     testQueryHook();
     testSavepoints();
     testRollbackHarness();
+    testStaleConnections();
     printf("all Postgres feature tests passed\n");
 }

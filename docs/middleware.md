@@ -123,7 +123,9 @@ app.mapError!DomainError(422);    // the first mapping that matches wins: put th
 ```
 
 A mapped exception behaves exactly like `HttpError(status, e.msg)`: `{"detail":"msg"}` with that status, no log line and no
-stack trace, and `onError`, when set, receives that `HttpError`.
+stack trace, and `onError`, when set, receives that `HttpError`, whose `cause` is the original exception. To give every
+error (mapped, `HttpError`, 404, 405, 422, 500) one body format, use `app.errorBody`
+([validation.md](validation.md#one-body-format-for-every-error-errorbody)).
 
 Middleware sees the final status after `next()` returns, even when the handler threw: the error has already been turned into
 a response (by `onError`, or the default). Map errors in `onError` or `mapError`, not with a `try`/`catch` around `next()`.

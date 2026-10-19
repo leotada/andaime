@@ -16,6 +16,7 @@ public import andaime.web.jsonvalue : JsonValue, JsonMember, JsonType, JsonError
 public import andaime.web.json : writeJson;
 public import andaime.values.uuid : Uuid;
 public import andaime.values.copy : copyAs;
+public import andaime.web.errors : ErrorInfo, ProblemDetails, ProblemField, problemDetails, problemJson;
 public import andaime.log;
 public import andaime.web.testing;
 public import andaime.web.cors;

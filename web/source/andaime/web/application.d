@@ -12,7 +12,8 @@ import andaime.web.numtext : itoa, ctNum;
 import andaime.log : LogLevel, logEnabled, logAndaime, setLogSyncSource;
 import andaime.web.router;
 import andaime.web.handler_traits : handlerError, dispatch;
-import andaime.web.json : writeJsonString;
+import andaime.web.json : writeJsonString, writeJson;
+import andaime.web.errors : ErrorInfo, errorBodyError, mapBodyError, validationMessage;
 import andaime.web.openapi;
 import andaime.web.response_check : checkResponse;
 import andaime.http.date : httpDate;
@@ -46,7 +47,11 @@ alias ErrorHandler = void delegate(Context ctx, Exception e) @system;
 /// and write the response into `ctx`.
 alias ValidationErrorHandler = void delegate(Context ctx, ValidationErrors errors) @system;
 
+/// Writes the body of an error into `ctx` (see `App.errorBody`). The framework builds it around the user's function.
+alias ErrorBodyHandler = void delegate(Context ctx, ref const ErrorInfo e) @system;
+
 // @trusted: single entry points for user callbacks (their safety is the user's business)
+private void callUser(ErrorBodyHandler h, Context ctx, ref const ErrorInfo e) @trusted { h(ctx, e); }
 private void callUser(UserHandler h, Context ctx) @trusted { h(ctx); }
 private void callUser(ErrorHandler h, Context ctx, Exception e) @trusted { h(ctx, e); }
 private void callUser(ValidationErrorHandler h, Context ctx, ValidationErrors errors) @trusted { h(ctx, errors); }
@@ -314,6 +319,7 @@ final class App
     private void delegate(Context) @safe[] validationFor; // per handler, built by freeze; null: the default 422
     private OpRecord[] ops;
     private ErrorMapping[] errorMappings;                  // see `mapError`
+    private ErrorBody errorBodyOf;                         // see `errorBody`; `render` null: the default bodies
 
     private bool frozen;
     private ProxyTrust proxyTrust;
@@ -397,16 +403,68 @@ final class App
     }
 
     /// Treats an exception of type `E` (or a subclass) as `HttpError(status, e.msg)`: it answers `status` with
-    /// `{"detail": msg}`, it is not logged, and an `onError` handler receives that `HttpError`. For your own exceptions
-    /// that are answers, not failures: a domain's `NotFound`, `Conflict`... (`app.mapError!NotFound(404)`). The first
-    /// mapping that matches wins. Throws `RouteError` for a status outside 400-599.
+    /// `{"detail": msg}` (or the `errorBody`), it is not logged, and an `onError` handler receives that `HttpError`,
+    /// whose `cause` is the original exception. For your own exceptions that are answers, not failures: a domain's
+    /// `NotFound`, `Conflict`... (`app.mapError!NotFound(404)`). The first mapping that matches wins. Throws `RouteError`
+    /// for a status outside 400-599.
     void mapError(E : Exception)(int status)
+    {
+        addMapping!E(status, ErrorMapping((Exception e) => cast(E) e !is null, status));
+    }
+
+    /// Same, with this mapping's own body: `app.mapError!Conflict(409, (Conflict e) => ApiError(e.msg, e.code))`. It wins
+    /// over `errorBody` for this exception (same content type).
+    void mapError(E : Exception, F)(int status, F render)
+    {
+        static if (mapBodyError!(E, F).length)
+            static assert(0, mapBodyError!(E, F));
+        else
+        {
+            ErrorBodyHandler h = delegate(Context ctx, ref const ErrorInfo info) @system {
+                // the exception as thrown (ErrorInfo only lends it as const)
+                auto b = render(cast(E) cast(Exception) info.exception);
+                writeJson(ctx.response.body, b);
+            };
+            addMapping!E(status, ErrorMapping((Exception e) => cast(E) e !is null, status, h));
+        }
+    }
+
+    private void addMapping(E)(int status, ErrorMapping m)
     {
         mustBeOpen();
         if (status < 400 || status > 599)
             throw new RouteError("andaime: mapError!" ~ E.stringof ~ ": " ~ itoa(status)
                 ~ " is not an error status (400-599)");
-        errorMappings ~= ErrorMapping((Exception e) => cast(E) e !is null, status);
+        errorMappings ~= m;
+    }
+
+    /// One body format for every error the app answers by itself: a mapped exception (`mapError`), an `HttpError`, a
+    /// validation error (422), a route that does not exist (404) or does not take the method (405), and an unexpected
+    /// exception (500, logged as before). `render` turns an `ErrorInfo` into a struct, sent as JSON with `contentType`:
+    ///
+    ///     struct ApiError { string message; string code; }
+    ///     app.errorBody((ref const ErrorInfo e) {
+    ///         auto d = cast(const DomainError) e.exception;    // the exception as thrown, or null
+    ///         return ApiError(e.message, d is null ? "error" : d.code);
+    ///     });
+    ///
+    /// The specific hooks keep priority: a mapping's own body, `onError`, `onValidationError`, `onNotFound` and
+    /// `onMethodNotAllowed` answer their errors themselves. OpenAPI documents the errors it lists with `render`'s body.
+    /// `app.errorBody(&problemDetails, problemJson)` gives RFC 9457 problem details.
+    void errorBody(F)(F render, string contentType = "application/json")
+    {
+        static if (errorBodyError!F.length)
+            static assert(0, errorBodyError!F);
+        else
+        {
+            mustBeOpen();
+            static if (is(F R == return))
+                alias Body = R;
+            errorBodyOf = ErrorBody(delegate(Context ctx, ref const ErrorInfo info) @system {
+                auto b = render(info);
+                writeJson(ctx.response.body, b);
+            }, contentType, delegate string(ref Components cs) @safe { return schemaOf!Body(cs); });
+        }
     }
 
     mixin ValidationSetters;
@@ -469,6 +527,12 @@ final class App
                 validationFor[i] = &hook.respond;
                 ops[i].validation = hook.doc;
             }
+            else if (errorBodyOf.render !is null)
+            {
+                validationFor[i] = &renderValidation;
+                ops[i].validation = ValidationDoc(true, 422, "Validation error", errorBodyOf.schema,
+                    errorBodyOf.contentType);
+            }
             if (g is null)
                 continue;
             Middleware[] all;
@@ -498,7 +562,7 @@ final class App
             }
         }
         if (openApiWanted)
-            openApiJson = buildOpenApi(ops, openApiInfo);
+            openApiJson = buildOpenApi(ops, openApiInfo, errorBodyOf.schema, errorBodyOf.contentType);
         frozen = true;
     }
 
@@ -574,7 +638,7 @@ final class App
 
     /// The one validation point, after the middleware has unwound (see `checkResponse`). A streamed response whose
     /// head was already committed is left alone: its status and headers are on the wire.
-    private static void finishResponse(Context ctx)
+    private void finishResponse(Context ctx)
     {
         if (ctx.committed)
             return;
@@ -588,10 +652,11 @@ final class App
 
     private void fail(Context ctx, Exception e)
     {
+        const(ErrorMapping)* mapped;
         foreach (ref m; errorMappings)
             if (m.matches(e))
             {
-                e = new HttpError(m.status, e.msg, e.file, e.line);
+                mapped = &m;
                 break;
             }
         if (ctx.committed)
@@ -605,13 +670,24 @@ final class App
         }
         if (errorHandler is null)
         {
-            if (auto he = cast(HttpError) e)
-                renderError(ctx, he.status, he.msg);
+            if (mapped !is null)
+                renderError(ctx, ErrorInfo(mapped.status, e.msg, e), mapped.render);
+            else if (auto he = cast(HttpError) e)
+                renderError(ctx, ErrorInfo(he.status, he.msg, he.cause !is null ? he.cause : he));
             else
-                internalError(ctx, e);
+            {
+                logError(ctx, e);
+                renderError(ctx, ErrorInfo(500, "internal error", e));
+            }
             return;
         }
-        if (cast(HttpError) e is null)
+        if (mapped !is null)
+        {
+            auto he = new HttpError(mapped.status, e.msg, e.file, e.line);
+            he.cause = e;
+            e = he;
+        }
+        else if (cast(HttpError) e is null)
             logError(ctx, e);
         ctx.response.status = 500;
         ctx.response.contentType = null;
@@ -621,7 +697,7 @@ final class App
         catch (Exception e2) // the error handler failed too: nothing more to do
         {
             logError(ctx, e2);
-            renderError(ctx, 500, "internal error");
+            renderDefault(ctx, 500, "internal error");
         }
     }
 
@@ -737,7 +813,31 @@ final class App
         return ctx.allowBuf[0 .. n];
     }
 
-    private static void renderError(Context ctx, int status, scope const(char)[] msg)
+    /// An error answered by andaime itself (404, 405, the 500 of a response that failed its checks).
+    private void renderError(Context ctx, int status, string msg)
+    {
+        renderError(ctx, ErrorInfo(status, msg));
+    }
+
+    /// The body of an error: `own` (a mapping's), else `errorBody`'s, else the default `{"detail": msg}`.
+    private void renderError(Context ctx, ErrorInfo info, ErrorBodyHandler own = null)
+    {
+        auto render = own !is null ? own : errorBodyOf.render;
+        if (render is null)
+            return renderDefault(ctx, info.status, info.message);
+        ctx.response.status = info.status;
+        ctx.response.contentType = errorBodyOf.contentType.length ? errorBodyOf.contentType : "application/json";
+        ctx.response.body.clear();
+        try
+            callUser(render, ctx, info);
+        catch (Exception e) // the renderer failed: the plain body, never a half-written one
+        {
+            logError(ctx, e);
+            renderDefault(ctx, 500, "internal error");
+        }
+    }
+
+    private static void renderDefault(Context ctx, int status, scope const(char)[] msg)
     {
         ctx.response.status = status;
         ctx.response.contentType = "application/json";
@@ -747,10 +847,11 @@ final class App
         ctx.response.body.put('}');
     }
 
-    private void internalError(Context ctx, Exception e)
+    /// `Context.onValidation` when `errorBody` is set and no `onValidationError` covers the route.
+    private void renderValidation(Context ctx)
     {
-        logError(ctx, e);
-        renderError(ctx, 500, "internal error");
+        auto v = ctx.errors.view;
+        renderError(ctx, ErrorInfo(422, validationMessage(v), null, v));
     }
 
     /// Logs the exception behind a 500 (details only in the log, never in the response). With `logStackTraces` the
@@ -798,6 +899,15 @@ private struct ErrorMapping
 {
     bool function(Exception) @safe matches;
     int status;
+    ErrorBodyHandler render; /// the mapping's own body, or null
+}
+
+/// What `App.errorBody` set.
+private struct ErrorBody
+{
+    ErrorBodyHandler render;
+    string contentType;
+    string delegate(ref Components) @safe schema; /// for OpenAPI
 }
 
 /// `s` followed by spaces up to `width` characters (the columns of `App.routeTable`).

@@ -46,7 +46,7 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 ## Safety model (`@safe`)
 
 - Framework-internal delegate types (`RequestCallback`, `HandlerFactory`, `WorkerInit`, `HandlerFn`, `offload`'s work delegate) are `@safe`.
-- **User-facing callbacks accept `@system`** (`Middleware`, `ErrorHandler`, `UserHandler`, `ValidationErrorHandler`, route
+- **User-facing callbacks accept `@system`** (`Middleware`, `ErrorHandler`, `UserHandler`, `ValidationErrorHandler`, `ErrorBodyHandler` (built around `errorBody`'s function), route
   handlers, a text type's methods): user code may call C libraries without ceremony, and `@safe` code converts to them implicitly.
   The framework invokes user code only through `callMiddleware`, `callUser` (one overload per handler type, `application.d`;
   a validation handler is reached from `dispatch` through the `@safe` `Context.onValidation` that `App.freeze` sets),

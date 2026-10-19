@@ -105,6 +105,9 @@ struct Response
 class HttpError : Exception
 {
     int status;
+    /// The exception `App.mapError` turned into this one (a domain's `NotFound`, with its own fields), so an `onError`
+    /// handler still sees it; null for an `HttpError` thrown directly.
+    Exception cause;
 
     this(int status, string msg, string file = __FILE__, size_t line = __LINE__) @safe pure nothrow
     {

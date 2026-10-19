@@ -62,6 +62,8 @@ struct Components
     string[string] nameOfType;   // T.mangleof -> its schema name
     bool[string] operationIds;   // operationIds already used in this document
     ValidationDoc validation;    // how the operation being described answers validation failures
+    string delegate(ref Components) @safe errorSchema; // `App.errorBody`'s body (the `HTTPError` component); null: detail
+    string errorMediaType;       // its media type; null: application/json
 
     /// Reserves the names andaime itself defines, so a user struct called `HTTPError` gets another name.
     void reserveBuiltins() @safe
@@ -469,7 +471,8 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
             {
                 ensureHttpError(comps);
                 resp ~= (resp.length ? "," : "") ~ `"` ~ ctNum(a.code) ~ `":{"description":` ~ q(a.description)
-                    ~ `,"content":{"application/json":{"schema":{"$ref":"#/components/schemas/HTTPError"}}}}`;
+                    ~ `,"content":{` ~ q(comps.errorMediaType.length ? comps.errorMediaType : "application/json")
+                    ~ `:{"schema":{"$ref":"#/components/schemas/HTTPError"}}}}`;
                 declared ~= ctNum(a.code);
             }
         if (canFail)
@@ -520,10 +523,14 @@ private string statusDescription(int code) pure @safe
     return t == "Unknown" ? "Success" : t;
 }
 
+/// The `HTTPError` component: `{"detail": "..."}`, or the body of `App.errorBody` when it is set.
 private void ensureHttpError(ref Components comps) @safe
 {
-    if ("HTTPError" !in comps.schemas)
-        comps.schemas["HTTPError"] = `{"type":"object","properties":{"detail":{"type":"string"}},"required":["detail"]}`;
+    if ("HTTPError" in comps.schemas)
+        return;
+    comps.schemas["HTTPError"] = comps.errorSchema is null
+        ? `{"type":"object","properties":{"detail":{"type":"string"}},"required":["detail"]}`
+        : comps.errorSchema(comps);
 }
 
 private void ensureValidationError(ref Components comps) @safe
@@ -542,6 +549,7 @@ struct ValidationDoc
     int status;         /// its declared status; 0: not declared (documented as "4XX", without a body schema)
     string description;
     string delegate(ref Components) @safe schema; /// the body's schema; null: none declared
+    string mediaType;   /// the body's media type; null: application/json
 }
 
 /// The responses entry for a route that can fail validation, and its key ("422", "400", "4XX").
@@ -559,7 +567,8 @@ private string validationEntry(ref Components comps, out string key) @safe
     auto desc = v.description.length ? v.description : "Validation error";
     if (v.schema is null)
         return `{"description":` ~ q(desc) ~ `}`;
-    return `{"description":` ~ q(desc) ~ `,"content":{"application/json":{"schema":` ~ v.schema(comps) ~ `}}}`;
+    return `{"description":` ~ q(desc) ~ `,"content":{` ~ q(v.mediaType.length ? v.mediaType : "application/json")
+        ~ `:{"schema":` ~ v.schema(comps) ~ `}}}`;
 }
 
 // ------------------------------------------------------------ document
@@ -583,10 +592,13 @@ private string openApiPath(string pattern) pure @safe
     return o;
 }
 
-string buildOpenApi(const(OpRecord)[] ops, OpenApiInfo info) @safe
+string buildOpenApi(const(OpRecord)[] ops, OpenApiInfo info, string delegate(ref Components) @safe errorSchema = null,
+    string errorMediaType = null) @safe
 {
     Components comps;
     comps.reserveBuiltins();
+    comps.errorSchema = errorSchema;
+    comps.errorMediaType = errorMediaType;
     // group by path preserving registration order
     string[] order;
     string[string] byPath;

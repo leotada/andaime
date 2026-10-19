@@ -43,3 +43,17 @@ unittest
     assert(c.get("/boom").body == "oops");
     assert(c.get("/c").header("X-Sys") == "1");
 }
+
+struct Problem { string message; }
+
+// errorBody and mapError's body take @system functions too
+unittest
+{
+    auto app = new App;
+    app.errorBody((ref const ErrorInfo e) { auto p = getenv("PATH"); return Problem(e.message); });
+    app.mapError!Exception(400, (Exception e) { auto p = getenv("PATH"); return Problem("mapped"); });
+    app.get!("/boom", () { throw new Exception("x"); return "never"; });
+    auto c = TestClient(app);
+    assert(c.get("/nope").body == `{"message":"not found"}`);
+    assert(c.get("/boom").body == `{"message":"mapped"}`);
+}

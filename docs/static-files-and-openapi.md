@@ -63,6 +63,53 @@ Stream export_() { ... }                               // the media type of a st
   its module path); template instances become `Page_User`; `@schemaName("UserOut")` picks a name.
 - [Text types](requests.md#your-own-types-uuids-dates-money) are strings, with `format` from their `openApiFormat` (`uuid`, `date-time` for a `Timestamp`, `date` for a `CalendarDate`).
 
+## The document as a file, for a typed frontend
+
+A frontend typed from the API needs the document in a file, and a project wants every change to its contract to show in a
+code review. The app does not have to run for that:
+
+```sh
+andaime openapi > openapi.json          # builds the app once and prints the document (indented), serving nothing
+```
+
+or, from a test or a script, `app.openApiDocument()` (`openApiDocument(true)` indents it, one member per line, which makes
+a readable diff). It is the document `GET /openapi.json` answers, byte for byte, and also exists for an app that never
+called `serveOpenApi`. The order is stable: paths in registration order, schemas by name.
+
+**The frontend side.** Generate the TypeScript types from the file and call the API through them:
+
+```sh
+npx openapi-typescript openapi.json -o src/api/schema.d.ts
+```
+
+```ts
+import createClient from "openapi-fetch";
+import type { paths } from "./schema";
+
+const api = createClient<paths>({ baseUrl: "/api/v1" });
+const { data, error } = await api.GET("/users/{id}", { params: { path: { id: 7 } } });
+// data: the handler's return type; error: the 422 or the errorBody you declared; both checked by tsc
+```
+
+A `Timestamp` is a `string` with `format: date-time` and a `Uuid` a `string` with `format: uuid`. Rename a field in a DTO and
+`tsc` points at every use in the frontend.
+
+**A snapshot test.** The clean template (`andaime new`) comes with `tests/openapi.json` and `tests/openapi.d`, which
+compares the document with the file:
+
+```d
+unittest
+{
+    auto now = buildAppWith(memoryAdapters()).openApiDocument(true) ~ "\n";
+    assert(now == readText("tests/openapi.json"), "the API contract changed: run `UPDATE_OPENAPI=1 dub test`");
+}
+```
+
+Changing a handler's signature, a DTO or a status fails `dub test` until the file is updated, and the update is a diff in
+the pull request that the frontend's reviewer reads: `UPDATE_OPENAPI=1 dub test` (or `andaime openapi > tests/openapi.json`)
+rewrites it. The first run of a new project creates the file; in CI (`CI` set) a missing file is an error. Outside the
+template, write the same test around your own `buildApp`.
+
 `OpenApiInfo` fields: `title`, `version_`, `description`, `jsonPath` (`"/openapi.json"`; `""` = not served), `docsPath`
 (`"/docs"`; `""` = no Swagger UI page), `swaggerUiBase`. `/docs` loads Swagger UI from a pinned jsDelivr release with
 Subresource Integrity; set `swaggerUiBase` to a URL of your own copy to self-host it.

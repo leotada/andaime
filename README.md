@@ -514,6 +514,7 @@ andaime new my-api --jobs --tenant                          # also: --db none, -
 andaime generate resource user name:string email:string:unique
 andaime generate job users SendWelcome user_id:long
 andaime routes                                              # every route and its handler
+andaime openapi > openapi.json                              # the OpenAPI document, for a typed frontend
 andaime check                                               # the dependency rule, from the compiler's imports
 ```
 

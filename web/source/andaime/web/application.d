@@ -628,6 +628,19 @@ final class App
         }
     }
 
+    /// The OpenAPI document of the app's handlers, as `GET /openapi.json` answers it, without serving it: for
+    /// `andaime openapi > openapi.json` (`ANDAIME_OPENAPI`), and for a test that keeps a snapshot of it. An app that never
+    /// called `serveOpenApi` gets the document with the default `OpenApiInfo` (and still routes nothing). `pretty` lays it
+    /// out with one member per line and two spaces per level (`indentJson`), which reads well in a code review. Like
+    /// serving, this freezes the app: register every route before calling it.
+    string openApiDocument(bool pretty = false)
+    {
+        freeze();
+        auto doc = openApiWanted ? openApiJson
+            : buildOpenApi(ops, openApiInfo, errorBodyOf.schema, errorBodyOf.contentType);
+        return pretty ? indentJson(doc) : doc;
+    }
+
     /// Registers every method of `controller` annotated with @Get/@Post/...
     /// Use it for handlers with state (repositories, connections, config). `Group.mount` does the same under a prefix.
     void mount(C, string file = __FILE__, size_t line = __LINE__)(C controller) if (is(C == class))

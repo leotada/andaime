@@ -107,14 +107,16 @@ if (is(F == void function() @safe))
 ///
 /// With the environment variable `ANDAIME_ROUTES` set (to anything but "" or "0"), the build function runs once on the
 /// calling thread, `App.routeTable` goes to stdout and this returns true at once: no port, no worker (`andaime routes`).
+/// `ANDAIME_OPENAPI` does the same with `App.openApiDocument` (indented, `andaime openapi`).
 bool tryServe(App delegate() @system build, ServerConfig cfg, void delegate() @safe onWorker0 = null)
 {
-    if (routesRequested())
+    immutable routes = envFlag("ANDAIME_ROUTES");
+    if (routes || envFlag("ANDAIME_OPENAPI"))
     {
         auto app = callBuild(build);
         if (app is null)
             throw new Exception("andaime: the build function returned null; it must return the App to serve");
-        writeStdout(app.routeTable());
+        writeStdout(routes ? app.routeTable() : app.openApiDocument(true) ~ "\n");
         return true;
     }
     warnLegacyEnvironment(); // VELA_* variables of a project from before the rename
@@ -177,13 +179,14 @@ if (is(F == void function() @safe))
     return tryServe(() @trusted => build(), cfg, () { call(); }); // sound: same as the `serve` overload
 }
 
-/// `ANDAIME_ROUTES` is set to something other than "" or "0".
-private bool routesRequested() @trusted nothrow @nogc
+/// The environment variable `name` is set to something other than "" or "0".
+private bool envFlag(const(char)* name) @trusted nothrow @nogc
 {
     import core.stdc.stdlib : getenv;
 
-    // sound: getenv returns a NUL-terminated string owned by the environment; only its first two bytes are read here
-    auto p = getenv("ANDAIME_ROUTES");
+    // sound: `name` is a string literal; getenv returns a NUL-terminated string owned by the environment, of which only
+    // the first two bytes are read here
+    auto p = getenv(name);
     return p !is null && p[0] != '\0' && !(p[0] == '0' && p[1] == '\0');
 }
 

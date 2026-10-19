@@ -644,6 +644,66 @@ string buildOpenApi(const(OpRecord)[] ops, OpenApiInfo info, string delegate(ref
     return o;
 }
 
+/// `json` laid out for people and diffs: one member or element per line, two spaces per level, `"key": value`. The order
+/// and the strings are kept as they are, and an empty `{}` or `[]` stays on its line. `json` must be valid JSON (what
+/// `buildOpenApi` returns is).
+string indentJson(string json) pure nothrow @safe
+{
+    string o;
+    o.reserve(json.length * 2);
+    size_t depth;
+    bool inString, escaped;
+    void newline() { o ~= '\n'; foreach (_; 0 .. depth) o ~= "  "; }
+    foreach (k, c; json)
+    {
+        if (inString)
+        {
+            o ~= c;
+            if (escaped)
+                escaped = false;
+            else if (c == '\\')
+                escaped = true;
+            else if (c == '"')
+                inString = false;
+            continue;
+        }
+        switch (c)
+        {
+            case '"':
+                inString = true;
+                o ~= c;
+                break;
+            case '{', '[':
+                o ~= c;
+                if (k + 1 < json.length && (json[k + 1] == '}' || json[k + 1] == ']'))
+                    break; // empty: stays `{}` / `[]`
+                depth++;
+                newline();
+                break;
+            case '}', ']':
+                if (k > 0 && (json[k - 1] == '{' || json[k - 1] == '['))
+                {
+                    o ~= c;
+                    break;
+                }
+                depth--;
+                newline();
+                o ~= c;
+                break;
+            case ',':
+                o ~= c;
+                newline();
+                break;
+            case ':':
+                o ~= ": ";
+                break;
+            default:
+                o ~= c;
+        }
+    }
+    return o;
+}
+
 private string[] sortedKeys(string[string] aa) @safe
 {
     string[] k = aa.keys;

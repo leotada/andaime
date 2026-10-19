@@ -95,3 +95,51 @@ string files(string rest) => rest;
     auto d = c.get("/docs");
     assert(d.status == 200 && d.contentType == "text/html; charset=utf-8" && d.body.length > 100);
 }
+
+@system unittest // the document without serving: openApiDocument
+{
+    import std.json : parseJSON;
+
+    auto app = new App;
+    app.get!("/users/{id}", getUser);
+    app.post!("/users", create);
+    app.serveOpenApi(OpenApiInfo("Test", "9.9.9"));
+    auto served = TestClient(app).get("/openapi.json").body;
+    assert(app.openApiDocument == served, "the same document the route answers");
+
+    // pretty: the same document, one member per line, two spaces, no trailing space
+    auto pretty = app.openApiDocument(true);
+    assert(parseJSON(pretty) == parseJSON(served) && pretty != served);
+    import std.string : splitLines;
+    assert(pretty.splitLines[0] == "{" && pretty.splitLines[1] == `  "openapi": "3.0.3",`, pretty[0 .. 40]);
+    foreach (line; pretty.splitLines)
+        assert(line.length == 0 || line[$ - 1] != ' ', line);
+
+    // an app that never called serveOpenApi still has a document (nothing is routed for it)
+    auto quiet = new App;
+    quiet.get!("/users/{id}", getUser);
+    auto doc = parseJSON(quiet.openApiDocument);
+    assert(doc["info"]["title"].str == "API" && "/users/{id}" in doc["paths"].object);
+    assert(TestClient(quiet).get("/openapi.json").status == 404);
+
+    // building it freezes the app, like serving does
+    bool threw;
+    try
+        quiet.get!("/late", getUser);
+    catch (RouteError)
+        threw = true;
+    assert(threw);
+}
+
+@system unittest // indentJson: strings keep their escapes and punctuation, empty containers stay compact
+{
+    import andaime.web.openapi : indentJson;
+    import std.json : parseJSON;
+
+    enum doc = `{"a":[1,2,{"b":"x, y: \"z\" {}"}],"c":{},"d":[],"e":null,"f":"\\"}`;
+    auto pretty = indentJson(doc);
+    assert(pretty == "{\n  \"a\": [\n    1,\n    2,\n    {\n      \"b\": \"x, y: \\\"z\\\" {}\"\n    }\n  ],\n"
+        ~ "  \"c\": {},\n  \"d\": [],\n  \"e\": null,\n  \"f\": \"\\\\\"\n}", pretty);
+    assert(parseJSON(pretty) == parseJSON(doc));
+    assert(indentJson("{}") == "{}" && indentJson("[]") == "[]" && indentJson(`"x"`) == `"x"`);
+}

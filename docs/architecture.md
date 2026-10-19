@@ -304,6 +304,8 @@ sight. A rollback leaves no job; a commit stores it and wakes a worker.
 - **Jobs**: `TestJobStore` enqueues and drains them on the test's thread ([jobs-and-cron.md](jobs-and-cron.md)).
 
 `dub test` runs `source/` and `tests/`; `source/main.d` holds only `main`, so the tests can import the composition root.
+`tests/openapi.d` keeps a snapshot of the API contract in `tests/openapi.json` (`UPDATE_OPENAPI=1 dub test` accepts a change,
+[static-files-and-openapi.md](static-files-and-openapi.md#the-document-as-a-file-for-a-typed-frontend)).
 
 ## Enforcing the rule
 

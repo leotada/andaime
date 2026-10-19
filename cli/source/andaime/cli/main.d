@@ -19,7 +19,7 @@ import std.json : JSONType, JSONValue, parseJSON;
 import std.path : absolutePath, baseName, buildPath, dirName;
 import std.process : Config, environment, execute;
 import std.regex : matchFirst, regex;
-import std.stdio : stderr, stdout, writeln;
+import std.stdio : stderr, stdout, write, writeln;
 import std.string : lineSplitter, strip;
 
 enum usage = `andaime: the optional command of the andaime web framework
@@ -29,6 +29,7 @@ enum usage = `andaime: the optional command of the andaime web framework
   andaime generate usecase <feature> <Name> [<field>...]
   andaime generate job <feature> <Name> [<field>...] [--queue <name>] [--cron "<m h dom mon dow>" | --every <15.minutes>]
   andaime routes [<text>]
+  andaime openapi
   andaime check
 
 A field is name:type, name:type? (may be absent) or name:type:unique, with the types string, int, long, bool and
@@ -39,6 +40,7 @@ plural of a resource: users, blog_posts.
   new       a project from a template: clean (layers, the default) or minimal (one module)
   generate  grow a project with its template's generators
   routes    every route and its handler (runs the app with ANDAIME_ROUTES=1); <text> filters the lines
+  openapi   the OpenAPI document on stdout (runs the app with ANDAIME_OPENAPI=1): andaime openapi > openapi.json
   check     the dependency rule: each import against the layers of andaime.json
 `;
 
@@ -76,6 +78,8 @@ private int run(string[] args)
             return cmdGenerate(rest);
         case "routes":
             return cmdRoutes(rest);
+        case "openapi":
+            return cmdOpenapi(rest);
         case "check":
             return cmdCheck(rest);
         default:
@@ -431,6 +435,24 @@ private int cmdRoutes(string[] args)
         }
     if (shown == 0 && filter.length == 0)
         stderr.writeln("andaime: the app printed no routes; does main call serve (or tryServe)?");
+    return 0;
+}
+
+// ---------------------------------------------------------------- openapi
+
+/// `andaime openapi`: the OpenAPI document of the project's app, on stdout. The program builds the app once and prints
+/// `App.openApiDocument` instead of serving (`ANDAIME_OPENAPI`, honored by `tryServe`).
+private int cmdOpenapi(string[] args)
+{
+    if (args.length > 1)
+        throw new Exception("andaime: openapi takes no arguments (andaime --help)");
+    auto env = ["ANDAIME_OPENAPI": "1"];
+    auto r = execute(["dub", "run", "-q"] ~ dubCompiler(), env, Config.stderrPassThrough);
+    if (r.status != 0)
+        throw new Exception("andaime: `dub run` failed (exit " ~ r.status.to!string ~ "); see above");
+    if (!r.output.startsWith("{"))
+        throw new Exception("andaime: the app printed no OpenAPI document; does main call serve (or tryServe)?");
+    write(r.output);
     return 0;
 }
 

@@ -17,6 +17,7 @@ new/files/source/config.d.tpl
 new/files/source/domain/errors.d.tpl
 new/files/source/main.d.tpl
 new/files/tests/app.d.tpl
+new/files/tests/openapi.d.tpl
 new/generator.json
 resource/app_imports.tpl
 resource/app_mount.tpl

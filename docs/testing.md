@@ -164,6 +164,13 @@ rendered `line`. Lines written by the code a [job](jobs.md) runs carry `job`, `j
 use `captureLog` around `drainJobs`. A real server's workers log on their own threads: use
 [`setLogSink`](logging.md#sending-lines-somewhere-else-setlogsink) there.
 
+## Snapshot of the OpenAPI document
+
+`app.openApiDocument(true)` is the API contract as text, so a test can compare it with a committed file and make every
+change of a signature visible in review. The clean template ships that test (`tests/openapi.d`, updated with
+`UPDATE_OPENAPI=1 dub test`); see
+[static-files-and-openapi.md](static-files-and-openapi.md#the-document-as-a-file-for-a-typed-frontend).
+
 ## Tips
 
 - Build a fresh app per test (`TestClient(buildApp())`) so tests do not share state.

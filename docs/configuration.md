@@ -32,7 +32,7 @@
 Other settings: `StaticConfig` (`serveStatic`), `OpenApiInfo` (`serveOpenApi`), `CorsConfig` (`cors`), `CookieOptions`
 (`setCookie`), `PgConfig` (`andaime:pg`), `HttpClientConfig`, `App.logStackTraces`, `App.trailingSlash` ([routing.md](routing.md)),
 `configureLog(level, format)` and the `ANDAIME_LOG_LEVEL` / `ANDAIME_LOG_FORMAT` environment variables ([logging.md](logging.md)),
-`ANDAIME_ROUTES=1` (print the route table and return from `serve` without serving, [routing.md](routing.md#debugging)). Process-level
+`ANDAIME_ROUTES=1` (print the route table and return from `serve` without serving, [routing.md](routing.md#debugging)), `ANDAIME_OPENAPI=1` (the same with the OpenAPI document, [static-files-and-openapi.md](static-files-and-openapi.md#the-document-as-a-file-for-a-typed-frontend)). Process-level
 variables of the tests and tools (`ANDAIME_STRICT`, `ANDAIME_CI`, `ANDAIME_PG`, `ANDAIME_TLS_RSS_MB`...) are described in `tools/check.sh`.
 
 `LoopStats` (per worker, for metrics and tests): `inFlight`, `peakInFlight`, `connections`, `rejected`, `cancelled`, `timedOut`,

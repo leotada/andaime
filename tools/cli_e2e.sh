@@ -52,12 +52,23 @@ echo "ok  a new project depends on the registry release by default"
 run "$A" new "$work/clean" --db pg --jobs --tenant --andaime-path ../..
 (cd "$work/clean" && run "$A" generate resource user name:string email:string:unique \
     && run "$A" generate job users SendWelcome user_id:long)
+# the snapshot of tests/openapi.json is the app's own output, not a template file: `andaime openapi` makes it
+(cd "$work/clean" && "$A" openapi > tests/openapi.json 2> "$log") || { echo "FAILED: andaime openapi"; cat "$log"; exit 1; }
 if ! diff -r -u -x .dub -x dub.selections.json -x clean -x 'clean-test-*' examples/clean "$work/clean" > "$log"; then
     echo "FAILED: examples/clean is not what the generators make:"; head -60 "$log"; exit 1
 fi
 echo "ok  examples/clean is exactly the generators' output"
 
 (cd "$work/clean" && run dub test $dubc -q && run dub build $dubc -q)
+echo "ok  clean: andaime openapi wrote the snapshot that its dub test compares with"
+# the snapshot test fails when the contract changes, and UPDATE_OPENAPI=1 accepts the change
+cp "$work/clean/tests/openapi.json" "$work/openapi.json.keep"
+sed -i 's/"title": "clean"/"title": "changed"/' "$work/clean/tests/openapi.json"
+if (cd "$work/clean" && dub test $dubc -q > "$log" 2>&1); then echo "FAILED: a changed snapshot should fail dub test"; exit 1; fi
+grep -q "UPDATE_OPENAPI=1" "$log" || { echo "FAILED: the snapshot failure does not say how to update it"; tail -20 "$log"; exit 1; }
+(cd "$work/clean" && UPDATE_OPENAPI=1 run dub test $dubc -q)
+cmp "$work/clean/tests/openapi.json" "$work/openapi.json.keep" || { echo "FAILED: UPDATE_OPENAPI=1 did not restore the snapshot"; exit 1; }
+echo "ok  clean: a changed snapshot fails dub test; UPDATE_OPENAPI=1 rewrites it"
 echo "ok  clean: dub test (HTTP, the memory repository contract, the job) and dub build"
 
 routes=$(cd "$work/clean" && "$A" routes)

@@ -16,7 +16,7 @@ things up.
 | [Logging](logging.md) | `andaime.log`: levels, `text`/`kv`/`json` lines, the request id on every line, `ANDAIME_LOG_LEVEL` |
 | [Streaming](streaming.md) | `Stream` and Server-Sent Events, backpressure, cancellation |
 | [WebSockets](websocket.md) | `WebSocket` routes, `WsConn`, broadcasting, limits, compression, the `wsConnect` client, testing, proxies |
-| [Static files and OpenAPI](static-files-and-openapi.md) | `serveStatic`, `/openapi.json` and Swagger UI, documenting statuses |
+| [Static files and OpenAPI](static-files-and-openapi.md) | `serveStatic`, `/openapi.json` and Swagger UI, documenting statuses, the document as a file for a typed frontend (`andaime openapi`) |
 | [Concurrency](concurrency.md) | Workers, fibers, state between workers, waiting without blocking, `offload`, cancellation |
 | [Database](database.md) | The PostgreSQL driver (`andaime:pg`) |
 | [Jobs and cron](jobs-and-cron.md) | Background jobs (`andaime:jobs`), retries, uniqueness, cron, process roles, Postgres queue |

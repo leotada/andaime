@@ -1,7 +1,7 @@
 # The andaime command
 
 `andaime` is an optional command line tool, in the spirit of `rails new` and `rails generate`. It creates projects from
-templates, grows them with generators, lists the routes of any andaime app, and checks the dependency rule of a project.
+templates, grows them with generators, lists the routes of any andaime app, prints its OpenAPI document, and checks the dependency rule of a project.
 The framework does not depend on it, and a generated project is plain code that you own: delete the tool and the
 project still builds.
 
@@ -89,6 +89,17 @@ GET     /openapi.json       (andaime: OpenAPI)
 
 It runs the app (`dub run`) with `ANDAIME_ROUTES=1`: `serve` then builds the app once, prints its route table and
 returns without opening a port ([routing.md](routing.md#debugging)). Code in `main` before `serve` still runs.
+
+## `andaime openapi`
+
+```sh
+andaime openapi > openapi.json     # the OpenAPI document of the app in this folder, indented
+```
+
+Like `routes`, it runs the app (`dub run`) with `ANDAIME_OPENAPI=1`: `serve` builds the app once, prints
+`app.openApiDocument(true)` and returns without opening a port. The clean template keeps a snapshot of it in
+`tests/openapi.json`, compared by `tests/openapi.d`; after a generator adds a route, `UPDATE_OPENAPI=1 dub test` refreshes
+the file. For the TypeScript side see [static-files-and-openapi.md](static-files-and-openapi.md#the-document-as-a-file-for-a-typed-frontend).
 
 ## `andaime check`
 

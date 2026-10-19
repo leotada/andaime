@@ -101,10 +101,10 @@ void validateField(T, size_t i, V)(ref const V value, ref FieldErrors errs, ref 
             static if (is(V : const(char)[]))
             {
                 if (codePoints(value) < attr.value)
-                    errs.addPath(path, "string_too_short", strShort!(attr.value));
+                    errs.addPath(path, "string_too_short", strShort!(attr.value), FieldParams.ofLimit(attr.value));
             }
             else if (value.length < attr.value)
-                errs.addPath(path, "too_short", arrShort!(attr.value));
+                errs.addPath(path, "too_short", arrShort!(attr.value), FieldParams.ofLimit(attr.value));
         }
         else static if (is(typeof(attr) == maxLength))
         {
@@ -113,19 +113,19 @@ void validateField(T, size_t i, V)(ref const V value, ref FieldErrors errs, ref 
             static if (is(V : const(char)[]))
             {
                 if (codePoints(value) > attr.value)
-                    errs.addPath(path, "string_too_long", strLong!(attr.value));
+                    errs.addPath(path, "string_too_long", strLong!(attr.value), FieldParams.ofLimit(attr.value));
             }
             else if (value.length > attr.value)
-                errs.addPath(path, "too_long", arrLong!(attr.value));
+                errs.addPath(path, "too_long", arrLong!(attr.value), FieldParams.ofLimit(attr.value));
         }
         else static if (is(typeof(attr) == inRange))
         {
             static assert(__traits(isArithmetic, V),
                 "andaime: @inRange only applies to numbers (field '" ~ __traits(identifier, T.tupleof[i]) ~ "')");
             if (value < attr.min)
-                errs.addPath(path, "greater_than_equal", geMsg!(attr.min));
+                errs.addPath(path, "greater_than_equal", geMsg!(attr.min), FieldParams.ofBound(attr.min));
             else if (value > attr.max)
-                errs.addPath(path, "less_than_equal", leMsg!(attr.max));
+                errs.addPath(path, "less_than_equal", leMsg!(attr.max), FieldParams.ofBound(attr.max));
         }
     }
 }

@@ -7,7 +7,7 @@ import andaime.http.types;
 import andaime.http.ip : Cidr, parseCidr;
 import andaime.web.context;
 import andaime.web.params : HttpError;
-import andaime.web.dto : ValidationErrors;
+import andaime.web.dto : FieldError, ValidationErrors;
 import andaime.web.numtext : itoa, ctNum;
 import andaime.log : LogLevel, logEnabled, logAndaime, setLogSyncSource;
 import andaime.web.router;
@@ -50,11 +50,16 @@ alias ValidationErrorHandler = void delegate(Context ctx, ValidationErrors error
 /// Writes the body of an error into `ctx` (see `App.errorBody`). The framework builds it around the user's function.
 alias ErrorBodyHandler = void delegate(Context ctx, ref const ErrorInfo e) @system;
 
+/// Writes the message of a validation error in the app's own language (see `App.validationMessages`). The framework builds
+/// it around the user's function.
+alias ValidationMessages = string delegate(ref const FieldError e) @system;
+
 // @trusted: single entry points for user callbacks (their safety is the user's business)
 private void callUser(ErrorBodyHandler h, Context ctx, ref const ErrorInfo e) @trusted { h(ctx, e); }
 private void callUser(UserHandler h, Context ctx) @trusted { h(ctx); }
 private void callUser(ErrorHandler h, Context ctx, Exception e) @trusted { h(ctx, e); }
 private void callUser(ValidationErrorHandler h, Context ctx, ValidationErrors errors) @trusted { h(ctx, errors); }
+private string callUser(ValidationMessages h, ref const FieldError e) @trusted { return h(e); }
 
 /// A validation error handler set on an App or a Group, with what OpenAPI says about it.
 private final class ValidationHook
@@ -125,6 +130,10 @@ private enum string validationHandlerError(F) = is(F : ValidationErrorHandler)
     || is(F : void function(Context, ValidationErrors) @system) ? ""
     : "andaime: onValidationError takes a function (Context ctx, ValidationErrors errors) returning void, not '"
         ~ F.stringof ~ "'";
+
+/// One line saying what is wrong with a `validationMessages` function of type `F`, or "".
+private enum string validationMessagesError(F) = is(typeof((F f, ref const FieldError e) { string s = f(e); })) ? ""
+    : "andaime: validationMessages takes a function (ref const FieldError e) returning string, not '" ~ F.stringof ~ "'";
 
 /// A user's handler (delegate or function) as a `ValidationErrorHandler`.
 private ValidationErrorHandler toValidationHandler(F)(F h)
@@ -320,6 +329,8 @@ final class App
     private OpRecord[] ops;
     private ErrorMapping[] errorMappings;                  // see `mapError`
     private ErrorBody errorBodyOf;                         // see `errorBody`; `render` null: the default bodies
+    private ValidationMessages messages;                   // see `validationMessages`; null: the English texts
+    private string delegate(ref const FieldError) @safe messageOf; // `messages` as a @safe delegate, set once
 
     private bool frozen;
     private ProxyTrust proxyTrust;
@@ -466,6 +477,35 @@ final class App
             }, contentType, delegate string(ref Components cs) @safe { return schemaOf!Body(cs); });
         }
     }
+
+    /// The messages of the 422 in your language. `translate` gets each validation error with the `type` of its rule and
+    /// the numbers it was made of (`e.params`: `limit`, `bound`, `allowed`...) and returns its message; it is used for the
+    /// `msg` of the default body, for `ErrorInfo.message` (`errorBody`) and for the `message` of the errors a
+    /// `onValidationError` handler reads. Return `e.message`, the English text, for what you do not translate.
+    ///
+    ///     app.validationMessages((ref const FieldError e) {
+    ///         switch (e.type)
+    ///         {
+    ///             case "missing": return "campo obrigatório";
+    ///             case "string_too_short": return "mínimo de " ~ text(e.params.limit) ~ " caracteres";
+    ///             default: return e.message;
+    ///         }
+    ///     });
+    ///
+    /// OpenAPI is unaffected. The handler you pass is called on the error path only.
+    void validationMessages(F)(F translate)
+    {
+        static if (validationMessagesError!F.length)
+            static assert(0, validationMessagesError!F);
+        else
+        {
+            mustBeOpen();
+            messages = delegate string(ref const FieldError e) @system { return translate(e); };
+            messageOf = &callMessages;
+        }
+    }
+
+    private string callMessages(ref const FieldError e) @safe => callUser(messages, e);
 
     mixin ValidationSetters;
 
@@ -716,6 +756,7 @@ final class App
         {
             case MatchStatus.found:
                 ctx.onValidation = validationFor[r.handler];
+                ctx.messageOf = messageOf;
                 try
                     handlers[r.handler](ctx);
                 catch (Exception e) // caught here so the middlewares see the final status

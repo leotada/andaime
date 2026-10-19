@@ -8,7 +8,7 @@ import andaime.http.buffer;
 import andaime.http.response : ResponseSink;
 import andaime.http.websocket : WsDeflateFactory;
 import andaime.http.ip : IpAddress, Cidr, parseIp;
-import andaime.web.dto : FieldErrors;
+import andaime.web.dto : FieldError, FieldErrors;
 
 /// Values of the route's `{params}`, in the order they appear in the pattern.
 /// The handler wrapper knows at compile time which index is which name.
@@ -279,6 +279,9 @@ final class Context
     /// Set by `App` for the matched route: answers a request whose parameters failed to bind (`App.onValidationError`).
     /// Null: the default 422.
     package void delegate(Context) @safe onValidation;
+    /// Set by `App` when it has `validationMessages`: the message of one validation error, in the app's language. Null:
+    /// the English text the rule wrote.
+    package string delegate(ref const FieldError) @safe messageOf;
     /// The request id the logger adds to lines written during this request (set by the `requestId` middleware).
     package(andaime) const(char)[] requestIdForLog;
 
@@ -308,6 +311,7 @@ final class Context
         this.sink = sink;
         committed = aborted = false;
         onValidation = null;
+        messageOf = null;
         requestIdForLog = null;
         streamLength = -1;
         params.count = 0;
@@ -433,6 +437,11 @@ final class Context
         writeJson(response.body, value);
     }
 }
+
+// A `Context` lives in the GC heap, one per request in flight, and 4096 bytes is the largest size class below a page
+// multiple: one byte more doubles what 1,000 concurrent requests cost (the 30 MB ceiling in tools/check.sh). The sixteen
+// preallocated `FieldError`s are most of it (`FieldParams` is kept small for that reason).
+static assert(__traits(classInstanceSize, Context) <= 4096, "andaime: Context outgrew the GC's 4096-byte size class");
 
 /// Onion-style middleware: do something, call `next()`, do something after.
 /// The type is `@system` on purpose: it accepts `@safe` and `@system` delegates alike, so user code may

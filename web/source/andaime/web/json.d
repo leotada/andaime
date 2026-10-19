@@ -7,7 +7,7 @@ module andaime.web.json 2025;
 import andaime.http.buffer;
 import andaime.web.dto;
 import andaime.web.params : Optional, isOptional, isCharType, PatchField, isPatchField;
-import andaime.web.convert : parseInteger, parseFloat, parseErrorType, parseErrorMsg;
+import andaime.web.convert : parseInteger, parseFloat, parseErrorType, parseErrorMsg, parseErrorParams;
 import andaime.web.numtext : itoa;
 import andaime.http.utf8 : validUtf8;
 import andaime.http.texttype : isTextType, textFromString, textToString;
@@ -142,9 +142,10 @@ private void writeEnum(E)(ref ByteBuffer o, E v)
 
 /// Type error: records it and skips the value (parsing continues, to
 /// report all the wrong fields at once, like FastAPI).
-private bool typeMismatch(ref JsonReader r, ref FieldErrors errs, ref const FieldPath path, string type, string msg)
+private bool typeMismatch(ref JsonReader r, ref FieldErrors errs, ref const FieldPath path, string type, string msg,
+    FieldParams params = FieldParams.init)
 {
-    errs.addPath(path, type, msg);
+    errs.addPath(path, type, msg, params);
     return r.skipValue();
 }
 
@@ -163,38 +164,38 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
         else if (r.literal("false"))
             v = false;
         else
-            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T);
+            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T, parseErrorParams!T);
     }
     else static if (is(T == enum))
     {
         if (!r.peekIs('"'))
-            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T);
+            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T, parseErrorParams!T);
         const(char)[] raw;
         bool esc;
         if (!r.rawString(raw, esc))
             return false;
         if (!parseEnumWire(raw, v))
-            errs.addPath(path, parseErrorType!T, parseErrorMsg!T);
+            errs.addPath(path, parseErrorType!T, parseErrorMsg!T, parseErrorParams!T);
     }
     else static if (__traits(isIntegral, T) && !isCharType!T)
     {
         if (!r.peekNumber())
-            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T);
+            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T, parseErrorParams!T);
         const(char)[] tok;
         if (!r.number(tok))
             return false;
         if (!parseInteger(tok, v))
-            errs.addPath(path, parseErrorType!T, parseErrorMsg!T);
+            errs.addPath(path, parseErrorType!T, parseErrorMsg!T, parseErrorParams!T);
     }
     else static if (__traits(isFloating, T))
     {
         if (!r.peekNumber())
-            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T);
+            return typeMismatch(r, errs, path, parseErrorType!T, parseErrorMsg!T, parseErrorParams!T);
         const(char)[] tok;
         if (!r.number(tok))
             return false;
         if (!parseFloat(tok, v))
-            errs.addPath(path, parseErrorType!T, parseErrorMsg!T);
+            errs.addPath(path, parseErrorType!T, parseErrorMsg!T, parseErrorParams!T);
     }
     else static if (is(string : T)) // string, const(char)[]
     {
@@ -231,7 +232,7 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
         if (!decodeJsonString(raw, esc, decoded))
             return r.syntax();
         if (!textFromString(decoded, v))
-            errs.addPath(path, parseErrorType!T, parseErrorMsg!T);
+            errs.addPath(path, parseErrorType!T, parseErrorMsg!T, parseErrorParams!T);
     }
     else static if (is(T == Optional!U, U))
     {

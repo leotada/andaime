@@ -23,7 +23,7 @@ import andaime.http.multipart : FormCoding, FormContentType, MultipartPart, clas
 import andaime.http.types : QueryValues;
 import andaime.http.utf8 : validUtf8;
 import andaime.web.context : Context;
-import andaime.web.convert : percentDecode, parseScalarText, parseErrorType, parseErrorMsg;
+import andaime.web.convert : percentDecode, parseScalarText, parseErrorType, parseErrorMsg, parseErrorParams;
 import andaime.web.dto;
 import andaime.web.params : Optional, HttpError, isScalar, isScalarList, isPatchField;
 
@@ -236,7 +236,7 @@ private bool readOne(F)(ref const FieldPath path, Context ctx, const(char)[] raw
     }
     if (!parseScalarText(text, dest))
     {
-        ctx.errors.addPath(path, parseErrorType!F, parseErrorMsg!F);
+        ctx.errors.addPath(path, parseErrorType!F, parseErrorMsg!F, parseErrorParams!F);
         return false;
     }
     return true;
@@ -421,7 +421,7 @@ private bool readPartText(F)(ref const FieldPath path, Context ctx, ref Multipar
     }
     if (!parseScalarText(text, dest))
     {
-        ctx.errors.addPath(path, parseErrorType!F, parseErrorMsg!F);
+        ctx.errors.addPath(path, parseErrorType!F, parseErrorMsg!F, parseErrorParams!F);
         return false;
     }
     return true;
@@ -434,12 +434,14 @@ private void checkFileBounds(T, size_t i)(scope const(ubyte)[] bytes, Context ct
         static if (is(typeof(attr) == minLength))
         {
             if (bytes.length < attr.value)
-                ctx.errors.addPath(path, "bytes_too_short", "expected at least " ~ ctNum(attr.value) ~ " bytes");
+                ctx.errors.addPath(path, "bytes_too_short", "expected at least " ~ ctNum(attr.value) ~ " bytes",
+                    FieldParams.ofLimit(attr.value));
         }
         else static if (is(typeof(attr) == maxLength))
         {
             if (bytes.length > attr.value)
-                ctx.errors.addPath(path, "bytes_too_long", "expected at most " ~ ctNum(attr.value) ~ " bytes");
+                ctx.errors.addPath(path, "bytes_too_long", "expected at most " ~ ctNum(attr.value) ~ " bytes",
+                    FieldParams.ofLimit(attr.value));
         }
     }
 }

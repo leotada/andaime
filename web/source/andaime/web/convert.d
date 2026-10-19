@@ -3,6 +3,7 @@ module andaime.web.convert 2025;
 
 import andaime.web.params : isCharType;
 import andaime.web.numtext : ctNum, itoa;
+import andaime.http.fielderrors : FieldParams;
 import andaime.http.texttype : isTextType, textTypeInvalidMessage, textFromString;
 import andaime.http.naming : enumWireNames, parseEnumWire;
 public import andaime.http.numparse : parseInteger, parseFloat;
@@ -135,6 +136,26 @@ template parseErrorMsg(T)
         enum parseErrorMsg = textTypeInvalidMessage!T;
     else
         enum parseErrorMsg = "invalid value";
+}
+
+/// The numbers and names behind `parseErrorMsg!T`, for `FieldError.params`: the range of an integer type, the wire names
+/// of an enum. Nothing is set for the other types.
+template parseErrorParams(T)
+{
+    static if (is(T == enum))
+    {
+        private static immutable string[] names = enumWireNames!T;
+        static immutable FieldParams parseErrorParams = FieldParams.ofAllowed(names);
+    }
+    else static if (__traits(isIntegral, T))
+    {
+        static if (__traits(isUnsigned, T))
+            static immutable FieldParams parseErrorParams = FieldParams.ofRange(0, T.max);
+        else
+            static immutable FieldParams parseErrorParams = FieldParams.ofRange(T.min, T.max);
+    }
+    else
+        static immutable FieldParams parseErrorParams = FieldParams.init;
 }
 
 unittest

@@ -157,6 +157,7 @@ app.d(12): andaime: handler 'getUser' in GET /users/{id}: the route declares {id
 - ✅ **Return what you mean**: `void` → 204, `string` → text, structs/arrays → JSON, `@status(201)`, `Response`
 - ✅ **One-line compile errors** for every invalid handler signature, each pinned by a `tests/compile_fail` case
 - ✅ `PatchField` (omitted vs `null`), `Optional`, `JsonValue`, `Uuid` (v4/v7), `Timestamp` and `CalendarDate` (ISO 8601 in JSON, query and `timestamptz`/`date` columns): pure values in `andaime.values` that a domain may import
+- ✅ **Validation messages in your language**: every `FieldError` carries its rule's `type` and numbers, and `app.validationMessages(...)` writes the 422's `msg` (a pt-BR catalog is in the guide)
 - ✅ **One error format for the whole app**: `app.errorBody(...)` shapes mapped exceptions, `HttpError`, 404, 405, 422 and 500 (RFC 9457 ready-made)
 - ✅ **One naming policy for the project**: `versions "AndaimeNamingSnakeCase"` spells JSON, queries, OpenAPI and columns, with no attribute on your types
 - ✅ `Local!T` for middleware state, `copyAs!Dst(src)` for DTOs that differ by a few fields

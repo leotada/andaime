@@ -46,7 +46,8 @@ Conversion and validation errors become one **422** in FastAPI's (Pydantic v2's)
 
 - `loc` says where: `path`, `query`, `header`, `cookie` or `body`, then field names and array indexes
   (`["body","items",1,"code"]`).
-- `type` is a stable code for programs; `msg` is for people.
+- `type` is a stable code for programs; `msg` is for people, in English unless you set
+  [`validationMessages`](#messages-in-your-language-validationmessages).
 - At most 16 errors are listed; then a `too_many_errors` entry gives the count of the rest.
 
 | `type` | When |
@@ -211,6 +212,85 @@ given content type (`app.errorBody(&f, "application/json")`).
   `detail`, and an `errors` list for a 422.
 - The engine's own answers before any handler runs (431, 413...) have their body in `ServerConfig.errorBodies`
   ([configuration.md](configuration.md)).
+
+## Messages in your language: `validationMessages`
+
+The `msg` of a 422 is English. A `FieldError` also carries the `type` of its rule and the numbers the message was made of
+(`e.params`), so an app can write every message itself without parsing the English text. `app.validationMessages` takes a
+function from the error to its message; it is used for the `msg` of the default body, for `ErrorInfo.message` (so for
+`errorBody` and RFC 9457) and for the `message` of the errors an `onValidationError` handler reads. The function is called
+once per error, on the error path only. Return `e.message` for the cases you do not translate.
+
+```d
+// check
+import andaime;
+import std.conv : to;
+
+struct Signup
+{
+    @minLength(3) @maxLength(20) string name;
+    @inRange(18, 120) int age;
+    string[] tags;
+}
+
+string signup(JsonBody!Signup body_) => body_.value.name;
+
+/// A Brazilian Portuguese catalog, keyed by the rule's `type`.
+string ptBR(ref const FieldError e)
+{
+    switch (e.type)
+    {
+        case "missing": return "campo obrigatório";
+        case "string_too_short": return "mínimo de " ~ e.params.limit.to!string ~ " caracteres";
+        case "string_too_long": return "máximo de " ~ e.params.limit.to!string ~ " caracteres";
+        case "too_short": return "mínimo de " ~ e.params.limit.to!string ~ " itens";
+        case "too_long": return "máximo de " ~ e.params.limit.to!string ~ " itens";
+        case "greater_than_equal": return "deve ser maior ou igual a " ~ e.params.bound.to!string;
+        case "less_than_equal": return "deve ser menor ou igual a " ~ e.params.bound.to!string;
+        case "int_parsing": return "esperado um inteiro entre " ~ e.params.min.to!string ~ " e " ~ e.params.max.to!string;
+        case "float_parsing": return "esperado um número";
+        case "bool_parsing": return "esperado verdadeiro ou falso";
+        case "enum":
+            string r = "esperado um de: ";
+            foreach (i, w; e.params.allowed)
+                r ~= (i ? ", " : "") ~ w;
+            return r;
+        case "string_type": return "esperado um texto";
+        case "list_type": return "esperado uma lista";
+        case "dict_type", "model_type": return "esperado um objeto";
+        case "json_invalid": return "JSON inválido";
+        case "too_many_errors": return e.params.count.to!string ~ " erros a mais não mostrados";
+        default: return e.message; // value_error (a text type's own message), percent_encoding, string_unicode...
+    }
+}
+
+void main()
+{
+    auto app = new App;
+    app.validationMessages(&ptBR);
+    app.post!("/signup", signup);
+    // {"name":"ab","age":10,"tags":[]} -> 422 {"detail":[
+    //   {"type":"string_too_short","loc":["body","name"],"msg":"mínimo de 3 caracteres"},
+    //   {"type":"greater_than_equal","loc":["body","age"],"msg":"deve ser maior ou igual a 18"}]}
+}
+```
+
+`type` stays the machine-readable code, and OpenAPI is unaffected. `e.params` has what each rule used; the others are zero:
+
+| `type` | `e.params` |
+|--------|-----------|
+| `string_too_short`, `string_too_long` | `limit`: characters (code points) |
+| `too_short`, `too_long` | `limit`: items |
+| `bytes_too_short`, `bytes_too_long` | `limit`: bytes |
+| `greater_than_equal`, `less_than_equal` | `bound`: the minimum, or the maximum, of `@inRange` |
+| `int_parsing` | `min`, `max`: the range of the integer type |
+| `enum` | `allowed`: the wire names |
+| `too_many_errors` | `count`: errors not shown (the function gets an error with only `type` and `params`) |
+
+`e.location` and `e.locJson` tell fields apart when one `type` needs two sentences (`missing` with `e.location == "body"` and
+no `locJson` is the empty body). A text type's `value_error` carries the text type's `invalidMessage`; translate it by
+returning your own for `value_error`, or keep it. `onValidationError` handlers keep priority over the body, and see the
+translated messages in `errors.items`.
 
 ## Signature mistakes are compile errors
 

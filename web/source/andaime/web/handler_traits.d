@@ -20,7 +20,7 @@ module andaime.web.handler_traits 2025;
 import andaime.http.types;
 import andaime.web.context;
 import andaime.web.params;
-import andaime.web.dto : FieldErrors, ctNum;
+import andaime.web.dto : FieldError, FieldErrors, FieldParams, ctNum;
 import andaime.web.numtext : itoa;
 import andaime.http.utf8 : validUtf8;
 import andaime.web.convert;
@@ -440,7 +440,7 @@ private bool bindText(T)(Context ctx, const(char)[] raw, bool plusIsSpace, strin
     }
     if (!parseScalarText(text, dest))
     {
-        ctx.errors.add(loc, name, parseErrorType!T, parseErrorMsg!T);
+        ctx.errors.add(loc, name, parseErrorType!T, parseErrorMsg!T, parseErrorParams!T);
         return false;
     }
     return true;
@@ -465,7 +465,7 @@ private bool bindListItem(T)(Context ctx, const(char)[] raw, string name, size_t
     }
     if (!parseScalarText(text, dest))
     {
-        ctx.errors.addIndexed("query", name, index, parseErrorType!T, parseErrorMsg!T);
+        ctx.errors.addIndexed("query", name, index, parseErrorType!T, parseErrorMsg!T, parseErrorParams!T);
         return false;
     }
     return true;
@@ -484,6 +484,11 @@ private bool bindBody(T)(Context ctx, ref T dest)
 /// Answers a request whose parameters failed to bind: the route's `onValidationError` handler, or the default 422.
 private void reportValidationErrors(Context ctx)
 {
+    // the app's language (`App.validationMessages`): once, here, so that the default body, `errorBody` and an
+    // `onValidationError` handler all read the same messages
+    if (ctx.messageOf !is null)
+        foreach (ref e; ctx.errors.items[0 .. ctx.errors.count])
+            e.message = ctx.messageOf(e);
     if (ctx.onValidation !is null)
         ctx.onValidation(ctx);
     else
@@ -521,9 +526,22 @@ void writeDefaultValidationErrors(Context ctx)
     {
         if (ctx.errors.count)
             o.put(',');
-        o.put(`{"type":"too_many_errors","loc":[],"msg":"`);
-        o.putUint(ctx.errors.dropped);
-        o.put(` more errors not shown"}`);
+        o.put(`{"type":"too_many_errors","loc":[],"msg":`);
+        if (ctx.messageOf !is null)
+        {
+            FieldError more;
+            more.type = "too_many_errors";
+            more.params = FieldParams.ofCount(ctx.errors.dropped);
+            more.message = "";
+            writeJsonString(*o, ctx.messageOf(more));
+        }
+        else
+        {
+            o.put('"');
+            o.putUint(ctx.errors.dropped);
+            o.put(` more errors not shown"`);
+        }
+        o.put('}');
     }
     o.put("]}");
 }

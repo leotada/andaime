@@ -27,6 +27,81 @@ struct LocPart
     bool isIndex;
 }
 
+/// The numbers and names a rule's message is made of, so that an application can write the message in its own language
+/// (`App.validationMessages`) without taking the English text apart. Only the members of the rule's `type` are set; the
+/// rest are zero, and `limit`/`count` and `bound`/`min` share their storage (read the ones the table names for the `type`).
+/// Stored inline in the error: reporting one allocates nothing beyond what it always did, and it is kept to 40 bytes
+/// because a `Context` holds sixteen errors and must stay under the GC's 4096-byte page class (1,000 requests in flight
+/// cost 4 MB more when it did not).
+///
+/// | `type` | set |
+/// |--------|-----|
+/// | `string_too_short`, `string_too_long` | `limit`: characters |
+/// | `too_short`, `too_long` | `limit`: items |
+/// | `bytes_too_short`, `bytes_too_long` | `limit`: bytes |
+/// | `greater_than_equal`, `less_than_equal` | `bound`: the minimum, or the maximum, of `@inRange` |
+/// | `int_parsing` | `min`, `max`: the range of the integer type |
+/// | `enum` | `allowed`: the wire names |
+/// | `too_many_errors` | `count`: errors not shown |
+struct FieldParams
+{
+    union
+    {
+        ulong limit;
+        size_t count;
+    }
+    union
+    {
+        double bound;
+        long min;
+    }
+    ulong max;
+    const(string)[] allowed;
+
+    /// A length or count rule: `limit` characters, items or bytes.
+    static FieldParams ofLimit(ulong n) pure nothrow @nogc @safe
+    {
+        FieldParams p;
+        p.limit = n;
+        return p;
+    }
+
+    /// An `@inRange` bound.
+    static FieldParams ofBound(double v) pure nothrow @nogc @safe
+    {
+        FieldParams p;
+        p.bound = v;
+        return p;
+    }
+
+    /// The range of an integer type.
+    static FieldParams ofRange(long min, ulong max) pure nothrow @nogc @safe
+    {
+        FieldParams p;
+        p.min = min;
+        p.max = max;
+        return p;
+    }
+
+    /// The wire names of an enum.
+    static FieldParams ofAllowed(return scope const(string)[] names) pure nothrow @nogc @safe
+    {
+        FieldParams p;
+        p.allowed = names;
+        return p;
+    }
+
+    /// Errors not shown.
+    static FieldParams ofCount(size_t n) pure nothrow @nogc @safe
+    {
+        FieldParams p;
+        p.count = n;
+        return p;
+    }
+}
+
+static assert(FieldParams.sizeof == 40);
+
 /// A validation error, in FastAPI/Pydantic v2 shape: `{"type":..., "loc":[location, ...], "msg":...}`.
 struct FieldError
 {
@@ -35,6 +110,7 @@ struct FieldError
     string type;      /// machine-readable code ("missing", "int_parsing", "string_too_short"...)
     string message;
     ErrorSource source; /// where the input came from (see `ErrorSource`)
+    FieldParams params; /// what the rule's message was made of (see `FieldParams`)
 
     /// The rest of `loc` as keys and indexes: `items`, `1`, `code`. Allocates; meant for error handlers. A path cut at
     /// `FieldPath.maxDepth` ends with the key `...`.
@@ -138,36 +214,38 @@ struct FieldErrors
 
     /// Error on a single named input (query parameter, header, path segment). An empty `name` means `loc` is just
     /// `[location]`.
-    void add(string location, scope const(char)[] name, string type, string message) nothrow @safe
+    void add(string location, scope const(char)[] name, string type, string message, FieldParams params = FieldParams.init)
+        nothrow @safe
     {
         if (count >= capacity)
         {
             dropped++;
             return;
         }
-        items[count++] = FieldError(location, name.length ? jsonQuote(name) : null, type, message, sourceOf(location));
+        items[count++] = FieldError(location, name.length ? jsonQuote(name) : null, type, message, sourceOf(location), params);
     }
 
     /// Error on one element of a list given as repeated query parameters: `loc` is `["query", name, index]`.
-    void addIndexed(string location, scope const(char)[] name, size_t index, string type, string message) nothrow @safe
+    void addIndexed(string location, scope const(char)[] name, size_t index, string type, string message,
+        FieldParams params = FieldParams.init) nothrow @safe
     {
         if (count >= capacity)
         {
             dropped++;
             return;
         }
-        items[count++] = FieldError(location, jsonQuote(name) ~ "," ~ ctNum(index), type, message, sourceOf(location));
+        items[count++] = FieldError(location, jsonQuote(name) ~ "," ~ ctNum(index), type, message, sourceOf(location), params);
     }
 
     /// Error somewhere in a JSON body.
-    void addPath(ref const FieldPath path, string type, string message) nothrow @safe
+    void addPath(ref const FieldPath path, string type, string message, FieldParams params = FieldParams.init) nothrow @safe
     {
         if (count >= capacity)
         {
             dropped++;
             return;
         }
-        items[count++] = FieldError(path.location, path.render(), type, message, path.source);
+        items[count++] = FieldError(path.location, path.render(), type, message, path.source, params);
     }
 
     /// The errors as a handler sees them (`App.onValidationError`).

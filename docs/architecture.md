@@ -196,6 +196,25 @@ What does not join: a query inside `offload` (another thread; andaime asserts on
 request). `PgConfig.requireTransaction` makes a statement outside any unit of work an error, for teams that want every
 write inside one.
 
+**Why ambient, and not a typed transaction per feature.** The other design hands the work an interface of repositories
+bound to one transaction (`interface CompanyTx { CompanyRepository companies(); MembershipRepository memberships(); }`,
+`UnitOfWork!CompanyTx.run((CompanyTx tx) { tx.companies.add(...); })`), so the compiler checks that the repositories
+used are the transaction's. Both were built on the companies feature and measured:
+
+| | ambient (kept) | typed `Tx` |
+|---|---|---|
+| code of the feature (use cases, both adapters, tests) | 307 lines | 367 lines (+20%) |
+| per feature, on top | nothing | a `Tx` interface, a Postgres and a memory implementation, a `Tx` fake per test |
+| read use cases | call the repository | wrap the call in `uow.readOnly((tx) { result = ...; })` |
+| a transaction across two features | any repositories join | a new `Tx` interface combining both |
+| type-check of the app (source and tests) | 371 ms | 371 ms |
+| 3,000 `CreateCompany` on Postgres | 942 ms | 944 ms |
+
+Same speed and compile time; the typed design costs code in every feature and makes cross-feature transactions a new
+interface each time. What it buys, the compiler refusing a repository from outside the transaction, the ambient design
+gets from the pool itself (a repository over the worker's pool always joins), with an assertion for `offload` and
+`requireTransaction` for statements outside any unit of work.
+
 ## Tenants and the acting user
 
 `andaime new --tenant` adds what a multi-tenant application needs from the start, and a feature that uses it

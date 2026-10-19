@@ -29,7 +29,7 @@ source/
 
 | Layer | May import |
 |-------|-----------|
-| `domain/` | druntime, Phobos, `andaime.values` (`Optional`, `PatchField`, `JsonValue`, `Uuid`: values with no I/O) |
+| `domain/` | druntime, Phobos, `andaime.values` (`Optional`, `PatchField`, `JsonValue`, `Uuid`, `Timestamp`, `CalendarDate`: values with no I/O) |
 | `usecases/` | `domain/`, `andaime.values` |
 | `adapters/` | `usecases/`, `domain/`, andaime |
 | `app.d`, `main.d`, `jobs.d`, `config.d` | anything |
@@ -145,7 +145,8 @@ Changed, because of andaime and D:
   OpenAPI and columns spell `createdAt` as `created_at`, and the domain's structs carry no andaime attribute
   ([requests.md](requests.md#one-policy-for-the-whole-project)). Where a DTO differs from a domain type by a few fields,
   `copyAs!UserOut(user)` copies the rest.
-- **Time, identifiers and tokens are ports.** `usecases/system.d` declares `Clock`, `IdGenerator` and `TokenGenerator`;
+- **Time, identifiers and tokens are ports.** `usecases/system.d` declares `Clock` (it returns a `Timestamp`),
+  `IdGenerator` and `TokenGenerator`;
   `adapters/system/` implements them over the system (`uuid7()`, the secure random generator) and `tests/fakes.d` gives
   fixed ones, so a use case that stamps a date or creates an id is tested exactly.
 

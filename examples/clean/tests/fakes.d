@@ -4,23 +4,21 @@ module tests.fakes 2025;
 
 @safe:
 
-import std.datetime.date : DateTime;
-import std.datetime.systime : SysTime;
-import std.datetime.timezone : UTC;
+import andaime.values.timestamp : Timestamp;
 import andaime.values.uuid : Uuid;
 import usecases.system : Clock, IdGenerator, TokenGenerator;
 
 /// A clock that only moves when the test says so.
 final class FixedClock : Clock
 {
-    SysTime current;
+    Timestamp current;
 
-    this(SysTime at = SysTime(DateTime(2026, 1, 1, 12, 0, 0), UTC()))
+    this(Timestamp at = Timestamp.fromUnixMicros(1_767_268_800_000_000)) // 2026-01-01T12:00:00Z
     {
         current = at;
     }
 
-    SysTime now() => current;
+    Timestamp now() => current;
 }
 
 /// Identifiers 00000000-0000-7000-8000-000000000001, ...0002, ...: in order, like real version 7 ones.

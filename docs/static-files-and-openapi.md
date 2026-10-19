@@ -61,7 +61,7 @@ Stream export_() { ... }                               // the media type of a st
   ([validation.md](validation.md#one-body-format-for-every-error-errorbody)).
 - Schema names are the struct names. Two structs with the same name in different modules get different names (the second uses
   its module path); template instances become `Page_User`; `@schemaName("UserOut")` picks a name.
-- [Text types](requests.md#your-own-types-uuids-dates-money) are strings, with `format` from their `openApiFormat`.
+- [Text types](requests.md#your-own-types-uuids-dates-money) are strings, with `format` from their `openApiFormat` (`uuid`, `date-time` for a `Timestamp`, `date` for a `CalendarDate`).
 
 `OpenApiInfo` fields: `title`, `version_`, `description`, `jsonPath` (`"/openapi.json"`; `""` = not served), `docsPath`
 (`"/docs"`; `""` = no Swagger UI page), `swaggerUiBase`. `/docs` loads Swagger UI from a pinned jsDelivr release with

@@ -376,6 +376,35 @@ auto key = uuid4();  // random (version 4)
 `uuid7` values always increase. `Uuid.v4(randomBytes)` and `Uuid.v7(unixMs, randomBytes)` build one from given bits, for a
 domain that receives randomness and time through a port. `id.version_`, `id.unixMillis` (v7), `id.toString`, `<`.
 
+## Dates and times: `Timestamp` and `CalendarDate`
+
+Two more text types in `andaime.values` (also in `import andaime;`), for the two things nearly every API sends:
+
+```d
+struct Meeting { string title; Timestamp startsAt; CalendarDate day; Optional!Timestamp endedAt; }
+
+Meeting[] between(CalendarDate from, Timestamp until) { ... }   // ?from=2026-10-19&until=2026-10-19T12:00:00Z
+```
+
+- **`Timestamp`** is an instant with the UTC offset it was written in, to the microsecond. On the wire it is ISO 8601 /
+  RFC 3339: `2026-10-19T12:00:00Z`, `2026-10-19T09:00:00.25-03:00`. It is written as `Z` for offset zero and `±hh:mm`
+  otherwise, in the value's own offset; the fraction is left out when it is zero, otherwise it has up to 6 digits and no
+  trailing zeros (`.25`, `.000001`). It reads that and also Postgres' text (`2026-10-19 12:00:00.123456+00`), a space or
+  `T`, `Z` or an offset of `±hh`, `±hhmm`, `±hh:mm`; more than six fraction digits are rounded to the microsecond. A time
+  without an offset is not an instant and is a 422 (`expected a date-time with an offset, like 2026-10-19T12:00:00Z`).
+  In a query string write `+` as `%2B`. `==`, `<` and `toHash` look at the instant only (`12:00Z == 09:00-03:00`), like
+  `SysTime`; `offsetMinutes` and `toString` keep the offset. `utc`, `withOffset(minutes)`, `date`, `ts + 5.minutes`,
+  `ts - other` (a `Duration`) and `Timestamp.fromUnixMicros(us, offsetMinutes)` do what they say. Years 0001 to 9999.
+- **`CalendarDate`** is a day, `2026-10-19`, with no time and no zone. A day that does not exist (`2023-02-29`) is a 422
+  (`expected a date like 2026-10-19 (YYYY-MM-DD)`). `year`, `month`, `day`, `CalendarDate.fromYmd(y, m, d, out date)` and
+  `daysSinceEpoch`.
+- OpenAPI says `format: date-time` and `format: date`. Database columns: see [database.md](database.md#dates-and-times).
+- Both convert to `std.datetime` (`toSysTime`, `Timestamp.fromSysTime(t)`, `toDate`, `CalendarDate.fromDate(d)`), which is
+  only compiled if you call them.
+- **The clock is not here.** Reading "now" is an effect, so, like random bytes for a `Uuid`, a domain takes it through a
+  port (`Clock.now()` returns a `Timestamp` in the [clean template](architecture.md)); the system clock is
+  `Timestamp.fromSysTime(Clock.currTime(UTC()))`.
+
 ## Your own types (dates, money)
 
 A struct that can read and write itself as text works wherever a string does: path, query, header, `Query!T`/`Form!T` fields,
@@ -395,11 +424,12 @@ Order[] since(Day day) { ... }                            // a bad day is a 422 
 struct Order { Uuid id; Day placed; }                     // JSON strings with "format": "date" in OpenAPI
 ```
 
-Inside `fromString`/`toString` use any library you like (`std.datetime`).
+Inside `fromString`/`toString` use any library you like (`std.datetime`). For instants and calendar days you do not need
+to write one: see `Timestamp` and `CalendarDate` above.
 
 ## Values a domain may import: `andaime.values`
 
-`Optional`, `PatchField`, `JsonValue` (with `parseJson` and `toString`) and `Uuid` are plain values, with no I/O and no
+`Optional`, `PatchField`, `JsonValue` (with `parseJson` and `toString`), `Uuid`, `Timestamp` and `CalendarDate` are plain values, with no I/O and no
 dependency on the web, engine or database layers. They live in `andaime.values` (in the `andaime:http` package), so a
 project's `domain/` and `usecases/` may import them without importing the framework. The old module paths
 (`andaime.http.optional`, `andaime.http.patchfield`, `andaime.web.jsonvalue`) still work. `fromJson!T`, `toJson` and

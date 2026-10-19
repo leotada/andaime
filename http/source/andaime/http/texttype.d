@@ -11,7 +11,8 @@
 ///     }
 ///
 /// Nothing is registered anywhere: the compiler checks the shape. The core never needs `std.datetime` or any other
-/// library; an application type may use whatever it likes inside `fromString`/`toString`.
+/// library (`andaime.values` has `Uuid`, `Timestamp` and `CalendarDate` as text types); an application type may use
+/// whatever it likes inside `fromString`/`toString`.
 module andaime.http.texttype 2025;
 
 @safe:

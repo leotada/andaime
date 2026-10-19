@@ -51,6 +51,8 @@ void touch(int id) { db.exec("update users set seen_at = now() where id = $1", i
 - An enum travels as its [wire name](requests.md#wire-names-naming-and-wirename), the same text as in JSON: it fits a
   Postgres enum (`$1::task_type`, whose labels are the wire names) or a `text` column, and a column reads back the same way
   (a label that is no wire name throws).
+- Dates and times: a [`Timestamp`](requests.md#dates-and-times-timestamp-and-calendardate) is a `timestamptz` parameter
+  (`$1::timestamptz`; it is sent with its offset) and a `CalendarDate` a `date` one.
 - Arrays of those are Postgres arrays: `db.query("select * from users where id = any($1::uuid[])", ids)`. Every element is
   quoted and escaped, an empty `Optional` element is `NULL`, and an empty array is `{}` (it matches nothing). Cast the
   parameter (`$1::int[]`, `$1::text[]`) so the server knows the element type. `ubyte[]` is refused at compile time (bytea
@@ -77,6 +79,11 @@ void touch(int id) { db.exec("update users set seen_at = now() where id = $1", i
 
   Prefixes nest (`post_owner_id` for an `owner` inside a `post`). A missing prefixed column throws like any other, and a
   NULL in a non-`Optional` field of a struct that is there is the usual error.
+- <a id="dates-and-times"></a>`timestamptz` and `date` columns read into `Timestamp` and `CalendarDate` (and `Optional!` of them, and
+  `Timestamp[]` / `CalendarDate[]` for `timestamptz[]` / `date[]`). Postgres prints a `timestamptz` in the session's time
+  zone (`2026-10-19 09:00:00.123456-03`), and the `Timestamp` keeps that offset; since `==` compares the instant, the value
+  you stored equals the one you read back whatever the zone. `timestamp` (without zone), `infinity` and `-infinity` are
+  not instants and throw like any value that does not fit. A microsecond is what Postgres keeps, so nothing is lost.
 - Array columns read into `T[]` (`int[]`, `string[]`, `Uuid[]`, an enum...): `uuid[]`, `text[]`, `int[]`, and
   `array_agg(...)`. A `NULL` element needs `Optional!T[]`; a multidimensional array throws (read it as `string`).
 - A `json`/`jsonb` column reads into `Json!T` (from `andaime.web`): `Json!(TagRef[]) tags` decodes the text with the rules of a

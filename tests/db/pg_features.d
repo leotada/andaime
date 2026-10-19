@@ -487,6 +487,78 @@ void testLibraryUuid()
     ok("Uuid: a uuid column through parameters and rowsAs");
 }
 
+/// andaime's `Timestamp` and `CalendarDate` (text types) as `timestamptz` and `date` columns and parameters, arrays
+/// included, in the session time zones Postgres prints them in.
+void testTimeValues()
+{
+    import andaime.values.calendardate : CalendarDate;
+    import andaime.values.optional : Optional;
+    import andaime.values.timestamp : Timestamp;
+
+    static Timestamp ts(string s)
+    {
+        Timestamp t;
+        assert(Timestamp.fromString(s, t), s);
+        return t;
+    }
+
+    static CalendarDate day(string s)
+    {
+        CalendarDate d;
+        assert(CalendarDate.fromString(s, d), s);
+        return d;
+    }
+
+    struct Row { long id; Timestamp at; CalendarDate day; Optional!Timestamp done; }
+    struct Lists { Timestamp[] ats; CalendarDate[] days; }
+
+    auto c = connect();
+    scope (exit) c.shutdown();
+    c.exec("set time zone 'UTC'");
+    c.exec("create temp table t_time(id bigint primary key, at timestamptz not null, day date not null, done timestamptz)");
+    auto a = ts("2026-10-19T12:00:00.123456Z"), b = ts("2024-02-29T23:59:59.000001-03:00");
+    c.exec("insert into t_time values (1, $1, $2, null), (2, $3, $4, $1)", a, day("2024-02-29"), b, day("0001-01-01"));
+
+    auto rows = c.query("select id, at, day, done from t_time order by id").rowsAs!Row;
+    assert(rows.length == 2);
+    assert(rows[0].at == a && rows[0].day == day("2024-02-29") && !rows[0].done.has);
+    assert(rows[1].at == b && rows[1].at.toString == "2024-03-01T02:59:59.000001Z", rows[1].at.toString);
+    assert(rows[1].day.toString == "0001-01-01" && rows[1].done.get == a);
+    assert(c.query("select at::text from t_time where id = 1").get!string(0, 0) == "2026-10-19 12:00:00.123456+00");
+
+    // the session's offset, with minutes, and its own rules
+    c.exec("set time zone 'Asia/Kolkata'");
+    auto k = c.query("select at from t_time where id = 1").get!Timestamp(0, 0);
+    assert(k.toString == "2026-10-19T17:30:00.123456+05:30" && k == a, k.toString);
+    c.exec("set time zone 'America/Sao_Paulo'");
+    k = c.query("select at from t_time where id = 1").get!Timestamp(0, 0);
+    assert(k.toString == "2026-10-19T09:00:00.123456-03:00" && k == a, k.toString);
+    c.exec("set time zone 'UTC'");
+
+    // arrays, read and sent
+    auto lists = c.query("select array_agg(at order by id) as ats, array_agg(day order by id) as days from t_time")
+        .rowsAs!Lists;
+    assert(lists[0].ats == [a, b.utc] && lists[0].days == [day("2024-02-29"), day("0001-01-01")]);
+    assert(c.query("select count(*)::int from t_time where at = any($1::timestamptz[])", [a, b]).get!int(0, 0) == 2);
+    assert(c.query("select count(*)::int from t_time where day = any($1::date[])", [day("2024-02-29")]).get!int(0, 0) == 1);
+
+    // a parameter's text is read back by the server: the offset and the microseconds survive
+    auto far = c.query("select $1::timestamptz", ts("1999-12-31T23:59:59.999999+14:00")).get!Timestamp(0, 0);
+    assert(far.toString == "1999-12-31T09:59:59.999999Z", far.toString);
+
+    // what a Timestamp cannot hold is an error, not a wrong value
+    foreach (sql; ["select 'infinity'::timestamptz", "select '2026-10-19 12:00'::timestamp", "select 'infinity'::date"])
+    {
+        bool threw;
+        try
+            c.query(sql).get!Timestamp(0, 0);
+        catch (PgError e)
+            threw = true;
+        assert(threw, sql);
+    }
+    ok("Timestamp and CalendarDate: timestamptz and date columns, parameters and arrays, in three session time zones");
+}
+
 int rowsIn(PgConn c, string table) => c.query("select count(*)::int from " ~ table).get!int(0, 0);
 
 /// The ambient transaction, on the calling thread (no fiber: the thread's table): code that only holds the pool joins it.
@@ -724,6 +796,7 @@ void main()
     testRollbackHarness();
     testStaleConnections();
     testLibraryUuid();
+    testTimeValues();
     testAmbient();
     testAmbientFibers();
     printf("all Postgres feature tests passed\n");

@@ -182,6 +182,10 @@ s_json_fuzz() {
     $DC $I -Itests/fuzz -i -run tests/fuzz/fuzz_json.d 300000
 }
 
+s_time_fuzz() {
+    $DC $I -Itests/fuzz -i -run tests/fuzz/fuzz_time.d 300000
+}
+
 s_example_tests() {
     $DC -unittest -main $I -i -run examples/hello/source/app.d > /dev/null
     # examples/clean, as `dub test` runs it: source/ (but main.d) and tests/; the access log of its requests is dropped
@@ -522,6 +526,7 @@ section "HTTP parser: attack corpus and mutation fuzz" s_parser
 section "HTTP/2: session (frames, streams, flow control, errors, limits) and mutation fuzz" s_h2_session
 section "WebSocket: message layer mutation fuzz (frames, fragments, control frames, close codes, limits)" s_ws_session
 section "JSON reader: mutation fuzz (JsonValue round trip, depth limit, typed decode)" s_json_fuzz
+section "Timestamp and CalendarDate text: mutation fuzz (parse, write, parse again)" s_time_fuzz
 section "example tests (TestClient, no network)" s_example_tests
 section "andaime CLI end to end (templates, generators, routes, check; examples/clean is their output)" s_cli
 section "hot path without GC allocation (HTTP/1.1, HTTP/2, WebSocket messages)" s_hot_path

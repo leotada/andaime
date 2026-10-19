@@ -21,7 +21,7 @@ struct CompanyOut
 {
     Uuid id;
     string name;
-    string createdAt;
+    Timestamp createdAt;
 }
 
 /// One member, as a client sees it.
@@ -29,12 +29,12 @@ struct MemberOut
 {
     long userId;
     Role role;
-    string joinedAt;
+    Timestamp joinedAt;
 }
 
-CompanyOut toOut(Company c) => CompanyOut(c.id, c.name, c.createdAt.toISOExtString);
+CompanyOut toOut(Company c) => CompanyOut(c.id, c.name, c.createdAt);
 
-MemberOut toOut(Membership m) => MemberOut(m.userId, m.role, m.joinedAt.toISOExtString);
+MemberOut toOut(Membership m) => MemberOut(m.userId, m.role, m.joinedAt);
 
 /// The `/companies` routes; `app.d` mounts them under `/api/v1`, behind the authentication middleware.
 final class CompanyController

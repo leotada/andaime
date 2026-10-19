@@ -5,13 +5,13 @@ module usecases.system 2025;
 
 @safe:
 
-import std.datetime.systime : SysTime;
+import andaime.values.timestamp : Timestamp;
 import andaime.values.uuid : Uuid;
 
 /// The current time.
 interface Clock
 {
-    SysTime now();
+    Timestamp now();
 }
 
 /// New identifiers: time-ordered UUIDs (version 7), good primary keys.

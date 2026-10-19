@@ -3,7 +3,7 @@ module domain.companies 2025;
 
 @safe:
 
-import std.datetime.systime : SysTime;
+import andaime.values.timestamp : Timestamp;
 import andaime.values.uuid : Uuid;
 import domain.errors : RuleViolation;
 import domain.tenancy : Role, Tenant;
@@ -13,7 +13,7 @@ struct Company
 {
     Uuid id;
     string name;
-    SysTime createdAt;
+    Timestamp createdAt;
 
     Tenant tenant() const pure nothrow => Tenant(id);
 }
@@ -30,7 +30,7 @@ struct Membership
     Uuid companyId;
     long userId;
     Role role;
-    SysTime joinedAt;
+    Timestamp joinedAt;
 }
 
 /// The business rules of a new company; throws `RuleViolation`.

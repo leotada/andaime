@@ -285,7 +285,7 @@ struct prefix
     string value;
 }
 
-/// The column of a row field when it differs from the field's name: `@column("created_at") SysTime created;`
+/// The column of a row field when it differs from the field's name: `@column("created_at") Timestamp created;`
 /// (see `PgResult.rowsAs`; `@naming` on the struct names all of its fields at once).
 struct column
 {

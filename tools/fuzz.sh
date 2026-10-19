@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Fuzzing with libFuzzer + AddressSanitizer (needs LDC).
-# Usage: tools/fuzz.sh [seconds] [parse|h2|ws|json]   (default: 60 s, the HTTP/1 parser; ws: the WebSocket message layer;
-# json: JsonValue and a typed decode).
+# Usage: tools/fuzz.sh [seconds] [parse|h2|ws|json|time]   (default: 60 s, the HTTP/1 parser; ws: the WebSocket message layer;
+# json: JsonValue and a typed decode; time: Timestamp and CalendarDate text).
 # Findings go to tests/fuzz/crashes/.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -37,8 +37,14 @@ case "$target" in
         leaks="detect_leaks=0:"
         ldmd2 -Ihttp/source -Iweb/source -Itests/fuzz -i -run tests/fuzz/fuzz_json.d --seeds "$corpus"
         maxlen=8192 ;;
+    time)
+        # same as ws: druntime is started by the target (rt_init)
+        extra="-detect_leaks=0"
+        leaks="detect_leaks=0:"
+        ldmd2 -Ihttp/source -Itests/fuzz -i -run tests/fuzz/fuzz_time.d --seeds "$corpus"
+        maxlen=64 ;;
     *)
-        echo "unknown target: $target (parse, h2, ws or json)"; exit 2 ;;
+        echo "unknown target: $target (parse, h2, ws, json or time)"; exit 2 ;;
 esac
 ldmd2 -g -Ihttp/source -Iweb/source -Itests/fuzz -i -fsanitize=fuzzer,address -of"/tmp/andaime_fuzz_$target" "tests/fuzz/libfuzzer_$target.d"
 cd tests/fuzz/crashes

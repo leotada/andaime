@@ -366,10 +366,34 @@ template jobError(T)
     static if (!is(T == struct))
         enum string jobError = jobMsg(jobName!T, "must be a struct");
     else
-        enum string jobError = jobStructError!T;
+        enum string jobError = jobStructError!(T, true);
 }
 
-private template jobStructError(T)
+/// Like `jobError`, for a payload that may have no `perform` of its own: its handler is registered in `JobHandlers`
+/// (`handlers.handle!T(handler)`). A `perform` it does have must still be valid.
+template jobPayloadError(T)
+{
+    static if (!is(T == struct))
+        enum string jobPayloadError = jobMsg(jobName!T, "must be a struct");
+    else
+        enum string jobPayloadError = jobStructError!(T, false);
+}
+
+/// True when the job struct has a valid `void perform(ref JobContext ctx)` of its own.
+template hasOwnPerform(T)
+{
+    enum bool hasOwnPerform = () {
+        bool found;
+        static if (is(T == struct) && __traits(hasMember, T, "perform")
+            && __traits(compiles, __traits(getOverloads, T, "perform")))
+            static foreach (fn; __traits(getOverloads, T, "perform"))
+                static if (isPerformMethod!fn)
+                    found = true;
+        return found;
+    }();
+}
+
+private template jobStructError(T, bool needPerform)
 if (is(T == struct))
 {
     enum string jobStructError = () {
@@ -413,7 +437,7 @@ if (is(T == struct))
                 }}
             }
         }
-        if (!found)
+        if (!found && needPerform)
             return jobMsg(fqn, "must define 'void perform(ref JobContext ctx) @safe'");
         if (systemFn)
             return jobMsg(fqn, "perform is @system; mark it @safe");
@@ -467,7 +491,7 @@ private template jobSetProblem(Jobs...)
     enum string jobSetProblem = () {
         static foreach (J; Jobs)
         {{
-            enum one = jobError!J;
+            enum one = jobPayloadError!J; // a handled payload has no perform of its own
             static if (one.length)
                 return one;
         }}

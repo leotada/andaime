@@ -84,6 +84,33 @@ struct Slow
     }
 }
 
+shared int handled;
+shared bool builtOnMain;
+
+/// A payload without perform: its handler runs it, with a dependency from the jobs' composition root.
+@Job("default")
+struct Notify
+{
+    int n;
+}
+
+final class Counter
+{
+    int total;
+}
+
+final class NotifyHandler
+{
+    private Counter counter;
+    this(Counter c) { counter = c; }
+
+    void perform(const Notify job, ref JobContext ctx)
+    {
+        counter.total += job.n;
+        atomicStore(handled, counter.total);
+    }
+}
+
 int statusOf(string raw) pure nothrow @safe
 {
     if (raw.length < 12 || raw[0 .. 5] != "HTTP/")
@@ -325,6 +352,48 @@ void testHealthAndJob()
     ok("worker role: GET /health, one job (its log line names it), stop does not wait out grace");
 }
 
+/// `WorkerHooks.handlers` builds the handlers on the worker's thread; the job runs through one.
+void testHandlers()
+{
+    atomicStore(handled, 0);
+    auto store = new InMemoryJobStore;
+    enqueue(store, Notify(2));
+    enqueue(store, Notify(3));
+    auto startup = parseStartup(["jobs_worker_net", "--role=worker", "--queues=default:1"]);
+    auto mainThread = Thread.getThis();
+    WorkerHooks hooks;
+    hooks.handlers = () @trusted {
+        atomicStore(builtOnMain, Thread.getThis() is mainThread);
+        auto h = new JobHandlers;
+        h.handle!Notify(new NotifyHandler(new Counter));
+        return h;
+    };
+    Exception failed;
+    auto t = new Thread({
+        try
+            runJobs!Notify(store, startup, ServerConfig.init, true, 0, hooks);
+        catch (Exception e)
+            failed = e;
+    });
+    t.start();
+    immutable done = waitFlag(&handled, 5, 2000);
+    kill(getpid(), SIGTERM);
+    t.join();
+    assert(failed is null, failed is null ? "" : failed.msg);
+    assert(done, "the handler did not run both jobs");
+    assert(!atomicLoad(builtOnMain), "the handlers are built on the worker's thread");
+
+    // a payload-only job without handlers: the runner refuses to start
+    bool refused;
+    try
+        runJobs!Notify(store, startup);
+    catch (Exception e)
+        refused = e.msg == "andaime.jobs: no handler for job 'jobs_worker_net.Notify'; call handlers.handle!Notify(...) "
+            ~ "in the jobs' build function";
+    assert(refused);
+    ok("worker role: handlers built per worker run payload-only jobs; a missing one stops the start");
+}
+
 void testReleaseOnShutdown()
 {
     atomicStore(entered, 0);
@@ -390,6 +459,7 @@ void main()
     guard.start();
 
     testHealthAndJob();
+    testHandlers();
     testReleaseOnShutdown();
     printf("all job-worker tests passed\n");
 }

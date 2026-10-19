@@ -34,8 +34,9 @@ import andaime.http.response : ResponseSink;
 import andaime.http.types : Method, Request;
 import andaime.jobs.backend : JobRecord, JobRuntime, JobState, JobStore, jobSpec, logJobFailure, runClaimed;
 import andaime.jobs.cli : ProcessRole, Startup, parseStartup, roleText;
+import andaime.jobs.handlers : JobHandlers, checkHandlers;
 import andaime.jobs.cron : CronClock, ScheduleKind, ScheduledFire, ScheduledJob, cronError, slotUnseen;
-import andaime.jobs.job : JobContext, jobCronExpr, jobError, jobEveryPeriod, jobName;
+import andaime.jobs.job : JobContext, jobCronExpr, jobPayloadError, jobEveryPeriod, jobName;
 import andaime.web.application : App;
 import andaime.web.context : Context;
 import andaime.web.stream : sendResponse;
@@ -68,6 +69,10 @@ struct WorkerHooks
     void delegate() @safe extra;
     /// Schedules set at startup (see `JobSchedule`). Empty: the `@Every` / `@Cron` UDAs alone.
     JobSchedule schedule;
+    /// Builds the job handlers (see `JobHandlers`), once, on the thread that runs the jobs (worker 0), so the use cases
+    /// they hold belong to it like the App's do. Null: every job of the list must have its own `perform`. The runner
+    /// checks the handlers against the list at startup (`checkHandlers`) and throws on a missing or unknown one.
+    JobHandlers delegate() @safe handlers;
 }
 
 /// Schedules decided when the process starts, for periods that come from configuration. Each call
@@ -91,7 +96,7 @@ struct JobSchedule
     /// Enqueue `J` on every multiple of `period`, in place of its `@Every`.
     ref JobSchedule every(J)(Duration period) return
     {
-        static assert(jobError!J.length == 0, jobError!J);
+        static assert(jobPayloadError!J.length == 0, jobPayloadError!J);
         changes ~= ScheduleChange(jobName!J, ScheduleChange.What.every, period, null);
         return this;
     }
@@ -99,7 +104,7 @@ struct JobSchedule
     /// Enqueue `J` on the five-field cron expression `expr`, in place of its `@Cron`.
     ref JobSchedule cron(J)(string expr) return
     {
-        static assert(jobError!J.length == 0, jobError!J);
+        static assert(jobPayloadError!J.length == 0, jobPayloadError!J);
         changes ~= ScheduleChange(jobName!J, ScheduleChange.What.cron, Duration.zero, expr);
         return this;
     }
@@ -107,7 +112,7 @@ struct JobSchedule
     /// Never enqueue `J` on a schedule (neither its `@Every` nor its `@Cron`).
     ref JobSchedule disable(J)() return
     {
-        static assert(jobError!J.length == 0, jobError!J);
+        static assert(jobPayloadError!J.length == 0, jobPayloadError!J);
         changes ~= ScheduleChange(jobName!J, ScheduleChange.What.disable, Duration.zero, null);
         return this;
     }
@@ -159,6 +164,8 @@ void runJobs(Jobs...)(JobStore store, Startup startup, ServerConfig cfg = Server
         throw new Exception("andaime.jobs: runJobs is for --role=worker, not " ~ roleText(startup.role));
     checkQueues(startup);
     cast(void) scheduledJobs!Jobs(hooks.schedule); // throws now, not on worker 0 once the loop runs
+    if (hooks.handlers is null)
+        checkHandlers!Jobs(null); // every job needs its own perform then: say so before starting
     idleBackoff = normalizeBackoff(idleBackoff);
     warnLegacyEnvironment();
     configureWorker(cfg, singleThread, healthPort);
@@ -206,6 +213,8 @@ void delegate() @safe supervisorHook(Jobs...)(JobStore store, Startup startup,
         throw new Exception("andaime.jobs: supervisorHook is for --role=all, not " ~ roleText(startup.role));
     checkQueues(startup);
     cast(void) scheduledJobs!Jobs(hooks.schedule);
+    if (hooks.handlers is null)
+        checkHandlers!Jobs(null);
     idleBackoff = normalizeBackoff(idleBackoff);
     return () @safe { startSupervisor!Jobs(store, startup, hooks, idleBackoff); };
 }
@@ -262,10 +271,13 @@ private void startSupervisor(Jobs...)(JobStore store, Startup startup, WorkerHoo
     if (workerIndex != 0)
         return;
     bool delegate() @safe nothrow stop = () @safe nothrow => stopping();
+    // built here, on the thread that runs the jobs; a missing or unknown handler stops the worker from starting
+    JobHandlers handlers = hooks.handlers is null ? null : hooks.handlers();
+    checkHandlers!Jobs(handlers);
     if (auto rt = cast(JobRuntime) store)
         rt.startServices();
     foreach (q; startup.queues)
-        launchQueue!Jobs(store, q.queue, q.concurrency, idleBackoff, stop);
+        launchQueue!Jobs(store, q.queue, q.concurrency, idleBackoff, handlers, stop);
     auto schedule = scheduledJobs!Jobs(hooks.schedule);
     spawn(() { cronLoop!Jobs(store, idleBackoff, stop, schedule); });
     if (hooks.extra !is null)
@@ -279,18 +291,18 @@ private final class Lane
     int running;
 }
 
-private void launchQueue(Jobs...)(JobStore store, string queue, int limit, Duration backoff,
+private void launchQueue(Jobs...)(JobStore store, string queue, int limit, Duration backoff, JobHandlers handlers,
         bool delegate() @safe nothrow stop)
 {
     auto lane = new Lane;
     lane.limit = limit;
-    spawn(() { dispatchLoop!Jobs(store, queue, lane, backoff, stop); });
+    spawn(() { dispatchLoop!Jobs(store, queue, lane, backoff, handlers, stop); });
 }
 
 /// One fiber claims for the queue. An empty claim waits (`waitIdle` on a `JobRuntime` store,
 /// otherwise `backoff`) instead of querying again. While `lane.limit` jobs are in `perform`,
 /// it sleeps a short slice and does not claim.
-private void dispatchLoop(Jobs...)(JobStore store, string queue, Lane lane, Duration backoff,
+private void dispatchLoop(Jobs...)(JobStore store, string queue, Lane lane, Duration backoff, JobHandlers handlers,
         bool delegate() @safe nothrow stop)
 {
     while (!stop())
@@ -333,7 +345,7 @@ private void dispatchLoop(Jobs...)(JobStore store, string queue, Lane lane, Dura
                 scope (exit)
                     lane.running--;
                 try
-                    runClaimed!Jobs(store, copy);
+                    runClaimed!Jobs(store, copy, handlers);
                 catch (Exception e)
                     logJobFailure("job", e);
             });
@@ -351,7 +363,8 @@ private void idleWait(JobStore store, Duration backoff)
 
 /// One claim. Returns true when `runClaimed` ran.
 /// `stop` true before the claim claims nothing. `stop` true after the claim releases the row.
-private bool consumeOnce(Jobs...)(JobStore store, string queue, bool delegate() @safe nothrow stop)
+private bool consumeOnce(Jobs...)(JobStore store, string queue, bool delegate() @safe nothrow stop,
+        JobHandlers handlers = null)
 {
     if (stop())
         return false;
@@ -367,7 +380,7 @@ private bool consumeOnce(Jobs...)(JobStore store, string queue, bool delegate() 
     // `@Offload` runs `perform` on the pool and `runClaimed` waits for it. If shutdown cancels
     // the fiber inside `offload`, the pool thread can still finish that work; `RequestCancelled`
     // has already released the row and the result is discarded.
-    runClaimed!Jobs(store, batch[0]);
+    runClaimed!Jobs(store, batch[0], handlers);
     return true;
 }
 

@@ -47,14 +47,66 @@ void main()
 
 - `@Job("mail")` is the **queue**. It is required. The stored job name is `jobName!SendMail` (the struct's fully
   qualified name), so two `SendMail` structs in different modules do not collide.
-- `void perform(ref JobContext ctx) @safe`. There is no dependency injection: a pool or an HTTP client stays
-  thread-local, as `db()` does in [database.md](database.md). To hand a job the use case it should call, see the
-  `provided!T` pattern in [architecture.md](architecture.md#background-jobs).
+- `void perform(ref JobContext ctx) @safe`. A pool or an HTTP client stays thread-local, as `db()` does in
+  [database.md](database.md). A job that needs a use case gets it from a handler instead (below).
 - The payload is the JSON of the struct fields: bool, numbers, string, enum, arrays, string-keyed maps, structs,
   `Optional!T`. A pointer, class, delegate or interface is a one-line compile error (`andaime.jobs:`).
 - `TestJobStore` never runs by itself. `assertEnqueued!T(substring)` checks the job name, the queue and a payload
   substring; it does not call `perform`. `drainJobs!T()` claims due rows and runs them. A row whose `run_at` is still
   in the future stays queued: `drainJobs` does not move the clock.
+
+## Jobs that receive their dependencies: handlers
+
+A job struct is built from its stored JSON, so it has no constructor through which to receive a use case. Split it in
+two: the **payload** (the `@Job` struct, without `perform`: what is stored) and its **handler** (a class built with what it
+needs), and build the handlers once per worker thread in a composition root, as `buildApp` builds the routes:
+
+```d
+// check
+@safe:
+
+import andaime.jobs;
+
+final class WelcomeUser { void execute(long userId) { } }   // a use case
+
+@Job("mail")
+struct SendWelcome { long userId; }                          // the payload
+
+final class SendWelcomeHandler
+{
+    private WelcomeUser welcome;
+    this(WelcomeUser welcome) { this.welcome = welcome; }
+    void perform(const SendWelcome job, ref JobContext ctx) @safe { welcome.execute(job.userId); }
+}
+
+JobHandlers buildJobs()                                      // once per worker thread
+{
+    auto handlers = new JobHandlers;
+    handlers.handle!SendWelcome(new SendWelcomeHandler(new WelcomeUser));
+    return handlers;
+}
+
+void main()
+{
+    auto store = new TestJobStore;
+    enqueue(store, SendWelcome(7));
+    store.drainJobs!SendWelcome(buildJobs());                // tests pass the handlers to drainJobs
+
+    WorkerHooks hooks;
+    hooks.handlers = () => buildJobs();                      // runJobs and supervisorHook build them on worker 0
+}
+```
+
+- `hooks.handlers` runs on the thread that runs the jobs, so the use cases and the pool they hold belong to it.
+- At startup the runner checks the handlers against its job list (`checkHandlers`): a job without its own `perform` and
+  without a handler, a handler for a job that is not in the list, or the same payload registered twice stops the start
+  with one `andaime.jobs:` line. Without `hooks.handlers`, a payload-only job in the list fails the call to `runJobs` or
+  `supervisorHook` at once.
+- A struct with its own `perform` keeps working without a handler (and cannot have one too); both styles mix in one list.
+- Scheduled jobs (`@Every`, `@Cron`) work the same way: the scheduler enqueues the payload, the handler runs it.
+- `@Offload` is for a struct's own `perform`: a handler's dependencies belong to its worker thread, so a handled payload
+  with `@Offload` is a compile error. Call `offload` inside the handler for the heavy part.
+- Mistakes in a handler's signature are one-line compile errors.
 
 ## Retry and discard
 

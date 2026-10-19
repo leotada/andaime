@@ -15,6 +15,7 @@ import andaime.engine.fiberio : inLocalFiber, setFiberLocal;
 import andaime.engine.offload : offload;
 import andaime.log : LogScope, setLogSyncScope;
 import andaime.jobs.job;
+import andaime.jobs.handlers : JobHandlers, checkHandlers;
 import andaime.web.numtext : itoa;
 
 // =====================================================================
@@ -496,6 +497,19 @@ class TestJobStore : InMemoryJobStore
     /// stays queued: the clock does not move here. An `Error` from `perform` leaves this function.
     void drainJobs(Jobs...)() @safe
     {
+        static foreach (J; Jobs)
+            static if (!hasOwnPerform!J)
+                static assert(0, "andaime.jobs: job '" ~ jobName!J ~ "' must define 'void perform(ref JobContext ctx) @safe', "
+                    ~ "or be drained with its handlers (drainJobs!Jobs(handlers))");
+        drainJobs!Jobs(null);
+    }
+
+    /// ditto, running the jobs without their own `perform` through `handlers` (see `JobHandlers`). Throws first when a
+    /// job of `Jobs` has no handler, like the runners at startup.
+    void drainJobs(Jobs...)(JobHandlers handlers) @safe
+    {
+        if (handlers !is null)
+            checkHandlers!Jobs(handlers);
         int ran = 0;
         while (true)
         {
@@ -508,7 +522,7 @@ class TestJobStore : InMemoryJobStore
                 release(batch[0].id);
                 throw new JobStoreError("andaime.jobs: drainJobs stopped after 10000 jobs; one is being requeued as due");
             }
-            runClaimed!Jobs(this, batch[0]);
+            runClaimed!Jobs(this, batch[0], handlers);
             ran++;
         }
     }
@@ -517,8 +531,8 @@ class TestJobStore : InMemoryJobStore
     /// Any state counts: this checks that the enqueue was accepted.
     void assertEnqueued(T)(string payloadSubstring) @safe
     {
-        static if (jobError!T.length)
-            static assert(0, jobError!T);
+        static if (jobPayloadError!T.length)
+            static assert(0, jobPayloadError!T);
         else
         {
             enum string name = jobName!T;
@@ -610,18 +624,38 @@ private bool containsSlice(scope const(char)[] s, scope const(char)[] part) pure
 void runClaimed(Jobs...)(JobStore store, JobRecord rec) @safe
 {
     static foreach (J; Jobs)
+        static if (!hasOwnPerform!J)
+            static assert(0, "andaime.jobs: job '" ~ jobName!J ~ "' must define 'void perform(ref JobContext ctx) @safe', "
+                ~ "or be run with the JobHandlers that has its handler (runClaimed!Jobs(store, rec, handlers))");
+    runClaimed!Jobs(store, rec, null);
+}
+
+/// ditto. A job of `Jobs` without its own `perform` runs through its handler in `handlers` (see `JobHandlers`); one
+/// whose handler is missing is discarded (the runners check `checkHandlers` at startup, so that is a bug).
+void runClaimed(Jobs...)(JobStore store, JobRecord rec, JobHandlers handlers) @safe
+{
+    static foreach (J; Jobs)
     {{
         if (rec.name == jobName!J)
         {
-            runTyped!J(store, rec);
+            runTyped!J(store, rec, handlers);
             return;
         }
     }}
     store.discard(rec.id, "andaime.jobs: unknown job '" ~ rec.name ~ "'");
 }
 
-private void runTyped(J)(JobStore store, JobRecord rec) @safe
+private void runTyped(J)(JobStore store, JobRecord rec, JobHandlers handlers) @safe
 {
+    static if (!hasOwnPerform!J)
+    {
+        auto box = handlers is null ? null : handlers.boxOf!J;
+        if (box is null)
+        {
+            store.discard(rec.id, "andaime.jobs: no handler for job '" ~ rec.name ~ "'");
+            return;
+        }
+    }
     J value;
     FieldErrors errs;
     if (!JobSet!J.decode(rec.payload, value, errs))
@@ -667,7 +701,9 @@ private void runTyped(J)(JobStore store, JobRecord rec) @safe
 
     try
     {
-        static if (jobOffload!J)
+        static if (!hasOwnPerform!J)
+            box.call(value, ctx); // a handler's dependencies stay on this thread: no @Offload here (see JobHandlers)
+        else static if (jobOffload!J)
             offload(() => value.perform(ctx));
         else
             value.perform(ctx);

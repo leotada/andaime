@@ -8,3 +8,4 @@ public import andaime.jobs.cron;
 public import andaime.jobs.backend;
 public import andaime.jobs.cli;
 public import andaime.jobs.worker;
+public import andaime.jobs.handlers;

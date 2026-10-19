@@ -218,6 +218,10 @@ s_net() {
     $DC $I -i -run tests/net/spawn_net.d
     $DC $I -i -run tests/net/log_net.d
     $DC $I -i -run tests/net/routes_env.d
+    # re-runs itself under taskset; built first because `-run` turns its skip (77) into 1
+    local aff="$work/offload_affinity" rc=0
+    $DC $I -i -of"$aff" tests/net/offload_affinity.d > /dev/null
+    "$aff" || { rc=$?; (( rc == 77 )) || return $rc; }
     # jobs_worker_net.d imports andaime.jobs; -Ijobs/source stays on this command only
     $DC $I -Ijobs/source -i -run tests/net/jobs_worker_net.d
 }

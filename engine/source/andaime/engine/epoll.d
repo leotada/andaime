@@ -32,6 +32,7 @@ import core.thread : Fiber, Thread;
 import core.time : MonoTime;
 import core.atomic : atomicLoad, atomicStore;
 import core.stdc.stdio : printf, fprintf, stderr, perror;
+import andaime.engine.offload : offloadThreads, offloadQueueMax;
 
 version (Posix)
 {
@@ -4260,6 +4261,10 @@ bool runEpollServer(ServerConfig cfg, WorkerInit init)
             printf("andaime: port %d redirects to https%s\n", cast(int) cfg.tls.redirectPort,
                 cfg.tls.acmeWebroot.length ? " and serves ACME challenges".ptr : "".ptr);
     }
+    // the pool is created on the first `offload`; its size is already decided (configureOffload, or the CPUs this process
+    // may use), and this is the line to read when a container or an affinity mask made it smaller than the machine
+    printf("andaime: offload pool of %u thread%s (queue %u)\n", offloadThreads(), offloadThreads() == 1 ? "".ptr : "s".ptr,
+        offloadQueueMax());
 
     Thread[] threads;
     foreach (i; 1 .. n)

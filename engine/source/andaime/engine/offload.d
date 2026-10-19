@@ -20,7 +20,7 @@ import core.sync.condition : Condition;
 import core.sync.mutex : Mutex;
 import core.thread : Thread;
 
-import andaime.engine.os : NotifyFd;
+import andaime.engine.os : NotifyFd, usableCpuCount;
 import andaime.engine.fiberio : awaitFd, currentScheduler, IoEvent;
 version (assert)
     import andaime.engine.fiberio : copyLocalsHere, FiberLocals, offloadSender;
@@ -114,7 +114,7 @@ final class ThreadPool
 
 private __gshared ThreadPool gPool;
 private __gshared Mutex gPoolMu;
-private __gshared uint gThreads = 4, gQueue = 256;
+private __gshared uint gThreads, gQueue = 256; // gThreads 0: the CPUs this process may use
 
 shared static this() @trusted
 {
@@ -122,7 +122,8 @@ shared static this() @trusted
 }
 
 /// Sets the size of the default pool. Call it before `serve`; once the pool
-/// exists, the call is ignored (returns false).
+/// exists, the call is ignored (returns false). Without it the pool has one thread per CPU the process may use
+/// (`usableCpuCount`: the affinity mask on Linux), and `queueMax` is 256.
 bool configureOffload(uint threads, uint queueMax) @trusted
 {
     synchronized (gPoolMu)
@@ -141,9 +142,29 @@ ThreadPool offloadPool() @trusted
     synchronized (gPoolMu)
     {
         if (gPool is null)
-            gPool = new ThreadPool(gThreads, gQueue);
+            gPool = new ThreadPool(threadsLocked(), gQueue);
         return gPool;
     }
+}
+
+/// Threads of the default pool: the number it has, or will have when it is created. Without `configureOffload` that is
+/// the number of CPUs the process may use.
+uint offloadThreads() @trusted
+{
+    synchronized (gPoolMu)
+        return threadsLocked();
+}
+
+/// Queue length of the default pool (`configureOffload`'s `queueMax`, 256 by default).
+uint offloadQueueMax() @trusted
+{
+    synchronized (gPoolMu)
+        return gQueue;
+}
+
+private uint threadsLocked() @trusted // callers hold gPoolMu
+{
+    return gThreads ? gThreads : usableCpuCount();
 }
 
 /// State shared between the fiber and the pool thread. Owner of the notification descriptor:

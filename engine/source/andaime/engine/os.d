@@ -589,6 +589,26 @@ version (Windows)
 // CPU count
 // =============================================================================
 
+/// Number of CPUs this process may run on: the size of its affinity mask on Linux (`taskset`, a container's cpuset), so
+/// a process limited to one CPU gets 1 on a 64-core machine. Elsewhere, and when the mask cannot be read, `cpuCount`.
+// @trusted: sched_getaffinity fills a stack local of the size it is given.
+uint usableCpuCount() nothrow @nogc @trusted
+{
+    version (linux)
+    {
+        import core.sys.linux.sched : CPU_COUNT, cpu_set_t, sched_getaffinity;
+
+        cpu_set_t set;
+        if (sched_getaffinity(0, cpu_set_t.sizeof, &set) == 0)
+        {
+            immutable n = CPU_COUNT(&set);
+            if (n > 0)
+                return cast(uint) n;
+        }
+    }
+    return cpuCount();
+}
+
 /// Number of available online processor cores.
 // @trusted: sysconf/GetSystemInfo reads system configuration into a stack local.
 uint cpuCount() nothrow @nogc @trusted
@@ -615,6 +635,7 @@ uint cpuCount() nothrow @nogc @trusted
 unittest
 {
     assert(cpuCount() >= 1);
+    assert(usableCpuCount() >= 1);
 
     NotifyFd nfd;
     assert(nfd.open());

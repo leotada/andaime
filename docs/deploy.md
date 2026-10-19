@@ -184,6 +184,9 @@ ports below 1024 as an ordinary user (redo it after each new build).
   flight over HTTPS peak at ~44 MB with OpenSSL 3.0 and 56-71 MB with OpenSSL 3.5. On a 512 MB VPS the defaults are fine; `maxInFlight` (1,024 per
   worker) and `maxConnections` (10,000 per worker) are the knobs.
 - One worker per core by default (`cfg.workers`). Each worker loads its own copy of the certificate.
+- The `offload` thread pool (bcrypt, DNS, file reads) has one thread per CPU the process may use, from its affinity mask: a
+  `taskset` or a cpuset gives its CPUs, not the machine's. The startup line shows it (`andaime: offload pool of 2 threads
+  (queue 256)`); `configureOffload(threads, queueMax)` before `serve` sets it by hand ([concurrency.md](concurrency.md#offload-the-thread-pool)).
 - An unexpected error in a handler answers 500 and is logged with its stack trace (at most 5 traces per second per worker, then a
   count). Symbol names in the trace need debug info: build with `-g` (DUB's `release-debug` build type). An `Error` such as a
   `RangeError` also retires that fiber (`LoopStats.fibersPoisoned`).

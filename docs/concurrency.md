@@ -108,7 +108,11 @@ string thumbnail(long id) => offload(() => resizeImage(load(id)));     // runs o
 - The calling fiber is suspended until the work finishes; the result (or the exception) comes back to it.
 - The delegate must be `@safe` (wrap C calls in a `@trusted` function that says why it is sound).
 - The pool is bounded: when its queue is full, `offload` throws `PoolSaturated` right away. Decide whether that becomes a 503.
-- Size it once, before `serve`: `configureOffload(threads, queueMax)`.
+- **Size.** By default the pool has one thread per CPU the process may use: on Linux the size of its affinity mask
+  (`taskset -c 0` gives 1, a container with a cpuset gives its CPUs), not the CPUs of the machine; elsewhere the number of
+  online CPUs. The queue holds 256. `serve` prints the result once at startup (`andaime: offload pool of 4 threads (queue
+  256)`). Override it once, before `serve`: `configureOffload(threads, queueMax)`; `offloadThreads()` tells the size in
+  effect. Work that is mostly waiting (bcrypt is CPU, a DNS lookup is not) can use more threads than CPUs: set it.
 - The work must not touch the request or the App: it runs on another thread. Pass it what it needs, return a result.
   It does not see the fiber's per-request state either (`fiberLocal`), so a database transaction the fiber has open does not
   extend to it; andaime:pg asserts (in a non-release build) when the work queries the pool in that case.

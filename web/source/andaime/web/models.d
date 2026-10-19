@@ -6,7 +6,8 @@
 ///     Page list(Query!Filters f) { ... f.pageSize ... }
 ///
 /// Rules:
-///  - the external name of a field is its `@jsonKey`, else its name;
+///  - the external name of a field is its `@jsonKey`, else its name spelled with the struct's `@naming` (or the
+///    project's default, `defaultNaming`);
 ///  - a field is optional if it is an `Optional!X`, a list (`string[]`, `UploadedFile[]`), marked `@optional`, or has
 ///    an initializer that is not the type's default (`int pageSize = 20`); anything else is required (`missing`);
 ///  - a scalar takes the first value of its key, a list takes every value;

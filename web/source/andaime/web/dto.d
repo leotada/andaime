@@ -5,7 +5,7 @@ module andaime.web.dto 2025;
 
 import andaime.http.utf8 : codePoints;
 import andaime.http.patchfield : isPatchField;
-import andaime.http.naming : applyNaming, namingOf, naming, Naming;
+import andaime.http.naming : applyNaming, namingOf, naming, Naming, defaultNaming;
 public import andaime.web.numtext : ctNum, numText;
 
 /// Field name in the JSON when it differs from the D name: `@jsonKey("user_name") string userName;`
@@ -135,7 +135,7 @@ unittest
     @naming(Naming.snakeCase) struct S { string firstName; @jsonKey("ID") long userId; string body_; }
     static assert(jsonKeyOf!(S, 0) == "first_name" && jsonKeyOf!(S, 1) == "ID" && jsonKeyOf!(S, 2) == "body");
     struct Plain { string firstName; }
-    static assert(jsonKeyOf!(Plain, 0) == "firstName");
+    static assert(jsonKeyOf!(Plain, 0) == applyNaming("firstName", defaultNaming)); // the project's default
     struct Misplaced { @naming(Naming.snakeCase) string firstName; }
     static assert(fieldHasNaming!(Misplaced, 0) && !__traits(compiles, jsonKeyOf!(Misplaced, 0)));
 }

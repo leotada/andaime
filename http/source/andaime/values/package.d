@@ -7,3 +7,4 @@ public import andaime.values.optional;
 public import andaime.values.patchfield;
 public import andaime.values.jsonvalue;
 public import andaime.values.uuid;
+public import andaime.values.copy;

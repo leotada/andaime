@@ -30,7 +30,7 @@ import core.time : Duration, MonoTime, msecs, seconds, minutes;
 import andaime.engine.os : NotifyFd;
 
 import andaime.http.texttype : isTextType, textFromString, textToString;
-import andaime.http.naming : applyNaming, namingOf, parseEnumWire, enumToWire;
+import andaime.http.naming : applyNaming, namingOf, parseEnumWire, enumToWire, Naming;
 import andaime.engine.fiberio : awaitFd, currentScheduler, IoEvent, RequestCancelled, fiberLocal, setFiberLocal,
     offloadSenderLocal;
 import andaime.engine.offload : offload, offloadPool;
@@ -169,11 +169,26 @@ final class PgResult
     /// struct field marked `@prefix("author_")` (or an `Optional` of a struct) takes its fields from the columns with that
     /// prefix (`author_id`, `author_first_name`...: the prefix goes before the nested struct's own names); an `Optional`
     /// one is empty when all of its columns are NULL (a LEFT JOIN that found nothing). A missing column throws.
+    ///
+    /// A struct without `@naming` uses the project's default (`defaultNaming`, from a version flag such as
+    /// `AndaimeNamingSnakeCase`). `rowsAs!(T, Naming.snakeCase)` sets the policy for this call instead, for `T` and its
+    /// `@prefix` structs: the adapter decides how a domain type meets its columns.
     T[] rowsAs(T)() const if (is(T == struct))
+    {
+        return rowsWith!(T, -1)();
+    }
+
+    /// ditto
+    T[] rowsAs(T, Naming policy)() const if (is(T == struct))
+    {
+        return rowsWith!(T, cast(int) policy)();
+    }
+
+    private T[] rowsWith(T, int policy)() const
     {
         int[rowColumnCount!T] idx;
         size_t k;
-        resolveColumns!T(idx[], k, null);
+        resolveColumns!(T, policy)(idx[], k, null);
         auto out_ = new T[rows];
         foreach (r; 0 .. rows)
         {
@@ -183,18 +198,19 @@ final class PgResult
         return out_;
     }
 
-    /// The column index of every leaf field of `T` (depth first, in field order), with `pre` before each name.
-    private void resolveColumns(T)(int[] idx, ref size_t k, string pre) const
+    /// The column index of every leaf field of `T` (depth first, in field order), with `pre` before each name. `policy` is
+    /// a `Naming` given to `rowsAs`, or -1 for each struct's own.
+    private void resolveColumns(T, int policy)(int[] idx, ref size_t k, string pre) const
     {
         static foreach (i, f; T.tupleof)
         {{
             alias F = typeof(f);
             enum p = prefixOf!(T, i);
             static if (p.length)
-                resolveColumns!(NestedRow!F)(idx, k, pre ~ p);
+                resolveColumns!(NestedRow!F, policy)(idx, k, pre ~ p);
             else
             {
-                immutable name = pre ~ columnNameOf!(T, i);
+                immutable name = pre ~ columnNameOf!(T, i, policy < 0 ? namingOf!T : cast(Naming) policy);
                 idx[k] = column(name);
                 if (idx[k] < 0)
                     throw new PgError("andaime.db: the query did not return the column '" ~ name ~ "' expected by "
@@ -240,7 +256,17 @@ final class PgResult
     /// First row as a struct; throws if there is none.
     T one(T)() const if (is(T == struct))
     {
-        auto all = rowsAs!T;
+        return firstOf(rowsAs!T);
+    }
+
+    /// ditto, with the naming policy of `rowsAs!(T, policy)`.
+    T one(T, Naming policy)() const if (is(T == struct))
+    {
+        return firstOf(rowsAs!(T, policy));
+    }
+
+    private static T firstOf(T)(T[] all)
+    {
         if (all.length == 0)
             throw new PgError("andaime.db: the query returned no rows");
         return all[0];
@@ -267,10 +293,10 @@ struct column
 }
 
 /// The column name of field `i` of `T` (without the `@prefix` of an enclosing field).
-private template columnNameOf(T, size_t i)
+private template columnNameOf(T, size_t i, Naming policy)
 {
     enum string columnNameOf = () {
-        string r = applyNaming(__traits(identifier, T.tupleof[i]), namingOf!T);
+        string r = applyNaming(__traits(identifier, T.tupleof[i]), policy);
         static foreach (a; __traits(getAttributes, T.tupleof[i]))
             static if (is(typeof(a) == column))
                 r = a.name;

@@ -107,11 +107,14 @@ s_dip1000() {
 
 s_web() {
     local rc=0 t
-    # (helper modules for these tests live in tests/web/support/, which is on the import path)
+    # (helper modules for these tests live in tests/web/support/, which is on the import path; a `// FLAGS:` line adds
+    # compiler flags, such as a version, to that file only)
+    local flags
     for t in tests/web/*.d; do
-        if ! $DC -unittest -main $I -Itests/web -i -run "$t" > /dev/null 2>&1; then
+        flags=$(sed -n 's#^// FLAGS: ##p' "$t")
+        if ! $DC -unittest -main $I $flags -Itests/web -i -run "$t" > /dev/null 2>&1; then
             echo "FAILED: $t"
-            $DC -unittest -main $I -Itests/web -i -run "$t" 2>&1 | grep -v '^andaime: error in' | tail -15
+            $DC -unittest -main $I $flags -Itests/web -i -run "$t" 2>&1 | grep -v '^andaime: error in' | tail -15
             rc=1
         fi
     done
@@ -248,6 +251,8 @@ s_browser() {
 s_postgres() {
     tools/with_postgres.sh "$(build_test tests/db/pg_net.d)"
     tools/with_postgres.sh "$(build_test tests/db/pg_features.d)"
+    # the project-wide naming default is a version flag; only this test builds with it
+    tools/with_postgres.sh "$(I="$I -version=AndaimeNamingSnakeCase" build_test tests/db/pg_naming.d)"
     # pg_jobs.d imports andaime.jobs and andaime.jobs.pg. Those -I flags stay on this compile only.
     tools/with_postgres.sh "$(I="$I -Ijobs/source -Idrivers/pgjobs/source" build_test tests/db/pg_jobs.d)"
 }

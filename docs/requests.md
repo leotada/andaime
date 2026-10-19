@@ -128,6 +128,31 @@ void main()
   driver ([database.md](database.md)). The D member name is no longer accepted. Two members with the same wire name are a
   compile error.
 
+### One policy for the whole project
+
+The spelling of a name on the wire is the adapters' concern, not the domain's. A project whose API is all `snake_case`
+sets the default once, in `dub.sdl`, and its types need no attribute at all:
+
+```sdl
+versions "AndaimeNamingSnakeCase"   // or AndaimeNamingKebabCase, AndaimeNamingCamelCase, AndaimeNamingUpperSnakeCase
+```
+
+```d
+// domain/companies.d: no andaime import
+enum Plan { free, proYearly }                                // "free", "pro_yearly"
+struct Company { long companyId; string displayName; Plan plan; }  // "company_id", "display_name", "plan"
+```
+
+Every struct and enum without its own `@naming` then uses that policy: JSON both ways, `Query!T`, `Form!T`, OpenAPI, the
+422's `loc`, and the Postgres driver's columns and enum values. A type's `@naming` (including `@naming(Naming.asIs)`) and
+a field's `@jsonKey` still win. It is fixed at compile time, like every name andaime derives, so it costs nothing at run
+time; `defaultNaming` tells which policy is in effect. Setting two of the flags is a compile error. The database adapter can
+still choose per query: `rowsAs!(Company, Naming.asIs)` (see [database.md](database.md)).
+
+When a DTO differs from a domain type by a few fields, `copyAs!UserOut(user)` (from `andaime.values.copy`, also in
+`import andaime;`) copies the fields with the same name and type, and fails to compile, naming the field, when one of
+`UserOut`'s fields has no match.
+
 ## File uploads
 
 A file is an `UploadedFile` field on `Form!T`. The body must then be `multipart/form-data` (415 otherwise). A form with no

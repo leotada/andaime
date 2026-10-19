@@ -6,7 +6,8 @@
 ///     enum Photo { none, @wireName("on_issue") onIssue }                               // "none", "on_issue"
 ///
 /// A field's own `@jsonKey` (or, for a database row, `@column`) wins over the struct's `@naming`. A policy is not
-/// inherited: a nested struct declares its own.
+/// inherited: a nested struct declares its own. A type without `@naming` uses the project's default, `defaultNaming`
+/// (`Naming.asIs` unless a version flag such as `AndaimeNamingSnakeCase` picks another).
 module andaime.http.naming 2025;
 
 @safe:
@@ -92,14 +93,29 @@ string applyNaming(string ident, Naming n) pure nothrow
     return r;
 }
 
-/// The `@naming` policy of `T`, or `Naming.asIs`.
+// The project's default policy, for every struct and enum without its own `@naming`: one version flag in dub.sdl
+// (`versions "AndaimeNamingSnakeCase"`), so domain types need no andaime attribute. Fixed at compile time: it costs nothing
+// at run time and JSON, query and form binding, OpenAPI and `rowsAs` all follow it.
+version (AndaimeNamingSnakeCase) private enum int snakeFlag = 1; else private enum int snakeFlag = 0;
+version (AndaimeNamingKebabCase) private enum int kebabFlag = 1; else private enum int kebabFlag = 0;
+version (AndaimeNamingCamelCase) private enum int camelFlag = 1; else private enum int camelFlag = 0;
+version (AndaimeNamingUpperSnakeCase) private enum int upperSnakeFlag = 1; else private enum int upperSnakeFlag = 0;
+static assert(snakeFlag + kebabFlag + camelFlag + upperSnakeFlag <= 1, "andaime: more than one AndaimeNaming* version "
+    ~ "is set; keep one (AndaimeNamingSnakeCase, AndaimeNamingKebabCase, AndaimeNamingCamelCase or AndaimeNamingUpperSnakeCase)");
+
+/// The policy of a struct or enum that has no `@naming`: `Naming.asIs`, or the one a version flag selects
+/// (`AndaimeNamingSnakeCase`, `AndaimeNamingKebabCase`, `AndaimeNamingCamelCase`, `AndaimeNamingUpperSnakeCase`).
+enum Naming defaultNaming = snakeFlag ? Naming.snakeCase : kebabFlag ? Naming.kebabCase
+    : camelFlag ? Naming.camelCase : upperSnakeFlag ? Naming.upperSnakeCase : Naming.asIs;
+
+/// The `@naming` policy of `T`, or `defaultNaming`.
 template namingOf(T)
 {
     static if (__traits(getAttributes, T).length == 0)
-        enum Naming namingOf = Naming.asIs;
+        enum Naming namingOf = defaultNaming;
     else
         enum Naming namingOf = () {
-            Naming r = Naming.asIs;
+            Naming r = defaultNaming;
             static foreach (a; __traits(getAttributes, T))
                 static if (is(typeof(a) == naming))
                     r = a.value;
@@ -242,7 +258,7 @@ unittest
     assert(enumToWire(cast(TaskType) 42) is null);
 
     enum Plain { a, bC }
-    static assert(enumWireNames!Plain == ["a", "bC"]);
+    static assert(enumWireNames!Plain == ["a", applyNaming("bC", defaultNaming)]); // the project's default
 
     enum Clash { a, @wireName("a") b }
     static assert(enumWireClash!Clash == "andaime: enum Clash: members 'a' and 'b' have the same wire name 'a' (give one a @wireName)");

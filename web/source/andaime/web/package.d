@@ -9,12 +9,13 @@ public import andaime.web.context;
 public import andaime.web.params;
 public import andaime.web.dto : jsonKey, optional, jsonIgnore, minLength, maxLength, inRange, schemaName,
     ValidationErrors, FieldError, ErrorSource, LocPart;
-public import andaime.http.naming : Naming, naming, wireName;
+public import andaime.http.naming : Naming, naming, wireName, defaultNaming;
 public import andaime.web.handler_traits : writeDefaultValidationErrors;
 public import andaime.web.jsonvalue : JsonValue, JsonMember, JsonType, JsonError, JsonLimits, parseJson, fromJson, toJson,
     Json;
 public import andaime.web.json : writeJson;
 public import andaime.values.uuid : Uuid;
+public import andaime.values.copy : copyAs;
 public import andaime.log;
 public import andaime.web.testing;
 public import andaime.web.cors;

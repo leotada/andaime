@@ -59,7 +59,10 @@ void touch(int id) { db.exec("update users set seen_at = now() where id = $1", i
   first row and throws when there is none.
 - Column names: `@naming(Naming.snakeCase)` on the struct reads `first_name` into `firstName` (the same policy names the
   struct's JSON, see [wire names](requests.md#wire-names-naming-and-wirename)); `@column("mail") string email;` names one
-  field. A `@prefix` goes before the nested struct's own names (`author_first_name`).
+  field. A `@prefix` goes before the nested struct's own names (`author_first_name`). A struct without `@naming` uses the
+  project's default (`versions "AndaimeNamingSnakeCase"`, see [one policy for the whole project](requests.md#one-policy-for-the-whole-project)),
+  so a domain type with no attribute reads `created_at` into `createdAt`. `rowsAs!(T, Naming.snakeCase)` and
+  `one!(T, Naming.snakeCase)` set the policy for one query, for `T` and its `@prefix` structs.
 - A column that may be NULL is an `Optional!T`; the same type is `null` in JSON, so rows serialize with no conversion.
 - A joined row goes into a nested struct with `@prefix`: its fields come from the columns with that prefix. On an
   `Optional` struct, all of its columns NULL (a LEFT JOIN that found nothing) gives an empty `Optional`:

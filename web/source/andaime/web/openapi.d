@@ -645,8 +645,8 @@ string buildOpenApi(const(OpRecord)[] ops, OpenApiInfo info, string delegate(ref
 }
 
 /// `json` laid out for people and diffs: one member or element per line, two spaces per level, `"key": value`. The order
-/// and the strings are kept as they are, and an empty `{}` or `[]` stays on its line. `json` must be valid JSON (what
-/// `buildOpenApi` returns is).
+/// and the strings are kept as they are, and an empty `{}` or `[]` stays on its line. `json` must be valid, compact JSON
+/// (no whitespace between tokens, as `buildOpenApi` writes it).
 string indentJson(string json) pure nothrow @safe
 {
     string o;
@@ -681,6 +681,7 @@ string indentJson(string json) pure nothrow @safe
                 newline();
                 break;
             case '}', ']':
+                // the byte before is outside a string here (a string ends with `"`), so `{` or `[` means an empty pair
                 if (k > 0 && (json[k - 1] == '{' || json[k - 1] == '['))
                 {
                     o ~= c;

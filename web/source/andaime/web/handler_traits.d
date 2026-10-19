@@ -485,7 +485,8 @@ private bool bindBody(T)(Context ctx, ref T dest)
 private void reportValidationErrors(Context ctx)
 {
     // the app's language (`App.validationMessages`): once, here, so that the default body, `errorBody` and an
-    // `onValidationError` handler all read the same messages
+    // `onValidationError` handler all read the same messages. This rewrites `e.message` in place, so it must run once per
+    // request (it does: every path to a 422 goes through here)
     if (ctx.messageOf !is null)
         foreach (ref e; ctx.errors.items[0 .. ctx.errors.count])
             e.message = ctx.messageOf(e);

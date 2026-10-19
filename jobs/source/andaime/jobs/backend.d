@@ -329,6 +329,15 @@ class InMemoryJobStore : JobStore, JobPayloadDrop
         return rows.dup;
     }
 
+    /// The rows now, and a way back to them: `auto restore = store.snapshot(); ...; restore();`. For an in-memory unit
+    /// of work, so that a transaction that fails takes back the jobs it enqueued, as a Postgres rollback does. Ids are
+    /// not reused, like a sequence's.
+    void delegate() @safe snapshot() @safe
+    {
+        auto saved = rows.dup;
+        return () @safe { rows = saved.dup; };
+    }
+
     override EnqueueResult enqueue(JobSpec spec) @safe
     {
         if (spec.queue.length == 0)

@@ -68,3 +68,14 @@ unittest
         threw = true;
     assert(threw);
 }
+
+unittest // snapshot: a restorer that takes back what was enqueued since, without reusing ids
+{
+    auto store = new TestJobStore;
+    enqueue(store, Welcome("kept@x.com"));
+    auto restore = store.snapshot();
+    auto dropped = enqueue(store, Welcome("dropped@x.com"));
+    restore();
+    assert(store.jobs().length == 1 && store.jobs()[0].payload == `{"email":"kept@x.com"}`, store.jobs()[0].payload);
+    assert(enqueue(store, Welcome("next@x.com")).id > dropped.id, "ids move on");
+}

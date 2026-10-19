@@ -516,6 +516,10 @@ testStore.assertEnqueued!Welcome("ana@x.com");
 `TestJobTransaction.enqueue` returns id 0 (the row does not exist yet); `commit` returns the real `EnqueueResult`s, with
 unique windows applied then.
 
+An in-memory unit of work (the clean template's `MemoryUnitOfWork`) takes the other route: `auto restore =
+store.snapshot();` before the work, `restore()` when it throws, so a plain `enqueue(store, job)` inside it is undone like
+a Postgres rollback undoes it.
+
 ### Claim, listen and the lease
 
 A claim is one statement; the transaction commits **before** `perform`, so the row lock is not held across the work:

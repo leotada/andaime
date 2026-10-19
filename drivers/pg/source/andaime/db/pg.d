@@ -905,7 +905,7 @@ final class PgConn
     /// already open (an outer `transaction`, or a test harness's), it is a `savepoint` instead, so transactions nest; a
     /// savepoint keeps the outer transaction's mode. `TxMode.readOnly` begins with `BEGIN READ ONLY`: a write in `body`
     /// fails with SQLSTATE 25006.
-    T transaction(T)(T delegate(PgConn) @safe body_, TxMode mode = TxMode.readWrite)
+    T transaction(T)(scope T delegate(PgConn) @safe body_, TxMode mode = TxMode.readWrite)
     {
         if (inTransaction)
             return savepoint(body_);
@@ -916,7 +916,7 @@ final class PgConn
     /// Runs `body` inside a savepoint of the open transaction: `SAVEPOINT`, then `RELEASE` on success or
     /// `ROLLBACK TO SAVEPOINT` if it throws (the outer transaction goes on, without what the body did). Throws `PgError`
     /// when no transaction is open.
-    T savepoint(T)(T delegate(PgConn) @safe body_)
+    T savepoint(T)(scope T delegate(PgConn) @safe body_)
     {
         if (!inTransaction)
             throw new PgError("andaime.db: savepoint needs an open transaction (use transaction)");
@@ -931,7 +931,7 @@ final class PgConn
 
     /// Runs the body of a transaction or savepoint: `commit` after it, `rollback` if it throws (a connection that cannot
     /// roll back is closed, so it never goes back to the pool mid-transaction).
-    private T finishBlock(T)(T delegate(PgConn) @safe body_, string commit, string rollback)
+    private T finishBlock(T)(scope T delegate(PgConn) @safe body_, string commit, string rollback)
     {
         try
         {
@@ -1392,7 +1392,7 @@ final class PgPool
     /// in a transaction (`rollbackAfter`), the outermost one is a savepoint too.
     ///
     /// When the outermost transaction commits, the `afterCommit` callbacks registered inside it run.
-    T transaction(T)(T delegate(PgConn) @safe body_, TxMode mode = TxMode.readWrite)
+    T transaction(T)(scope T delegate(PgConn) @safe body_, TxMode mode = TxMode.readWrite)
     {
         if (auto a = ambient())
         {
@@ -1419,7 +1419,7 @@ final class PgPool
 
     /// The outermost transaction of this fiber on this pool: the connection is this fiber's for the duration, then goes
     /// back to the pool (before the callbacks run, so they can use it). `done` is set only when it committed.
-    private T outermost(T)(T delegate(PgConn) @safe body_, TxMode mode, out PgAmbient done)
+    private T outermost(T)(scope T delegate(PgConn) @safe body_, TxMode mode, out PgAmbient done)
     {
         auto l = lease();
         auto a = new PgAmbient(this, l.conn);

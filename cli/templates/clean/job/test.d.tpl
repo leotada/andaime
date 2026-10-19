@@ -1,7 +1,8 @@
 
-unittest // {{Name}}Job carries its payload and runs {{Name}}
+unittest // {{Name}}Job carries its payload, and its handler runs {{Name}}
 {
-    (() @trusted => provided!{{Name}}.provide(() => new {{Name}}(new Memory{{Entity}}Repository)))();
+    auto handlers = new JobHandlers;
+    handlers.handle!{{Name}}Job(new {{Name}}Handler(new {{Name}}(new Memory{{Entity}}Repository)));
     auto store = new TestJobStore;
     {{Name}}Job job;
 {{#fields}}
@@ -9,5 +10,5 @@ unittest // {{Name}}Job carries its payload and runs {{Name}}
 {{/fields}}
     enqueue(store, job);
     store.assertEnqueued!{{Name}}Job(`{{payload}}`);
-    store.drainJobs!{{Name}}Job();
+    store.drainJobs!{{Name}}Job(handlers);
 }

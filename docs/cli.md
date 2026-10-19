@@ -57,7 +57,7 @@ andaime generate job users PurgeOld --cron "0 3 * * *"
 |-----------|-------------------------|
 | `resource <name> <field>...` | `domain/`, `usecases/`, `adapters/http/`, `adapters/postgres/` and `adapters/memory/` files, a numbered migration, `tests/<plural>.d` (HTTP end to end and the repository contract), and the wiring in `app.d` |
 | `usecase <feature> <Name> [<field>...]` | a use case class appended to `usecases/<feature>.d`, a test skeleton in `tests/<feature>.d` |
-| `job <feature> <Name> [<field>...]` | the use case (unless it exists), the job struct in `adapters/jobs/<feature>.d` (the fields are its payload), its test in `tests/<feature>_jobs.d`, and the wiring in `jobs.d`. The first job also installs the jobs runtime: `andaime:jobs` in `dub.sdl`, `jobs.d` (process roles, the job store), and `main` serving through it |
+| `job <feature> <Name> [<field>...]` | the use case (unless it exists), the payload struct (the fields) and its handler class in `adapters/jobs/<feature>.d`, its test in `tests/<feature>_jobs.d`, and its line in `jobs.d`'s `AllJobs` and `buildJobs` (the jobs' composition root). The first job also installs the jobs runtime: `andaime:jobs` in `dub.sdl`, `jobs.d` (process roles, the job store, `buildJobs`), and `main` serving through it |
 
 - `--dry-run` shows what would change and writes nothing.
 - A file that `generate` would create and that exists stops the whole run before anything is written. `--force`

@@ -380,11 +380,12 @@ private int generateJob(Project project, string feature, string word, string[] s
     vars.set("queue", queue);
     vars.set("schedule", cron.length ? `@Cron("` ~ cron.strip ~ `")` : every.length ? "@Every(" ~ every ~ ")" : "");
     vars.set("payload", fields.length ? `"` ~ fields[0].name ~ `":` ~ fields[0].sampleJson(1) : "");
+    vars.set("jobArgs", fields.map!(f => "job." ~ f.name).join(", "));
     print(runGenerator(projectTemplate(project.root, project.templateName), "job", project.root, vars, opt));
     return 0;
 }
 
-/// The jobs runtime of a project: `andaime:jobs`, `jobs.d`, the use case provider, and `main` serving through it.
+/// The jobs runtime of a project: `andaime:jobs`, `jobs.d`, the composition root of the handlers, and `main` serving through it.
 private void installJobs(Project project, GenOptions opt)
 {
     auto tpl = projectTemplate(project.root, project.templateName);

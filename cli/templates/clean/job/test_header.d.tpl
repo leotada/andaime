@@ -5,7 +5,6 @@ module tests.{{feature}}_jobs 2025;
 
 import andaime;
 import andaime.jobs;
-import adapters.jobs.provider : provided;
 import adapters.jobs.{{feature}};
 import adapters.memory.{{feature}} : Memory{{Entity}}Repository;
 import usecases.{{feature}};

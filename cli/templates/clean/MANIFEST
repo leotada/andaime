@@ -2,7 +2,6 @@
 install-jobs/dependencies.tpl
 install-jobs/generator.json
 install-jobs/jobs.d.tpl
-install-jobs/provider.d.tpl
 job/generator.json
 job/job.d.tpl
 job/jobs_header.d.tpl

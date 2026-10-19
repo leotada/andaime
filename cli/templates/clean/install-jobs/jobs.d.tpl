@@ -1,5 +1,5 @@
-/// Background jobs: the process roles, the job store, the jobs of the application and the use cases they call. `main`
-/// calls `serveWithJobs` instead of `serve`.
+/// Background jobs: the process roles, the job store, the jobs of the application and the composition root of their
+/// handlers. `main` calls `serveWithJobs` instead of `serve`.
 module jobs 2025;
 
 @safe:
@@ -14,7 +14,6 @@ import app : buildApp, currentAdapters;
 {{#pg}}
 import config : config, Store;
 {{/pg}}
-import adapters.jobs.provider : provided;
 // andaime:imports
 
 /// Every job of the application: the worker runs these.
@@ -22,10 +21,21 @@ alias AllJobs = AliasSeq!(
     // andaime:jobs
 );
 
-/// How each thread that runs jobs builds the use cases they call.
-void provideUseCases() @system
+/// The composition root of the jobs: each job's handler, over this thread's adapters. It runs once, on the thread that
+/// runs the jobs, as `buildApp` does for the routes; a job of `AllJobs` without a handler stops the start.
+JobHandlers buildJobs()
 {
-    // andaime:provide
+    auto handlers = new JobHandlers;
+    // andaime:handlers
+    return handlers;
+}
+
+/// What the job runner needs from the application: the handlers.
+WorkerHooks jobHooks()
+{
+    WorkerHooks hooks;
+    hooks.handlers = () => buildJobs();
+    return hooks;
 }
 
 {{#pg}}
@@ -53,7 +63,6 @@ JobStore jobStore()
 void serveWithJobs(string[] args, ServerConfig cfg)
 {
     auto startup = parseStartup(args);
-    (() @trusted => provideUseCases())(); // sound: once, on the main thread, before any worker exists
     final switch (startup.role)
     {
         case ProcessRole.api:
@@ -61,11 +70,11 @@ void serveWithJobs(string[] args, ServerConfig cfg)
             serve(&buildApp, cfg);
             break;
         case ProcessRole.worker:
-            runJobs!AllJobs(jobStore(), startup, cfg);
+            runJobs!AllJobs(jobStore(), startup, cfg, true, 0, jobHooks());
             break;
         case ProcessRole.all:
             applyJobGrace(cfg);
-            serve(&buildApp, cfg, supervisorHook!AllJobs(jobStore(), startup));
+            serve(&buildApp, cfg, supervisorHook!AllJobs(jobStore(), startup, jobHooks()));
             break;
     }
 }
@@ -86,8 +95,7 @@ void serveWithJobs(string[] args, ServerConfig cfg)
 {
     auto startup = parseStartup(args);
     startup.role = ProcessRole.all;
-    (() @trusted => provideUseCases())(); // sound: once, on the main thread, before any worker exists
     applyJobGrace(cfg);
-    serve(&buildApp, cfg, supervisorHook!AllJobs(jobStore(), startup));
+    serve(&buildApp, cfg, supervisorHook!AllJobs(jobStore(), startup, jobHooks()));
 }
 {{/pg}}

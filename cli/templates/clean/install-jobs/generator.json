@@ -1,7 +1,6 @@
 {
   "create": [
-    { "path": "source/jobs.d", "from": "jobs.d.tpl" },
-    { "path": "source/adapters/jobs/provider.d", "from": "provider.d.tpl" }
+    { "path": "source/jobs.d", "from": "jobs.d.tpl" }
   ],
   "insert": [
     { "path": "dub.sdl", "marker": "// andaime:dependencies", "from": "dependencies.tpl" }

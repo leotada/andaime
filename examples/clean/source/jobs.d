@@ -1,5 +1,5 @@
-/// Background jobs: the process roles, the job store, the jobs of the application and the use cases they call. `main`
-/// calls `serveWithJobs` instead of `serve`.
+/// Background jobs: the process roles, the job store, the jobs of the application and the composition root of their
+/// handlers. `main` calls `serveWithJobs` instead of `serve`.
 module jobs 2025;
 
 @safe:
@@ -10,8 +10,7 @@ import andaime.jobs.pg : PgJobStore;
 import std.meta : AliasSeq;
 import app : buildApp, currentAdapters;
 import config : config, Store;
-import adapters.jobs.provider : provided;
-import adapters.jobs.users : SendWelcomeJob;
+import adapters.jobs.users : SendWelcomeJob, SendWelcomeHandler;
 import usecases.users : SendWelcome;
 // andaime:imports
 
@@ -21,11 +20,22 @@ alias AllJobs = AliasSeq!(
     // andaime:jobs
 );
 
-/// How each thread that runs jobs builds the use cases they call.
-void provideUseCases() @system
+/// The composition root of the jobs: each job's handler, over this thread's adapters. It runs once, on the thread that
+/// runs the jobs, as `buildApp` does for the routes; a job of `AllJobs` without a handler stops the start.
+JobHandlers buildJobs()
 {
-    provided!SendWelcome.provide(() => new SendWelcome(currentAdapters().users));
-    // andaime:provide
+    auto handlers = new JobHandlers;
+    handlers.handle!SendWelcomeJob(new SendWelcomeHandler(new SendWelcome(currentAdapters().users)));
+    // andaime:handlers
+    return handlers;
+}
+
+/// What the job runner needs from the application: the handlers.
+WorkerHooks jobHooks()
+{
+    WorkerHooks hooks;
+    hooks.handlers = () => buildJobs();
+    return hooks;
 }
 
 /// This thread's job store: Postgres, or an in-memory one with `STORE=memory`.
@@ -52,7 +62,6 @@ JobStore jobStore()
 void serveWithJobs(string[] args, ServerConfig cfg)
 {
     auto startup = parseStartup(args);
-    (() @trusted => provideUseCases())(); // sound: once, on the main thread, before any worker exists
     final switch (startup.role)
     {
         case ProcessRole.api:
@@ -60,11 +69,11 @@ void serveWithJobs(string[] args, ServerConfig cfg)
             serve(&buildApp, cfg);
             break;
         case ProcessRole.worker:
-            runJobs!AllJobs(jobStore(), startup, cfg);
+            runJobs!AllJobs(jobStore(), startup, cfg, true, 0, jobHooks());
             break;
         case ProcessRole.all:
             applyJobGrace(cfg);
-            serve(&buildApp, cfg, supervisorHook!AllJobs(jobStore(), startup));
+            serve(&buildApp, cfg, supervisorHook!AllJobs(jobStore(), startup, jobHooks()));
             break;
     }
 }

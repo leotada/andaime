@@ -149,26 +149,34 @@ Changed, because of andaime and D:
 
 ## Background jobs
 
-A job is an entry point, like a controller: its fields are the payload, and `perform` hands them to a use case. andaime:jobs
-builds a job from its JSON, so a job has no constructor to receive the use case through. `adapters/jobs/provider.d` fills
-the gap: `jobs.d` registers how to build each use case before serving, and each thread that runs jobs builds its own on
-first use, with its own pool.
+A job is an entry point, like a controller. It comes in two parts: the payload (the `@Job` struct: what is stored) and its
+handler (a class that receives the use case through its constructor and hands it the payload). `jobs.d` is the jobs'
+composition root: `buildJobs` builds the handlers over `currentAdapters()`, once, on the thread that runs the jobs, as
+`buildApp` builds the routes. A job of `AllJobs` without a handler stops the start.
 
 ```d
+// adapters/jobs/users.d
 @Job("default")
-struct SendWelcomeJob
-{
-    long userId;
+struct SendWelcomeJob { long userId; }
 
-    void perform(ref JobContext ctx) @safe
-    {
-        provided!SendWelcome.get().execute(userId);
-    }
+final class SendWelcomeHandler
+{
+    private SendWelcome useCase;
+    this(SendWelcome useCase) { this.useCase = useCase; }
+    void perform(const SendWelcomeJob job, ref JobContext ctx) @safe { useCase.execute(job.userId); }
 }
 
-// jobs.d, before serving
-provided!SendWelcome.provide(() => new SendWelcome(currentAdapters().users));
+// jobs.d
+JobHandlers buildJobs()
+{
+    auto handlers = new JobHandlers;
+    handlers.handle!SendWelcomeJob(new SendWelcomeHandler(new SendWelcome(currentAdapters().users)));
+    return handlers;
+}
 ```
+
+No global, no `@trusted`: the tests build a handler over in-memory adapters and pass it to `drainJobs`
+([jobs-and-cron.md](jobs-and-cron.md#jobs-that-receive-their-dependencies-handlers)).
 
 The other direction, a use case that schedules a job, is a port like any other effect on the outside world:
 

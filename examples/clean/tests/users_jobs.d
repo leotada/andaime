@@ -5,18 +5,18 @@ module tests.users_jobs 2025;
 
 import andaime;
 import andaime.jobs;
-import adapters.jobs.provider : provided;
 import adapters.jobs.users;
 import adapters.memory.users : MemoryUserRepository;
 import usecases.users;
 
-unittest // SendWelcomeJob carries its payload and runs SendWelcome
+unittest // SendWelcomeJob carries its payload, and its handler runs SendWelcome
 {
-    (() @trusted => provided!SendWelcome.provide(() => new SendWelcome(new MemoryUserRepository)))();
+    auto handlers = new JobHandlers;
+    handlers.handle!SendWelcomeJob(new SendWelcomeHandler(new SendWelcome(new MemoryUserRepository)));
     auto store = new TestJobStore;
     SendWelcomeJob job;
     job.userId = 1;
     enqueue(store, job);
     store.assertEnqueued!SendWelcomeJob(`"userId":1`);
-    store.drainJobs!SendWelcomeJob();
+    store.drainJobs!SendWelcomeJob(handlers);
 }

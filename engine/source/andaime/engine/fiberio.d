@@ -58,40 +58,214 @@ Scheduler currentScheduler;
 
 import core.thread.fiber : Fiber;
 
-/// A fiber with one slot for the layers above the engine: the engine's request fibers are `LocalFiber`s, and the server
-/// keeps the request's `Context` there (the logger reads the request id from it). A slot per fiber, not per thread: many
-/// requests interleave on one thread.
+/// The values the layers above the engine keep with one fiber: one per class type, found by `typeid` (see `fiberLocal`).
+/// Four types fit without allocating; more go to a heap array.
+struct FiberLocals
+{
+    private static struct Slot
+    {
+        TypeInfo_Class key;
+        Object value;
+    }
+
+    private Slot[4] fixed;
+    private Slot[] more;
+
+    /// The value kept for `key`, or null.
+    Object get(scope const TypeInfo_Class key) nothrow @nogc
+    {
+        foreach (ref s; fixed)
+            if (s.key is key)
+                return s.value;
+        foreach (ref s; more)
+            if (s.key is key)
+                return s.value;
+        return null;
+    }
+
+    /// Keeps `value` for `key` (null removes it) and returns the previous value.
+    Object put(TypeInfo_Class key, Object value) nothrow
+    {
+        foreach (ref s; fixed)
+            if (s.key is key)
+                return swap(s, value);
+        foreach (ref s; more)
+            if (s.key is key)
+                return swap(s, value);
+        if (value is null)
+            return null;
+        foreach (ref s; fixed)
+            if (s.key is null)
+            {
+                s = Slot(key, value);
+                return null;
+            }
+        foreach (ref s; more)
+            if (s.key is null)
+            {
+                s = Slot(key, value);
+                return null;
+            }
+        more ~= Slot(key, value);
+        return null;
+    }
+
+    /// Forgets every value (the fiber goes back to the pool).
+    void clear() nothrow @nogc
+    {
+        fixed[] = Slot.init;
+        more[] = Slot.init;
+    }
+
+    private static Object swap(ref Slot s, Object value) nothrow @nogc
+    {
+        auto old = s.value;
+        if (value is null)
+            s = Slot.init;
+        else
+            s.value = value;
+        return old;
+    }
+}
+
+/// A fiber that carries `FiberLocals` for the layers above the engine: the engine's request and background fibers are
+/// `LocalFiber`s. The server keeps the request's `Context` there (the logger reads the request id from it), andaime:jobs
+/// a job's `LogScope`, andaime:pg the open transaction. Per fiber, not per thread: many requests interleave on one thread.
 class LocalFiber : Fiber
 {
-    /// Whatever the layer above wants to keep with this fiber. The engine never reads it.
-    Object fiberLocal;
+    package FiberLocals locals;
 
     this(void delegate() dg, size_t stackSize) nothrow @trusted
     {
         // @trusted: Fiber's constructor only stores the delegate and maps the stack
         super(dg, stackSize);
     }
+
+    /// Forgets every fiber-local value. The engine calls it when the fiber goes back to its pool, so a reused fiber
+    /// starts empty.
+    final void clearLocals() nothrow @nogc
+    {
+        locals.clear();
+    }
 }
 
-/// The slot of the running `LocalFiber`, or null outside one.
-Object currentFiberLocal() nothrow @trusted
+/// The table used outside a `LocalFiber`: tests, the development server (one request at a time per thread),
+/// `WorkerInit`, an offload thread (which therefore never sees the values of the fiber that sent it work).
+private FiberLocals threadLocals;
+
+private FiberLocals* localsHere() nothrow @trusted
+{
+    // @trusted: Fiber.getThis only reads the running fiber of this thread; the pointer is to that fiber's own table
+    // (or this thread's) and every caller uses it before the fiber can yield
+    if (auto f = cast(LocalFiber) Fiber.getThis())
+        return &f.locals;
+    return &threadLocals;
+}
+
+/// This fiber's `T`, or null. Outside a `LocalFiber` it is this thread's. Allocates nothing.
+T fiberLocal(T)() nothrow if (is(T == class))
+{
+    return reinterpret!T(localsHere().get(typeid(T)));
+}
+
+/// Keeps `value` as this fiber's `T` (this thread's outside a `LocalFiber`) and returns the previous one, so a caller
+/// can restore it. Null removes it. Allocates only past four types on one fiber.
+T setFiberLocal(T)(T value) nothrow if (is(T == class))
+{
+    return reinterpret!T(localsHere().put(typeid(T), value));
+}
+
+/// Removes this fiber's `T`.
+void clearFiberLocal(T)() nothrow if (is(T == class))
+{
+    localsHere().put(typeid(T), null);
+}
+
+/// True when running in a `LocalFiber` (a request or background fiber of the engine).
+bool inLocalFiber() nothrow @trusted
 {
     // @trusted: Fiber.getThis only reads the running fiber of this thread
-    if (auto f = cast(LocalFiber) Fiber.getThis())
-        return f.fiberLocal;
-    return null;
+    return cast(LocalFiber) Fiber.getThis() !is null;
 }
 
-/// Sets the slot of the running `LocalFiber`; false (and nothing set) outside one.
-bool setCurrentFiberLocal(Object o) nothrow @trusted
+private T reinterpret(T)(Object o) nothrow @trusted
 {
-    // @trusted: as above; only the running fiber's own field is written
-    if (auto f = cast(LocalFiber) Fiber.getThis())
-    {
-        f.fiberLocal = o;
-        return true;
-    }
-    return false;
+    // @trusted: a slot keyed by typeid(T) is only ever written by setFiberLocal!T, which takes a T, so `o` is a T (or
+    // null); this skips the dynamic cast
+    return cast(T) cast(void*) o;
+}
+
+version (unittest)
+{
+    private final class LayerA { int v; this(int v) { this.v = v; } }
+    private final class LayerB { string v; this(string v) { this.v = v; } }
+    private class Base { }
+    private final class Derived : Base { }
+    private final class K1 { }
+    private final class K2 { }
+    private final class K3 { }
+    private final class K4 { }
+    private final class K5 { }
+}
+
+// two layers keep their own value; set returns the previous one; null and clear remove
+@safe unittest
+{
+    assert(fiberLocal!LayerA is null);
+    auto a = new LayerA(1);
+    assert(setFiberLocal(a) is null);
+    assert(setFiberLocal(new LayerB("b")) is null);
+    assert(fiberLocal!LayerA is a && fiberLocal!LayerB.v == "b");
+    auto a2 = new LayerA(2);
+    assert(setFiberLocal(a2) is a);
+    assert(fiberLocal!LayerA.v == 2);
+    clearFiberLocal!LayerA;
+    assert(fiberLocal!LayerA is null && fiberLocal!LayerB !is null);
+    setFiberLocal!LayerB(null);
+    assert(fiberLocal!LayerB is null);
+
+    // keyed by the static type: a Derived stored as Base is found as Base only
+    Base d = new Derived;
+    setFiberLocal(d);
+    assert(fiberLocal!Base is d && fiberLocal!Derived is null);
+    clearFiberLocal!Base;
+
+    // past the four fixed slots, and a freed slot is reused
+    setFiberLocal(new K1);
+    setFiberLocal(new K2);
+    setFiberLocal(new K3);
+    setFiberLocal(new K4);
+    auto k5 = new K5;
+    setFiberLocal(k5);
+    assert(fiberLocal!K5 is k5 && fiberLocal!K1 !is null);
+    clearFiberLocal!K2;
+    setFiberLocal(new LayerA(3));
+    assert(fiberLocal!LayerA.v == 3 && fiberLocal!K5 is k5);
+    threadLocals.clear();
+    assert(fiberLocal!K5 is null && fiberLocal!LayerA is null);
+}
+
+// a LocalFiber has its own table, apart from the thread's; clearLocals empties it
+@system unittest
+{
+    auto outside = new LayerA(10);
+    setFiberLocal(outside);
+    LayerA seenInside;
+    LocalFiber f;
+    f = new LocalFiber({
+        seenInside = fiberLocal!LayerA;
+        setFiberLocal(new LayerA(20));
+        assert(inLocalFiber());
+        Fiber.yield();
+        assert(fiberLocal!LayerA is null, "clearLocals empties the fiber's table");
+    }, 64 << 10);
+    f.call();
+    assert(seenInside is null, "a fiber does not see the thread's values");
+    assert(fiberLocal!LayerA is outside, "nor the thread the fiber's");
+    assert(!inLocalFiber());
+    f.clearLocals();
+    f.call();
+    clearFiberLocal!LayerA;
 }
 
 /// This thread's worker index, written by the engine before `WorkerInit`. 0 is the first worker, and the

@@ -1422,6 +1422,7 @@ final class EpollLoop : EventLoop, Scheduler
         // whole GC block reachable.
         w.req = Request.init;
         w.store[] = HeaderField.init;
+        w.clearLocals(); // the next request or background work starts with no fiber-local values
         inFlight--;
         w.output.shrinkTo(64 << 10); // a response peak does not stay pinned to the fiber
         if (w.poisoned)
@@ -1476,6 +1477,7 @@ final class EpollLoop : EventLoop, Scheduler
         w.waitFd = -1;
         w.poisoned = false;
         w.resetResponseState();
+        w.clearLocals();
         w.background = true;
         w.bg = work;
         trackBackground(w);

@@ -11,7 +11,7 @@ module andaime.jobs.backend 2025;
 @safe:
 
 import core.time : Duration, usecs;
-import andaime.engine.fiberio : currentFiberLocal, setCurrentFiberLocal;
+import andaime.engine.fiberio : inLocalFiber, setFiberLocal;
 import andaime.engine.offload : offload;
 import andaime.log : LogScope, setLogSyncScope;
 import andaime.jobs.job;
@@ -619,15 +619,16 @@ private void runTyped(J)(JobStore store, JobRecord rec) @safe
     // andaime.log lines of `perform` carry the job: through the fiber's slot, or the thread's scope without a fiber
     // (`drainJobs`). Not across `@Offload`: the pool thread has neither.
     auto fields = new LogScope().add("job", rec.name).add("job_id", rec.id).add("attempt", rec.attempt);
-    auto prevLocal = currentFiberLocal();
-    immutable inFiber = setCurrentFiberLocal(fields);
+    immutable inFiber = inLocalFiber();
     LogScope prevScope;
-    if (!inFiber)
+    if (inFiber)
+        prevScope = setFiberLocal(fields);
+    else
         prevScope = setLogSyncScope(fields);
     scope (exit)
     {
         if (inFiber)
-            setCurrentFiberLocal(prevLocal);
+            setFiberLocal(prevScope);
         else
             setLogSyncScope(prevScope);
     }

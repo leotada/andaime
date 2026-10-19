@@ -44,4 +44,14 @@ void main()
     assert(ctx.response.body.data == `{"id":21,"doubled":63,"even":false}`);
     printf("bytes allocated on the GC in 100k requests: %llu\n", cast(ulong)(after - before));
     assert(after == before, "the hot path allocated on the GC");
+
+    // What server.d does per request with the fiber-local Context (here on the thread's table: no fiber).
+    immutable localsBefore = GC.allocatedInCurrentThread;
+    foreach (i; 0 .. 100_000)
+    {
+        setFiberLocal(ctx);
+        assert(fiberLocal!Context is ctx);
+        clearFiberLocal!Context;
+    }
+    assert(GC.allocatedInCurrentThread == localsBefore, "fiber-local set/get/clear allocated on the GC");
 }

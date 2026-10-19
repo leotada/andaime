@@ -8,6 +8,8 @@ public import andaime.staticfiles : serveStatic, StaticConfig;
 public import andaime.engine.loop : ServerConfig, TlsConfig, ErrorBody, jsonErrorBodies;
 // Cooperative I/O for handlers: wait without blocking the worker
 public import andaime.engine.fiberio : sleep, awaitFd, IoEvent, RequestCancelled, spawn, stopping, workerIndex;
+// Per-fiber values for code below a handler or a job (one per class type)
+public import andaime.engine.fiberio : fiberLocal, setFiberLocal, clearFiberLocal;
 // Blocking work (DNS, CPU, C libs) and outgoing HTTP calls, both cooperative
 public import andaime.engine.offload : offload, configureOffload, PoolSaturated;
 public import andaime.engine.httpclient : httpClient, HttpClient, HttpClientConfig, HttpClientError,

@@ -63,6 +63,37 @@ void hookCancel()
     spawn(&cancelFiber);
 }
 
+final class Marker { }
+
+shared int localsSeen; // 1: the reused fiber started empty; 2: it saw the previous fiber's value
+
+/// Sets a fiber-local value and returns: its worker goes back to the idle pool.
+void setterFiber()
+{
+    setFiberLocal(new Marker);
+    assert(fiberLocal!Marker !is null);
+}
+
+/// Runs on the worker `setterFiber` left behind (the pool is a stack, and this one's spawner is still running).
+void readerFiber()
+{
+    atomicStore(localsSeen, fiberLocal!Marker is null ? 1 : 2);
+    atomicStore(phase, 2);
+}
+
+void spawnerFiber()
+{
+    sleep(50.msecs); // setterFiber has finished by now
+    spawn(&readerFiber);
+    atomicStore(phase, 1);
+}
+
+void hookLocals()
+{
+    spawn(&setterFiber);
+    spawn(&spawnerFiber);
+}
+
 @system:
 
 App build()
@@ -165,6 +196,29 @@ void testCancelsAtDeadline()
     ok("shutdownGraceMs cancels a background fiber that is still sleeping");
 }
 
+/// A pooled fiber forgets its fiber-local values before it runs other work.
+void testReusedFiberStartsEmpty()
+{
+    resetFlags();
+    atomicStore(localsSeen, 0);
+    ServerConfig cfg;
+    cfg.accept = false;
+    cfg.workers = 1;
+
+    bool result;
+    auto t = new Thread({
+        result = tryServe(&build, cfg, &hookLocals);
+    });
+    t.start();
+    if (!waitUntil(2, -1, 2000))
+        assert(0, "the reader fiber did not run");
+    kill(getpid(), SIGTERM);
+    t.join();
+    assert(result);
+    assert(atomicLoad(localsSeen) == 1, "a reused fiber saw the previous work's fiber-local value");
+    ok("a reused fiber starts with no fiber-local values");
+}
+
 void main()
 {
     auto guard = new Thread({
@@ -177,5 +231,6 @@ void main()
 
     testStopsWhenFibersFinish();
     testCancelsAtDeadline();
+    testReusedFiberStartsEmpty();
     printf("all background-fiber tests passed\n");
 }

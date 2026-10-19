@@ -9,7 +9,7 @@ import andaime.web.application : App;
 import andaime.web.stream : sendResponse;
 import andaime.web.context : Context;
 import andaime.engine.loop : ServerConfig, HandlerFactory, RequestCallback, WorkerInit;
-import andaime.engine.fiberio : workerIndex, currentFiberLocal, setCurrentFiberLocal;
+import andaime.engine.fiberio : workerIndex, fiberLocal, setFiberLocal, clearFiberLocal, inLocalFiber;
 import andaime.log : LogScope, setLogFiberSource;
 
 /// andaime.log's context inside an engine fiber: the id of the Context the running request fiber carries, or the LogScope
@@ -17,18 +17,16 @@ import andaime.log : LogScope, setLogFiberSource;
 /// never falls back to another request's.
 private bool fiberRequestId(out const(char)[] id, out LogScope fields) nothrow
 {
-    auto local = currentFiberLocal();
-    if (auto ctx = cast(Context) local)
-    {
-        id = ctx.logRequestId();
-        return true;
-    }
-    if (auto s = cast(LogScope) local)
+    if (!inLocalFiber())
+        return false;
+    if (auto s = fiberLocal!LogScope)
     {
         fields = s;
         return true;
     }
-    return false;
+    if (auto ctx = fiberLocal!Context)
+        id = ctx.logRequestId();
+    return true;
 }
 import core.stdc.stdlib : exit;
 import core.sync.mutex : Mutex;
@@ -240,9 +238,10 @@ HandlerFactory handlerFactory(App app)
         ctx.newDeflate = (int bits, bool noContext) => zlibDeflate(bits, noContext); // WebSocket compression
         RequestCallback cb = (ref Request req, ResponseSink sink) {
             ctx.reset(req, sink);
-            setCurrentFiberLocal(ctx); // the request fiber carries its Context (andaime.log reads the request id)
+            setFiberLocal(ctx); // the request fiber carries its Context (andaime.log reads the request id)
             scope (exit)
             {
+                clearFiberLocal!Context;
                 ctx.response.body.shrinkTo(64 << 10); // a response peak does not stay pinned to the Context
                 ctx.request = Request.init;           // nor does a request body: an idle fiber must not pin its buffer
                 ctx.sink = null;

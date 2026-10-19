@@ -84,9 +84,25 @@ void checkChunked(const(char)[] input)
     assert(n0 <= data.length);
 }
 
+/// The engine's lookups for its own error answers on ANY bytes: the raw header scan returns a view inside the input with
+/// no CR or LF, and the Accept matcher never fails (it reads the input both as a header and as a media type).
+void checkRawHeader(const(char)[] buf)
+{
+    import andaime.http.accept : acceptRank, rawHeaderValue;
+
+    auto v = rawHeaderValue(buf, "accept");
+    assert(within(v, buf), "rawHeaderValue returned bytes outside the input");
+    foreach (c; v)
+        assert(c != '\r' && c != '\n', "rawHeaderValue returned a line break");
+    cast(void) acceptRank(v, "application/json");
+    cast(void) acceptRank(buf, "text/html");
+    cast(void) acceptRank("text/*, */*;q=0", buf);
+}
+
 void check(const(char)[] buf, in Limits lim = Limits.init)
 {
     checkChunked(buf);
+    checkRawHeader(buf);
     auto store = new HeaderField[32]; // (heap: `r` keeps views into the store)
     Request r;
     auto h = parseRequestHead(buf, r, store, lim);

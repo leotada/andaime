@@ -12,6 +12,7 @@ public import andaime.http.texttype;
 public import andaime.http.utf8;
 public import andaime.http.buffer;
 public import andaime.http.parser;
+public import andaime.http.accept;
 public import andaime.http.multipart;
 public import andaime.http.response;
 public import andaime.http.writer;

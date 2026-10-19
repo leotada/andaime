@@ -1364,7 +1364,7 @@ final class EpollLoop : EventLoop, Scheduler
         {
             rejected++;
             static immutable HeaderField[1] retry = [HeaderField("Retry-After", "1")];
-            putEngineError(503, retry[]);
+            putEngineError(503, retry[], requestAccept(c));
             sendRaw(c, errOut.data);
             closeAfterSend(c);
             return;
@@ -2847,7 +2847,7 @@ final class EpollLoop : EventLoop, Scheduler
         {
             const(char)[] host;
             if (req.target == "*" || !hostForRedirect(req.header("host"), host))
-                writeResponseHead(errOut, 400, null, 0, null, req.keepAlive);
+                putEngineError(400, null, req.header("accept"), req.keepAlive);
             else
             {
                 // "https://" host [":" port] target; the parser already rejected control characters
@@ -2872,7 +2872,7 @@ final class EpollLoop : EventLoop, Scheduler
                 }
                 add(req.target);
                 if (n == loc.length)
-                    writeResponseHead(errOut, 414, null, 0, null, req.keepAlive);
+                    putEngineError(414, null, req.header("accept"), req.keepAlive);
                 else
                 {
                     HeaderField[1] h = [HeaderField("Location", loc[0 .. n])];
@@ -3733,23 +3733,60 @@ final class EpollLoop : EventLoop, Scheduler
 
     private void sendErrorAndClose(Conn c, int status)
     {
-        putEngineError(status, null);
+        putEngineError(status, null, requestAccept(c));
         sendRaw(c, errOut.data);
         closeAfterSend(c);
     }
 
-    /// An answer the engine gives by itself, into `errOut`, with its `cfg.errorBodies` body if there is one.
-    private void putEngineError(int status, scope const HeaderField[] extra)
+    /// The `Accept` of `c`'s current request, for `errorBodies`: from the parsed head, or scanned in the raw bytes of a
+    /// head the parser rejected. Looked up only when some entry has an `accept`.
+    private const(char)[] requestAccept(Conn c)
+    {
+        bool wanted;
+        foreach (ref b; cfg.errorBodies)
+            wanted |= b.accept.length > 0;
+        if (!wanted || c.buf.isNull || c.buf.len == 0)
+            return null;
+        if (c.haveHead)
+            return parsedHead(c).header("accept");
+        return rawHeaderValue(cast(const(char)[]) c.buf.data, "accept");
+    }
+
+    /// An answer the engine gives by itself, into `errOut`, with its `cfg.errorBodies` body if there is one: among the
+    /// entries for `status` with an `accept`, the first the request names, else the first it takes through a wildcard;
+    /// else the first one for `status` without an `accept`.
+    private void putEngineError(int status, scope const HeaderField[] extra, scope const(char)[] accept,
+        bool keepAlive = false)
     {
         errOut.clear();
+        // the first entry the request names (Accept: text/html), else the first it takes through a wildcard
+        const(ErrorBody)* pick;
+        AcceptRank best = AcceptRank.refused;
         foreach (ref b; cfg.errorBodies)
-            if (b.status == status)
+            if (b.status == status && b.accept.length)
             {
-                writeResponseHead(errOut, status, b.contentType, b.body_.length, extra, false);
-                errOut.put(b.body_);
-                return;
+                immutable rank = acceptRank(accept, b.accept);
+                if (rank > best)
+                {
+                    best = rank;
+                    pick = &b;
+                }
             }
-        writeResponseHead(errOut, status, null, 0, extra, false);
+        if (pick is null)
+            foreach (ref b; cfg.errorBodies)
+                if (b.status == status && b.accept.length == 0)
+                {
+                    pick = &b;
+                    break;
+                }
+        if (pick !is null)
+        {
+            immutable sent = pick.replyStatus ? pick.replyStatus : status;
+            writeResponseHead(errOut, sent, pick.contentType, pick.body_.length, extra, keepAlive);
+            errOut.put(pick.body_);
+            return;
+        }
+        writeResponseHead(errOut, status, null, 0, extra, keepAlive);
     }
 
     /// Closes `c`, but only once the responses `coalesce` held back are out (`writeTimeoutMs` at most): they answer

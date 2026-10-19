@@ -1,0 +1,4 @@
+GET / HTTP/1.1
+Host: t
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+

@@ -982,6 +982,53 @@ void testErrorBodies()
     ok("errorBodies: the engine's own 400, 413, 505 and 503 carry the configured body; none by default");
 }
 
+/// `ErrorBody.replyStatus` sends another status; `ErrorBody.accept` picks the body by the request's `Accept`, read from
+/// the raw bytes when the head did not parse.
+void testErrorBodyChoice()
+{
+    import std.algorithm : canFind;
+
+    ServerConfig cfg;
+    cfg.errorBodies = [
+        ErrorBody(431, `{"message":"too large"}`, "application/json", 413),
+        ErrorBody(400, `{"detail":"bad request"}`, "application/json", 0, "application/json"),
+        ErrorBody(400, "<h1>Bad request</h1>", "text/html", 0, "text/html"),
+        ErrorBody(400, "bad request", "text/plain"),
+    ];
+    auto s = start(cfg);
+    scope (exit) stop(s);
+
+    auto c = dial(s.port);
+    string many = "GET /fast HTTP/1.1\r\nHost: t\r\n";
+    foreach (i; 0 .. 40)
+        many ~= "X-H" ~ cast(char)('a' + i % 26) ~ cast(char)('a' + i / 26) ~ ": v\r\n";
+    c.tx(many ~ "\r\n");
+    auto r = c.rx();
+    assert(r.status == 413 && r.body == `{"message":"too large"}`, r.head);
+    c.hang();
+
+    string bad(string accept) => "GET /x HTTP/1.1\r\nHost: t\r\n" ~ accept ~ "A: b\r\n c\r\n\r\n"; // obs-fold: 400
+    c = dial(s.port);
+    c.tx(bad("Accept: application/json\r\n"));
+    r = c.rx();
+    assert(r.status == 400 && r.body == `{"detail":"bad request"}`, r.body);
+    c.hang();
+    c = dial(s.port);
+    c.tx(bad("Accept: text/html,application/xhtml+xml;q=0.9,*/*;q=0.8\r\n"));
+    r = c.rx();
+    assert(r.status == 400 && r.body == "<h1>Bad request</h1>" && r.head.canFind("Content-Type: text/html"), r.head);
+    c.hang();
+    c = dial(s.port);
+    c.tx(bad("Accept: image/png\r\n"));
+    assert(c.rx().body == "bad request", "no accept matches: the entry without one");
+    c.hang();
+    c = dial(s.port);
+    c.tx(bad(""));
+    assert(c.rx().body == `{"detail":"bad request"}`, "no Accept takes the first entry for the status");
+    c.hang();
+    ok("errorBodies: replyStatus sends another status; accept picks the body, also for a head that did not parse");
+}
+
 void testConnectionDeadlines()
 {
     ServerConfig cfg;
@@ -1191,6 +1238,7 @@ void main()
     testPoolShrink();
     testInvalidInput();
     testErrorBodies();
+    testErrorBodyChoice();
     testConnectionDeadlines();
     testGracefulStop();
     testTwoWorkers();

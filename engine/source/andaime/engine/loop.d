@@ -108,6 +108,11 @@ struct ServerConfig
     /// a head or body too slow (408), a body over the limit (413), a head over the limit (431), an unsupported transfer
     /// coding (501), the in-flight ceiling (503), an unsupported version (505). A status without an entry has no body.
     /// `jsonErrorBodies()` gives `{"detail":"..."}` for each, like the app's own 404 and 405.
+    ///
+    /// For a status, the entries with an `accept` come first: the first one the request's `Accept` names wins, else the
+    /// first it takes through a wildcard (`*/*`, or no `Accept` at all); when none is taken, the first entry for the status
+    /// with an empty `accept`. For a head that did not parse, `Accept` is read from its raw bytes. HTTP/2 streams and the
+    /// development server answer these with no body.
     const(ErrorBody)[] errorBodies;
 }
 
@@ -117,6 +122,12 @@ struct ErrorBody
     int status;
     string body_;
     string contentType = "application/json";
+    /// When not 0, the status actually sent instead of `status`: for an application that must keep an older contract
+    /// (413 for a head too large, say). The default keeps the correct status.
+    int replyStatus = 0;
+    /// A media range (`application/json`, `text/html`, `text/*`, `*/*`): the entry is used only when the request's
+    /// `Accept` takes it. Empty: any request. A request without `Accept` takes every entry.
+    string accept;
 }
 
 /// `{"detail":"<reason>"}` bodies for every status the engine answers by itself (see `ServerConfig.errorBodies`).

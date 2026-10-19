@@ -27,7 +27,7 @@
 | `tls` (`certFile`, `keyFile`, `reloadCheckMs`, `redirectPort`, `acmeWebroot`) | off | see [tls.md](tls.md) |
 | `logConnectionErrors` | true | log failed handshakes and HTTP/2 connection errors (rate-limited) |
 | `limits` (`maxHeadBytes`, `maxTargetBytes`, `maxBodyBytes`) | 8 KiB, 4 KiB, 1 MiB | request size limits (431, 414, 413) |
-| `errorBodies` | none | bodies of the HTTP/1.1 answers the engine gives before any handler runs (400, 408, 413, 414, 431, 501, 503, 505), as `ErrorBody(status, body, contentType)` entries; `cfg.errorBodies = jsonErrorBodies();` sends `{"detail":"..."}` like the app's 404 and 405 |
+| `errorBodies` | none | bodies of the HTTP/1.1 answers the engine gives before any handler runs (400, 408, 413, 414, 431, 501, 503, 505), as `ErrorBody(status, body, contentType, replyStatus, accept)` entries; `cfg.errorBodies = jsonErrorBodies();` sends `{"detail":"..."}` like the app's 404 and 405. `replyStatus` (0: keep) sends another status, for an older contract (`ErrorBody(431, body, "application/json", 413)`). `accept` (a media range) uses the entry only for requests whose `Accept` takes it: the first entry the request names wins, then the first it takes through a wildcard, then the first without `accept` (JSON for an API client, HTML for a browser). HTTP/2 and the development server send these without a body |
 
 Other settings: `StaticConfig` (`serveStatic`), `OpenApiInfo` (`serveOpenApi`), `CorsConfig` (`cors`), `CookieOptions`
 (`setCookie`), `PgConfig` (`andaime:pg`), `HttpClientConfig`, `App.logStackTraces`, `App.trailingSlash` ([routing.md](routing.md)),

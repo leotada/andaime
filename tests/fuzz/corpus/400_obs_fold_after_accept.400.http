@@ -1,0 +1,6 @@
+GET /x HTTP/1.1
+Host: t
+Accept: text/html;q=0, */*
+A: b
+ c
+

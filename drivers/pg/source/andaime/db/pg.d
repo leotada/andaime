@@ -31,7 +31,8 @@ import andaime.engine.os : NotifyFd;
 
 import andaime.http.texttype : isTextType, textFromString, textToString;
 import andaime.http.naming : applyNaming, namingOf, parseEnumWire, enumToWire;
-import andaime.engine.fiberio : awaitFd, currentScheduler, IoEvent, RequestCancelled;
+import andaime.engine.fiberio : awaitFd, currentScheduler, IoEvent, RequestCancelled, fiberLocal, setFiberLocal,
+    offloadSenderLocal;
 import andaime.engine.offload : offload, offloadPool;
 import andaime.db.libpq;
 
@@ -656,6 +657,12 @@ struct PgConfig
     /// Called after every statement a pooled connection runs, successful or not (see `QueryEvent`): count queries in a
     /// test, log the slow ones. It runs on the request's fiber, so `andaime.log` lines carry the request id. Null: nothing.
     QueryHook onQuery;
+    /// `query` and `exec` on the pool outside a `transaction` (and outside a pinned connection) throw instead of
+    /// autocommitting: for an application where every statement belongs to a unit of work. `lease` stays available.
+    bool requireTransaction = false;
+    /// Receives the exception of an `afterCommit` callback that failed (the commit stands). Null: one line on stderr.
+    /// Set it to log through `andaime.log` (this driver does not depend on it).
+    void delegate(Exception) @safe nothrow onCallbackError;
 }
 
 /// The access mode of a `transaction`.
@@ -1161,6 +1168,31 @@ private string trimEol(string s) pure nothrow @safe
 
 // ============================================================ pool
 
+/// A transaction a fiber holds open on one pool (see `PgPool.transaction`), kept as the fiber's `fiberLocal!PgAmbient`:
+/// a short list, one node per pool with a transaction open on this fiber, innermost first.
+private final class PgAmbient
+{
+    PgPool pool;
+    PgConn conn;
+    void delegate() @safe[] afterCommit;
+    PgAmbient next;
+
+    this(PgPool pool, PgConn conn) nothrow
+    {
+        this.pool = pool;
+        this.conn = conn;
+    }
+}
+
+private void printCallbackError(Exception e) nothrow @trusted
+{
+    // @trusted: fprintf with a length-bounded %.*s of the message's own slice
+    import core.stdc.stdio : fprintf, stderr;
+
+    fprintf(stderr, "andaime.db: an afterCommit callback failed (the commit stands): %.*s\n", cast(int) e.msg.length,
+        e.msg.ptr);
+}
+
 private final class Waiter
 {
     NotifyFd notify;
@@ -1192,8 +1224,14 @@ final class PgPool
     /// Give it back with `release` (or use `lease`/`query`).
     PgConn acquire()
     {
+        version (assert)
+            if (auto sent = offloadSenderLocal!PgAmbient)
+                assert(0, "andaime.db: a pooled query ran inside offload while the fiber that sent the work has a "
+                    ~ "transaction open; the offloaded work cannot see it: run the query before or after offload");
         if (pinned !is null)
             return pinned;
+        if (auto a = ambient())
+            return a.conn; // this fiber's transaction on this pool: every statement joins it
         immutable deadline = MonoTime.currTime + cfg.acquireTimeout;
         for (;;)
         {
@@ -1261,6 +1299,10 @@ final class PgPool
     {
         if (c is null || c is pinned)
             return;
+        if (auto a = ambient())
+            if (a.conn is c)
+                return; // lent to a statement inside the transaction: the transaction gives it back
+
         if (!c.usable)
         {
             c.shutdown();
@@ -1301,9 +1343,11 @@ final class PgPool
     /// Lends a connection for a scope: returned by itself on exit.
     Lease lease() => Lease(this, acquire());
 
-    /// Shortcut: takes a connection, runs and gives it back.
+    /// Shortcut: takes a connection, runs and gives it back. Inside this fiber's `transaction` it runs in it.
     PgResult query(Args...)(const(char)[] sql, Args args)
     {
+        if (cfg.requireTransaction && pinned is null && ambient() is null)
+            throw new PgError("andaime.db: requireTransaction is set; run this statement inside pool.transaction");
         auto l = lease();
         return l.conn.query(sql, args);
     }
@@ -1313,12 +1357,111 @@ final class PgPool
         query(sql, args).close();
     }
 
-    /// Runs `body` inside BEGIN/COMMIT on the same connection; ROLLBACK if it throws (see `PgConn.transaction`; on a
-    /// pinned connection that is already in a transaction, it becomes a savepoint).
+    /// Runs `body` inside BEGIN/COMMIT on one connection; ROLLBACK if it throws (see `PgConn.transaction`).
+    ///
+    /// The transaction is **ambient**: until it ends, every `query`, `exec`, `lease` and `transaction` on this pool from
+    /// the same fiber runs on its connection, so code that only holds the pool (two repositories, a job store) writes in
+    /// one transaction. A nested `transaction` is a savepoint and keeps the outer mode. Other fibers, and work sent to
+    /// `offload` (another thread), do not see it: they get their own connections. On a pinned connection that is already
+    /// in a transaction (`rollbackAfter`), the outermost one is a savepoint too.
+    ///
+    /// When the outermost transaction commits, the `afterCommit` callbacks registered inside it run.
     T transaction(T)(T delegate(PgConn) @safe body_, TxMode mode = TxMode.readWrite)
     {
+        if (auto a = ambient())
+        {
+            // joined: a savepoint; callbacks registered inside it are dropped if it rolls back
+            immutable mark = a.afterCommit.length;
+            scope (failure)
+                if (a.afterCommit.length > mark)
+                    a.afterCommit = a.afterCommit[0 .. mark];
+            return a.conn.transaction(body_, mode);
+        }
+        PgAmbient done;
+        static if (is(T == void))
+        {
+            outermost(body_, mode, done);
+            runAfterCommit(done);
+        }
+        else
+        {
+            auto r = outermost(body_, mode, done);
+            runAfterCommit(done);
+            return r;
+        }
+    }
+
+    /// The outermost transaction of this fiber on this pool: the connection is this fiber's for the duration, then goes
+    /// back to the pool (before the callbacks run, so they can use it). `done` is set only when it committed.
+    private T outermost(T)(T delegate(PgConn) @safe body_, TxMode mode, out PgAmbient done)
+    {
         auto l = lease();
-        return l.conn.transaction(body_, mode);
+        auto a = new PgAmbient(this, l.conn);
+        a.next = setFiberLocal(a);
+        scope (exit)
+            setFiberLocal(a.next);
+        static if (is(T == void))
+        {
+            l.conn.transaction(body_, mode);
+            done = a;
+        }
+        else
+        {
+            auto r = l.conn.transaction(body_, mode);
+            done = a;
+            return r;
+        }
+    }
+
+    /// True while this fiber is inside a `transaction` on this pool.
+    bool inTransaction() nothrow => ambient() !is null;
+
+    /// Runs `dg` once the outermost `transaction` of this fiber on this pool has committed, on the same fiber, in the
+    /// order registered; never after a rollback (nor when a savepoint that registered it rolls back). Outside a
+    /// transaction it runs at once. A callback that throws an `Exception` does not undo the commit, nor stop the others:
+    /// it goes to `PgConfig.onCallbackError`. Use it for effects that must not happen unless the data is stored (a cache
+    /// purge, a message to another system); a job meant to survive a crash belongs in the transaction itself
+    /// (andaime:pgjobs' `enqueue` joins it).
+    void afterCommit(void delegate() @safe dg)
+    {
+        if (dg is null)
+            return;
+        if (auto a = ambient())
+        {
+            a.afterCommit ~= dg;
+            return;
+        }
+        runCallback(dg);
+    }
+
+    private void runAfterCommit(PgAmbient a)
+    {
+        if (a is null)
+            return;
+        foreach (dg; a.afterCommit)
+            runCallback(dg);
+    }
+
+    private void runCallback(void delegate() @safe dg)
+    {
+        try
+            dg();
+        catch (Exception e)
+        {
+            if (cfg.onCallbackError !is null)
+                cfg.onCallbackError(e);
+            else
+                printCallbackError(e);
+        }
+    }
+
+    /// This fiber's open transaction on this pool, or null.
+    private PgAmbient ambient() nothrow
+    {
+        for (auto a = fiberLocal!PgAmbient; a !is null; a = a.next)
+            if (a.pool is this)
+                return a;
+        return null;
     }
 
     /// For tests: every `acquire` (and so `query`, `exec`, `transaction`, `lease`) hands out `c` until `unpin`, and giving

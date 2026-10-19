@@ -133,6 +133,43 @@ void testLegacyTables(PgConn admin)
     assert(captureLog({ newStore(admin); }).length == 0);
 }
 
+/// The outbox with no connection in sight: a plain `enqueue(store, job)` inside the pool's transaction joins it.
+void testAmbientEnqueue(PgConn admin)
+{
+    reset(admin);
+    auto store = new PgJobStore(pgConninfo()); // the schema is created lazily, from inside the transaction below
+    auto pool = pgPool(pgConninfo());
+    admin.exec("drop table if exists t_users");
+    admin.exec("create table t_users(id int)");
+    scope (exit) admin.exec("drop table t_users");
+
+    bool threw;
+    try
+        pool.transaction((PgConn _) {
+            pool.exec("insert into t_users values (1)");
+            enqueue(store, Ping(1));
+            throw new Exception("rollback");
+        });
+    catch (Exception e)
+        threw = e.msg == "rollback";
+    assert(threw);
+    assert(qint(admin, "select count(*)::int from t_users") == 0);
+    assert(qint(admin, "select count(*)::int from andaime_jobs") == 0, "the job left with the rollback");
+    assert(store.claimBatch("default", 10).length == 0);
+
+    bool afterRan;
+    pool.transaction((PgConn _) {
+        pool.exec("insert into t_users values (2)");
+        enqueue(store, Ping(2));
+        pool.afterCommit(() { afterRan = true; });
+        assert(qint(admin, "select count(*)::int from andaime_jobs") == 0, "not visible before the commit");
+    });
+    assert(afterRan);
+    assert(qint(admin, "select count(*)::int from andaime_jobs") == 1);
+    auto got = store.claimBatch("default", 10);
+    assert(got.length == 1 && got[0].payload == `{"n": 2}`, got.length ? got[0].payload : "none"); // jsonb's spacing
+}
+
 /// ROLLBACK drops the inserted row and does not leave a job `claimBatch` can see.
 void testRollback(PgConn admin)
 {
@@ -533,6 +570,8 @@ void main()
     ok("lease returns an abandoned running row to retryable");
     testNotify(admin);
     ok("notify wakes the listener");
+    testAmbientEnqueue(admin);
+    ok("enqueue joins the pool's transaction: rolled back with it, claimed after its commit");
     testLegacyTables(admin);
     ok("ensureSchema warns once about a vela_jobs table");
     printf("all Postgres job tests passed\n");

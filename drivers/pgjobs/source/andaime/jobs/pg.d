@@ -116,7 +116,10 @@ final class PgJobStore : JobStore, JobRuntime
                 ~ "andaime_cron_executions before starting)", "vela_jobs exists but andaime_jobs does not");
     }
 
-    /// Inserts on a pooled connection and commits, including the notify.
+    /// Inserts on a pooled connection and commits, including the notify. Inside a `transaction` of the same pool on this
+    /// fiber (the store's pool is `pgPool(cfg)`: the repositories' pool when they use the same conninfo on this worker),
+    /// it joins that transaction instead: the job is stored, and its worker woken, only if the caller commits. That is
+    /// the transactional outbox, with no connection passed around.
     override EnqueueResult enqueue(JobSpec spec)
     {
         prepare(spec);
@@ -291,6 +294,15 @@ final class PgJobStore : JobStore, JobRuntime
     {
         if (schemaReady)
             return;
+        if (pool.inTransaction)
+        {
+            // enqueue inside the caller's transaction: the schema needs its own autocommit connection (see ensureSchema)
+            auto c = PgConn.connect(cfg.conninfo, cfg.connectTimeout, cfg.queryTimeout);
+            scope (exit)
+                c.shutdown();
+            ensureSchema(c);
+            return;
+        }
         auto l = pool.lease();
         ensureSchema(l.conn);
     }

@@ -181,6 +181,31 @@ void clearFiberLocal(T)() nothrow if (is(T == class))
     localsHere().put(typeid(T), null);
 }
 
+/// Set on a pool thread while it runs work sent by `offload` (only when asserts are on): a copy of the sending fiber's
+/// table, taken when the work was submitted. Lets a layer check that offloaded work does not rely on a fiber-local value
+/// it cannot see (andaime:pg asserts that a pooled query does not run there while the sender is in a transaction).
+version (assert) package FiberLocals* offloadSender;
+
+/// The sending fiber's `T` while running work sent by `offload`, for checks; null elsewhere and when asserts are off.
+/// Never use it to share state: the offloaded work runs on another thread.
+T offloadSenderLocal(T)() nothrow if (is(T == class))
+{
+    version (assert)
+    {
+        if (offloadSender is null)
+            return null;
+        return reinterpret!T(offloadSender.get(typeid(T)));
+    }
+    else
+        return null;
+}
+
+/// A copy of this fiber's table (no allocation: the overflow array is shared, and only read). For `offload`.
+package FiberLocals copyLocalsHere() nothrow
+{
+    return *localsHere();
+}
+
 /// True when running in a `LocalFiber` (a request or background fiber of the engine).
 bool inLocalFiber() nothrow @trusted
 {

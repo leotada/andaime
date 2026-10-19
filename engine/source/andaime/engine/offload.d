@@ -22,6 +22,8 @@ import core.thread : Thread;
 
 import andaime.engine.os : NotifyFd;
 import andaime.engine.fiberio : awaitFd, currentScheduler, IoEvent;
+version (assert)
+    import andaime.engine.fiberio : copyLocalsHere, FiberLocals, offloadSender;
 
 /// The pool queue is full: too much pending work.
 final class PoolSaturated : Exception
@@ -153,6 +155,8 @@ private final class Call(T)
     Throwable err;
     static if (!is(T == void))
         T value;
+    version (assert)
+        FiberLocals sender; // what offloadSenderLocal reads on the pool thread
 
     void release() nothrow @nogc @trusted
     {
@@ -171,8 +175,16 @@ T offload(T)(T delegate() @safe work) @trusted
     auto call = new Call!T;
     if (!call.nfd.open())
         throw new Exception("andaime: NotifyFd failed in offload");
+    version (assert)
+        call.sender = copyLocalsHere(); // a copy: the fiber may be cancelled and reused while the job runs
 
     auto job = delegate() @trusted {
+        version (assert)
+        {
+            offloadSender = &call.sender;
+            scope (exit)
+                offloadSender = null;
+        }
         try
         {
             static if (is(T == void))

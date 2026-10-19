@@ -81,6 +81,8 @@ string thumbnail(long id) => offload(() => resizeImage(load(id)));     // runs o
 - The pool is bounded: when its queue is full, `offload` throws `PoolSaturated` right away. Decide whether that becomes a 503.
 - Size it once, before `serve`: `configureOffload(threads, queueMax)`.
 - The work must not touch the request or the App: it runs on another thread. Pass it what it needs, return a result.
+  It does not see the fiber's per-request state either (`fiberLocal`), so a database transaction the fiber has open does not
+  extend to it; andaime:pg asserts (in a non-release build) when the work queries the pool in that case.
 - If the request is cancelled meanwhile, the work still finishes and its result is discarded.
 
 ## Cancellation

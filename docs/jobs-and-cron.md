@@ -428,6 +428,20 @@ pgPool("host=db.example.com dbname=app user=app").transaction((PgConn tx) {
 It does not `BEGIN` or `COMMIT`. `COMMIT` publishes both; `ROLLBACK` drops both. `enqueueJob(tx, store, job)` is that
 insert with the typed payload. `store.enqueue(spec)` borrows a pooled connection and commits.
 
+**The outbox without a connection.** `PgPool.transaction` is ambient (see [Database](database.md#one-transaction-across-repositories)):
+inside it, a plain `enqueue(store, job)` on this fiber joins the transaction when the store's pool is the same one, that
+is when the store and the repositories use the same conninfo on the same worker (`pgPool` is per thread and keyed by
+conninfo). So a use case that writes a user and schedules its welcome e-mail needs no `PgConn`:
+
+```d
+db.transaction((PgConn _) {
+    users.add(user);                        // a repository over `db`
+    enqueue(store, SendWelcome(user.id));   // stored only if the transaction commits
+});
+```
+
+The schema is created on a separate connection the first time (`ensureSchema` must not run inside a transaction).
+
 To test that code without a database, write it against `JobTransaction` (in `andaime.jobs`), which both stores provide:
 
 ```d

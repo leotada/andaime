@@ -118,6 +118,41 @@ one is open.
 transaction rolls back). Nested in another transaction it is a savepoint, which keeps the outer
 mode; so under `rollbackAfter` (a read-write harness) a read-only block does not refuse writes.
 
+### One transaction across repositories
+
+`db.transaction` is **ambient**: until it ends, every `query`, `exec`, `lease` and `transaction` on the same pool from the
+same fiber runs on its connection. Code that holds only the pool joins it, so two repositories built once per worker write
+in one transaction, and a use case decides where it begins without seeing a connection:
+
+```d
+final class PgOrders : Orders { PgPool db; void add(Order o) { db.exec("insert into orders ...", o.id); } }
+final class PgLines : Lines { PgPool db; void add(Line l) { db.exec("insert into lines ...", l.orderId); } }
+
+db.transaction((PgConn _) {
+    orders.add(order);   // same connection,
+    lines.add(line);     // same transaction: a throw rolls back both
+});
+```
+
+- A nested `transaction` is a savepoint. `db.inTransaction` tells whether this fiber has one open on this pool.
+- The transaction belongs to the fiber: another request, a `spawn`ed fiber or a job gets its own. Work sent to `offload`
+  runs on another thread and does not see it; with asserts on (a non-release build), a pooled query inside `offload` while
+  the sending fiber has a transaction open fails with an `andaime.db:` assertion. Run the query before or after `offload`.
+- A statement outside any transaction autocommits, as before. `PgConfig.requireTransaction = true` makes `query` and `exec`
+  on the pool throw instead, for an application that wants every statement inside a unit of work.
+- andaime:pgjobs' `enqueue(store, job)` joins it too when the store uses the same conninfo: the job exists only if the
+  transaction commits (see [Background jobs](jobs-and-cron.md)).
+
+### After the commit: `afterCommit`
+
+`db.afterCommit(() { cache.purge(id); })` runs the delegate once the outermost transaction of this fiber on this pool has
+committed, on the same fiber and in the order registered, after the connection went back to the pool. It never runs after a
+rollback, nor when the savepoint that registered it rolls back. Outside a transaction it runs at once. A callback that
+throws does not undo the commit nor stop the others: the exception goes to `PgConfig.onCallbackError` (one line on stderr
+when it is null; point it at `andaime.log`). Under `rollbackAfter`, the app's outermost transaction is a savepoint and its
+callbacks run when it ends. Use it for effects outside the database (a cache, a webhook); a job that must not be lost goes
+in the transaction itself.
+
 ### Tests that roll back
 
 `db.rollbackAfter(() { ... })` runs the delegate with the pool pinned to one connection inside a transaction that is

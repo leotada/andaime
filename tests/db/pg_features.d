@@ -470,6 +470,215 @@ void testStaleConnections()
     ok("pool: idle connections the server closed are dropped before use (pingAfter)");
 }
 
+int rowsIn(PgConn c, string table) => c.query("select count(*)::int from " ~ table).get!int(0, 0);
+
+/// The ambient transaction, on the calling thread (no fiber: the thread's table): code that only holds the pool joins it.
+void testAmbient()
+{
+    auto admin = connect();
+    scope (exit) admin.shutdown();
+    admin.exec("drop table if exists t_orders");
+    admin.exec("drop table if exists t_lines");
+    admin.exec("create table t_orders(id int primary key)");
+    admin.exec("create table t_lines(order_id int, n int)");
+    scope (exit)
+    {
+        admin.exec("drop table t_orders");
+        admin.exec("drop table t_lines");
+    }
+
+    PgConfig cfg;
+    cfg.conninfo = conninfo;
+    auto pool = new PgPool(cfg);
+    // two "repositories" that only know the pool
+    void addOrder(int id) { pool.exec("insert into t_orders values ($1)", id); }
+    void addLine(int id, int n) { pool.exec("insert into t_lines values ($1, $2)", id, n); }
+
+    // one connection for every statement of the transaction
+    assert(!pool.inTransaction);
+    pool.transaction((PgConn tx) {
+        assert(pool.inTransaction);
+        immutable pid = tx.query("select pg_backend_pid()").get!int(0, 0);
+        assert(pool.query("select pg_backend_pid()").get!int(0, 0) == pid);
+        auto l = pool.lease();
+        assert(l.conn is tx);
+        addOrder(1);
+        addLine(1, 10);
+        assert(pool.openCount == 1);
+    });
+    assert(!pool.inTransaction && rowsIn(admin, "t_orders") == 1 && rowsIn(admin, "t_lines") == 1);
+
+    // a failure rolls back both tables
+    try
+        pool.transaction((PgConn _) {
+            addOrder(2);
+            addLine(2, 20);
+            throw new Exception("rule broken");
+        });
+    catch (Exception) {}
+    assert(rowsIn(admin, "t_orders") == 1 && rowsIn(admin, "t_lines") == 1, "both writes were rolled back");
+
+    // a nested transaction is a savepoint: its failure keeps the outer work
+    pool.transaction((PgConn _) {
+        addOrder(3);
+        try
+            pool.transaction((PgConn __) {
+                addLine(3, 30);
+                throw new Exception("inner");
+            });
+        catch (Exception) {}
+        addLine(3, 31);
+    });
+    assert(admin.query("select string_agg(n::text, ',') from t_lines where order_id = 3").get!string(0, 0) == "31");
+
+    // afterCommit: after the outermost commit, in order; never after a rollback; a failed savepoint drops its own
+    string[] ran;
+    pool.transaction((PgConn _) {
+        pool.afterCommit(() { ran ~= "a"; });
+        pool.transaction((PgConn __) { pool.afterCommit(() { ran ~= "b"; }); });
+        try
+            pool.transaction((PgConn __) {
+                pool.afterCommit(() { ran ~= "dropped"; });
+                throw new Exception("inner");
+            });
+        catch (Exception) {}
+        assert(ran.length == 0, "nothing runs before the commit");
+    });
+    assert(ran == ["a", "b"], "after the commit, in order");
+    ran = null;
+    try
+        pool.transaction((PgConn _) {
+            pool.afterCommit(() { ran ~= "never"; });
+            throw new Exception("rollback");
+        });
+    catch (Exception) {}
+    assert(ran.length == 0);
+    pool.afterCommit(() { ran ~= "now"; });
+    assert(ran == ["now"], "outside a transaction it runs at once");
+
+    // a failing callback is reported, does not undo the commit, and the others still run
+    Exception reported;
+    PgConfig cfg2 = cfg;
+    cfg2.onCallbackError = (Exception e) nothrow { reported = e; };
+    auto pool2 = new PgPool(cfg2);
+    ran = null;
+    pool2.transaction((PgConn _) {
+        pool2.exec("insert into t_orders values (4)");
+        pool2.afterCommit(() { throw new Exception("mail server down"); });
+        pool2.afterCommit(() { ran ~= "second"; });
+    });
+    assert(reported !is null && reported.msg == "mail server down" && ran == ["second"]);
+    assert(admin.query("select count(*)::int from t_orders where id = 4").get!int(0, 0) == 1);
+    // the callbacks run once the connection is back: they can use the pool
+    pool2.transaction((PgConn _) {
+        pool2.afterCommit(() { assert(!pool2.inTransaction && pool2.query("select 1").get!int(0, 0) == 1); });
+    });
+
+    // inside rollbackAfter, the app's outermost transaction is a savepoint; its callbacks run when it ends
+    ran = null;
+    pool.rollbackAfter(() {
+        pool.transaction((PgConn _) {
+            addOrder(5);
+            addLine(5, 50);
+            pool.afterCommit(() { ran ~= "harness"; });
+        });
+        assert(ran == ["harness"]);
+        assert(pool.query("select count(*)::int from t_orders where id = 5").get!int(0, 0) == 1);
+    });
+    assert(admin.query("select count(*)::int from t_orders where id = 5").get!int(0, 0) == 0, "the harness rolled back");
+
+    // requireTransaction: no autocommit statement on the pool
+    PgConfig strict = cfg;
+    strict.requireTransaction = true;
+    auto pool3 = new PgPool(strict);
+    bool refused;
+    try
+        pool3.exec("insert into t_orders values (6)");
+    catch (PgError e)
+        refused = e.msg == "andaime.db: requireTransaction is set; run this statement inside pool.transaction";
+    assert(refused);
+    pool3.transaction((PgConn _) { pool3.exec("insert into t_orders values (6)"); });
+    assert(admin.query("select count(*)::int from t_orders where id = 6").get!int(0, 0) == 1);
+
+    pool.closeAll();
+    pool2.closeAll();
+    pool3.closeAll();
+    ok("ambient transaction: the pool's statements join it, rollback undoes both tables, savepoints, afterCommit, "
+        ~ "rollbackAfter, requireTransaction");
+}
+
+shared int fibersDone, fiberFailures, offloadAsserted;
+
+/// Two fibers of one worker, each in its own transaction, interleaving at every wait; offload does not see either.
+void ambientFibers() @system
+{
+    import core.atomic : atomicOp;
+    import core.exception : AssertError;
+
+    auto pool = pgPool(conninfo);
+    void one(int id)
+    {
+        try
+        {
+            static void offloadQuery(PgPool pool) @trusted // catches the AssertError offload carries back
+            {
+                try
+                    offload(() @safe => pool.query("select 1").get!int(0, 0));
+                catch (AssertError e)
+                    atomicOp!"+="(offloadAsserted, 1);
+            }
+            pool.transaction((PgConn tx) @safe {
+                pool.exec("insert into t_fibers values ($1)", id);
+                sleep(80.msecs); // the other fiber runs its transaction meanwhile
+                auto seen = pool.query("select string_agg(n::text, ',') from t_fibers").get!string(0, 0);
+                if (seen != (id == 1 ? "1" : "2"))
+                    atomicOp!"+="(fiberFailures, 1); // saw the other fiber's uncommitted row
+                if (id == 1)
+                    offloadQuery(pool);
+            });
+        }
+        catch (Throwable t)
+            atomicOp!"+="(fiberFailures, 1);
+        atomicOp!"+="(fibersDone, 1);
+    }
+    spawn(() @trusted { one(1); });
+    spawn(() @trusted { one(2); });
+}
+
+void testAmbientFibers() @system
+{
+    import core.atomic : atomicLoad;
+    import core.sys.posix.signal : kill, SIGTERM;
+    import core.sys.posix.unistd : getpid;
+    import core.thread : Thread;
+
+    auto admin = connect();
+    scope (exit) admin.shutdown();
+    admin.exec("drop table if exists t_fibers");
+    admin.exec("create table t_fibers(n int)");
+    scope (exit) admin.exec("drop table t_fibers");
+
+    ServerConfig cfg;
+    cfg.accept = false;
+    cfg.workers = 1;
+    App delegate() @system build = () => new App;
+    auto t = new Thread({ tryServe(build, cfg, () @trusted { ambientFibers(); }); });
+    t.start();
+    foreach (_; 0 .. 400)
+    {
+        if (atomicLoad(fibersDone) == 2)
+            break;
+        Thread.sleep(10.msecs);
+    }
+    kill(getpid(), SIGTERM);
+    t.join();
+    assert(atomicLoad(fibersDone) == 2 && atomicLoad(fiberFailures) == 0, "the fibers' transactions mixed");
+    version (assert)
+        assert(atomicLoad(offloadAsserted) == 1, "a pooled query inside offload during a transaction should assert");
+    assert(rowsIn(admin, "t_fibers") == 2);
+    ok("ambient transaction: two fibers keep their own; offload inside one asserts");
+}
+
 void main()
 {
     auto env = getenv("ANDAIME_PG");
@@ -490,5 +699,7 @@ void main()
     testSavepoints();
     testRollbackHarness();
     testStaleConnections();
+    testAmbient();
+    testAmbientFibers();
     printf("all Postgres feature tests passed\n");
 }

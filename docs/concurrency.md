@@ -53,6 +53,35 @@ startup. If it throws (a bad route, for example), the server prints one line and
 
 To run a single worker (an in-memory example, a test): `cfg.workers = 1`.
 
+### Per-request state below a handler: `fiberLocal`
+
+Many requests interleave on one worker thread (each suspends at its next wait), so a module-level variable is the wrong
+place for "the current request's" anything. Code below a handler that needs such a value (a tenant id for a repository,
+an audit context) keeps it with the request's fiber, one value per class type:
+
+```d
+final class AuditContext { string userId; this(string u) { userId = u; } }
+
+api.use((Context ctx, Next next) {
+    setFiberLocal(new AuditContext(ctx.request.header("x-user-id").idup));
+    next();
+});
+
+void audit(string what)                      // anywhere below, with no parameter passed down
+{
+    if (auto a = fiberLocal!AuditContext)
+        logInfo(what, "user", a.userId);
+}
+```
+
+- `setFiberLocal(value)` returns the previous value (to restore it), `clearFiberLocal!T` removes it, and getting a value
+  allocates nothing. The engine clears a fiber's values when it goes back to the pool, so a request never sees the
+  previous one's.
+- A background fiber (`spawn`) and a job have their own. Work sent to `offload` runs on another thread and does not see
+  them. Outside a fiber (`TestClient`, the development server) the same calls use a per-thread table.
+- andaime uses it itself: the logger's request id, a job's log fields, and andaime:pg's open transaction.
+- For values a handler takes as a parameter, prefer `ctx.locals` and `Local!T` ([middleware.md](middleware.md)).
+
 ## Waiting without blocking
 
 Inside a handler, everything that waits must go through andaime:

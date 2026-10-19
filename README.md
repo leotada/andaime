@@ -156,7 +156,10 @@ app.d(12): andaime: handler 'getUser' in GET /users/{id}: the route declares {id
 - ✅ **OpenAPI 3 + Swagger UI** generated from the same signatures
 - ✅ **Return what you mean**: `void` → 204, `string` → text, structs/arrays → JSON, `@status(201)`, `Response`
 - ✅ **One-line compile errors** for every invalid handler signature, each pinned by a `tests/compile_fail` case
-- ✅ `PatchField` (omitted vs `null`), `Optional`, `JsonValue`, `Local!T` for middleware state
+- ✅ `PatchField` (omitted vs `null`), `Optional`, `JsonValue`, `Uuid` (v4/v7): pure values in `andaime.values` that a domain may import
+- ✅ **One error format for the whole app**: `app.errorBody(...)` shapes mapped exceptions, `HttpError`, 404, 405, 422 and 500 (RFC 9457 ready-made)
+- ✅ **One naming policy for the project**: `versions "AndaimeNamingSnakeCase"` spells JSON, queries, OpenAPI and columns, with no attribute on your types
+- ✅ `Local!T` for middleware state, `copyAs!Dst(src)` for DTOs that differ by a few fields
 
 ### 🌐 Protocols (no reverse proxy needed)
 - ✅ **HTTP/1.1** with pipelining, **HTTP/2** over TLS and cleartext (`h2c`)
@@ -168,6 +171,7 @@ app.d(12): andaime: handler 'getUser' in GET /users/{id}: the route declares {id
 - ✅ **One worker per core** (`SO_REUSEPORT`), each with its own event loop
 - ✅ **One fiber per request**: write sequential code, no `async`/`await`. A DB query or `sleep` suspends only that fiber
 - ✅ **`offload(...)`** for CPU-heavy or blocking work, on a bounded thread pool
+- ✅ **`fiberLocal!T`**: per-request state for the code below a handler, kept with the request's fiber
 - ✅ Deadlines, cancellation of abandoned requests, graceful shutdown
 
 ### 🧩 Modules you attach when needed
@@ -290,7 +294,8 @@ User createUser(JsonBody!NewUser body_)                         // POST /users
 ```
 
 - ⏳ A query suspends only this request's fiber: the worker keeps serving others
-- 🔁 Transactions: `db.transaction((PgConn c) { ... })`. In tests: `db.rollbackAfter(() { ... })`
+- 🔁 Transactions: `db.transaction((PgConn c) { ... })`, **ambient**: every query on the pool from that request joins it, so two repositories write in one transaction. `db.afterCommit(...)` for effects after the commit. In tests: `db.rollbackAfter(() { ... })`
+- 🩺 A pooled connection the server closed (a restart, a failover) is dropped before use (`PgConfig.pingAfter`)
 - ➡️ [Database guide](docs/database.md)
 
 ### 🔌 WebSockets
@@ -379,6 +384,9 @@ void main(string[] args)                                        // run with --ro
 
 - 🧭 One binary, three roles: `--role=api` (only enqueues), `--role=worker` (only runs jobs), `--role=all`
 - 🛡️ `@UniqueJob(15.minutes)` drops duplicates, `@Offload` runs CPU-heavy jobs on the thread pool, `@Every(...)` for intervals
+- 🧩 A job may be a plain payload with a **handler** that receives its use case (`JobHandlers`), built per worker like the routes
+- 📮 Inside a Postgres transaction, `enqueue` joins it: the **transactional outbox** with no connection passed around
+- 🧹 Finished jobs are purged after a retention period; `@Job("mail", dropOnSuccess: true)` leaves no payload behind
 - 🧪 `TestJobStore` with `assertEnqueued` and `drainJobs` for tests
 - ➡️ [Jobs and cron guide](docs/jobs-and-cron.md)
 
@@ -501,15 +509,17 @@ source/app.d                      the composition root: buildApp, once per worke
 ```
 
 ```sh
-andaime new my-api                                          # also: --db none, --jobs, --template minimal
+andaime new my-api --jobs --tenant                          # also: --db none, --template minimal
 andaime generate resource user name:string email:string:unique
 andaime generate job users SendWelcome user_id:long
 andaime routes                                              # every route and its handler
 andaime check                                               # the dependency rule, from the compiler's imports
 ```
 
-The generated code is plain code you own, with tests over an in-memory store. [`examples/clean`](examples/clean) is the
-exact output of the commands above. Why it is shaped this way (no presenters, no container, interfaces rather than
+The template also has a unit of work (one transaction across repositories, rolled back in memory too), a transactional
+outbox for jobs, one error format, and ports for the clock, ids and tokens; `--tenant` adds a typed `Tenant`, the acting
+user (`Actor`) and a companies feature. The generated code is plain code you own, with tests over an in-memory store.
+[`examples/clean`](examples/clean) is the exact output of the commands above. Why it is shaped this way (no presenters, no container, interfaces rather than
 templates for ports) is in [Architecture](docs/architecture.md), and the commands are in
 [The andaime command](docs/cli.md).
 

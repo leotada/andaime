@@ -182,6 +182,13 @@ unittest // globs and layers
     assert(layerOf(layers, "domain.users") == "domain" && layerOf(layers, "jobs") == "main");
     assert(layerOf(layers, "andaime.jobs") == "");
     assert(isRuntime("std.stdio") && isRuntime("object") && isRuntime("core.time") && !isRuntime("stdx.allocator"));
+
+    // an application whose modules share a package prefix (docs/architecture.md, "Growing")
+    auto prefixed = [Layer("domain", ["visto.domain.*"], ["andaime.values.*"]),
+        Layer("usecases", ["visto.usecases.*"], ["domain", "andaime.values.*"]), Layer("main", ["visto.*"], ["*"])];
+    assert(layerOf(prefixed, "visto.domain.users") == "domain" && layerOf(prefixed, "visto.usecases.users") == "usecases");
+    assert(layerOf(prefixed, "visto.app") == "main", "the longest matching glob wins");
+    assert(moduleMatch("andaime.values.*", "andaime.values.uuid") && !moduleMatch("andaime.values.*", "andaime.web"));
 }
 
 unittest // -deps lines and the violations they make

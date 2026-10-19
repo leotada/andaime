@@ -418,6 +418,11 @@ failed claim, listen, reap or cron tick is one `andaime.jobs:` line on stderr; t
 `spawn` from `extra` is queued; do not call `sleep` or `awaitFd` inside `extra` itself. `PgJobStore` already starts
 `listen` and the reaper; use `extra` for anything else.
 
+Both runners also take the store as a function, `runJobs!(Jobs)(() => jobStore(), startup, ...)` and
+`supervisorHook!(Jobs)(() => jobStore(), startup, hooks)`, called on the thread that runs the jobs. Use that form when the
+store comes from the application's per-thread adapters: then the supervisor claims from the very store worker 0's
+handlers enqueue into (an `InMemoryJobStore` is per thread, and a `PgJobStore` uses the pool of the thread that made it).
+
 Pass `singleThread: false` to `runJobs` only for a store that is safe across threads. `cfg.workers` is then left as given
 (0 means one thread per core). Consumption still runs only on worker 0.
 

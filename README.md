@@ -11,21 +11,18 @@
 ![@safe](https://img.shields.io/badge/%40safe-%2B_dip1000-success)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 
-[Quickstart](#quickstart) · [Features](#features) · [Performance](#performance) · [Compile speed](#compile-speed) · [Examples](#examples) · [Comparison](#comparison) · [Edition 2025](#compatibility) · [Docs](docs/README.md)
+[Quickstart](#quickstart) · [Features](#features) · [Examples](#examples) · [Architecture CLI](#architecture) · [Performance](#performance) · [Comparison](#comparison) · [Docs](docs/README.md)
 
 </div>
 
 > [!NOTE]
-> **andaime** is Portuguese for *scaffolding*. Start with a small core and attach modules (database, jobs, crypto,
-> HTTPS...) only when you need them. DUB package `andaime`, `import andaime;`. The repository is `andaime`.
+> **andaime** is Portuguese for *scaffolding*. Start with a small core (`import andaime;`) and attach modules (database, jobs, crypto) only when you need them.
 
 ---
 
 ## 💡 What it is, in 30 seconds
 
-You write plain D functions. andaime reads their parameter names and types **at compile time** and generates the routing,
-extraction, validation, JSON serialization and OpenAPI docs. No decorators to keep in sync, no schema files, no runtime
-reflection.
+You write plain D functions. andaime reads their parameter names and types **at compile time** and generates the routing, extraction, validation, JSON serialization, and OpenAPI docs. No decorators to keep in sync, no schema files, no runtime reflection.
 
 ```d
 // check
@@ -33,7 +30,7 @@ reflection.
 
 import andaime;
 
-struct NewUser                                   // the JSON body, validated before your code runs
+struct NewUser                                   // JSON body, validated before your code runs
 {
     @minLength(2) @maxLength(60) string name;
     @inRange(0, 150) int age;
@@ -42,13 +39,13 @@ struct NewUser                                   // the JSON body, validated bef
 
 struct User { long id; string name; int age; Optional!string email; }
 
-struct Page                                      // the query string: ?limit=10&offset=20
+struct Page                                      // query string: ?limit=10&offset=20
 {
     @inRange(1, 100) int limit = 20;
     @optional @inRange(0, int.max) int offset;
 }
 
-private User[] users;                            // stands in for a database (see main)
+private User[] users;                            // stands in for a database
 private long lastId;
 
 User[] listUsers(Query!Page page)                                       // GET /users
@@ -94,552 +91,27 @@ App buildApp()                                   // runs once per worker
 void main()
 {
     // Module variables are per thread, so this in-memory store needs one worker.
-    // With a real database, leave `workers` at 0: one per CPU core.
+    // With a real database, leave `workers` at 0 (one per CPU core).
     ServerConfig cfg = { port: 8080, workers: 1 };
     serve(&buildApp, cfg);
 }
 ```
 
-```sh
-curl -X POST localhost:8080/users -d '{"name":"Ana","age":31}'   # 201 {"id":1,"name":"Ana","age":31,"email":null}
-curl 'localhost:8080/users?limit=10'                             # 200 [{"id":1,...}]
-curl localhost:8080/users/7                                      # 404 {"detail":"user not found"}
-curl -X DELETE localhost:8080/users/1                            # 204
-```
-
-Bad input never reaches your handler. Every problem is reported at once:
+Bad input never reaches your handler—every validation error is reported at once:
 
 ```sh
 curl -X POST localhost:8080/users -d '{"name":"A","age":200}'
 # HTTP/1.1 422 Unprocessable Content
+# {"detail":[
+#   {"type":"string_too_short","loc":["body","name"],"msg":"expected at least 2 characters"},
+#   {"type":"less_than_equal", "loc":["body","age"], "msg":"must be <= 150"}
+# ]}
 ```
 
-```json
-{
-  "detail": [
-    {"type": "string_too_short", "loc": ["body", "name"], "msg": "expected at least 2 characters"},
-    {"type": "less_than_equal",  "loc": ["body", "age"],  "msg": "must be <= 150"}
-  ]
-}
-```
-
-A wrong signature doesn't compile. You get **one readable line**, not a template backtrace:
+And an invalid handler signature produces **one readable compiler error**, not a template backtrace:
 
 ```text
 app.d(12): andaime: handler 'getUser' in GET /users/{id}: the route declares {id}, but the function has no parameter named 'id'
-```
-
----
-
-## 📈 At a glance
-
-| | Metric | Value |
-|:-:|---|---|
-| ⚡ | Throughput, **one CPU core** | **~95k req/s** (1 request at a time per connection) |
-| 🚀 | Throughput, one core, pipelined | **~444k req/s** (16 requests per connection) |
-| 🪶 | Memory with 1,000 in-flight requests | **~25 MB RSS** (HTTP/1.1), **~17 MB** (HTTP/2) |
-| ♻️ | GC allocations on the request hot path | **0** (enforced by a test) |
-| ⏱️ | Type-check of an example app (DMD) | **< 400 ms** |
-| 🔁 | Edit and rebuild (`dub build`, debug) | **~1 s** |
-
-<sub>Measured on a laptop with `tools/bench.sh` and `tools/check.sh`. Details and method in [Performance](#performance).</sub>
-
----
-
-<a id="features"></a>
-
-## ✨ Features
-
-### 🎯 Ergonomics
-- ✅ **Signature = contract**: path, query, headers, cookies, JSON, forms and multipart bound by name and type
-- ✅ **Declarative validation** (`@minLength`, `@inRange`, ...) with a FastAPI-style **422** listing every error
-- ✅ **OpenAPI 3 + Swagger UI** generated from the same signatures
-- ✅ **Return what you mean**: `void` → 204, `string` → text, structs/arrays → JSON, `@status(201)`, `Response`
-- ✅ **One-line compile errors** for every invalid handler signature, each pinned by a `tests/compile_fail` case
-- ✅ `PatchField` (omitted vs `null`), `Optional`, `JsonValue`, `Uuid` (v4/v7), `Timestamp` and `CalendarDate` (ISO 8601 in JSON, query and `timestamptz`/`date` columns): pure values in `andaime.values` that a domain may import
-- ✅ **Validation messages in your language**: every `FieldError` carries its rule's `type` and numbers, and `app.validationMessages(...)` writes the 422's `msg` (a pt-BR catalog is in the guide)
-- ✅ **One error format for the whole app**: `app.errorBody(...)` shapes mapped exceptions, `HttpError`, 404, 405, 422 and 500 (RFC 9457 ready-made)
-- ✅ **One naming policy for the project**: `versions "AndaimeNamingSnakeCase"` spells JSON, queries, OpenAPI and columns, with no attribute on your types
-- ✅ `Local!T` for middleware state, `copyAs!Dst(src)` for DTOs that differ by a few fields
-
-### 🌐 Protocols (no reverse proxy needed)
-- ✅ **HTTP/1.1** with pipelining, **HTTP/2** over TLS and cleartext (`h2c`)
-- ✅ **HTTPS** with live certificate reload, HTTP → HTTPS redirect and ACME HTTP-01 challenges
-- ✅ **WebSockets**: RFC 6455 with `permessage-deflate`, and RFC 8441 over HTTP/2
-- ✅ **Streaming** responses and **Server-Sent Events** with backpressure
-
-### 🧵 Concurrency
-- ✅ **One worker per core** (`SO_REUSEPORT`), each with its own event loop
-- ✅ **One fiber per request**: write sequential code, no `async`/`await`. A DB query or `sleep` suspends only that fiber
-- ✅ **`offload(...)`** for CPU-heavy or blocking work, on a bounded thread pool
-- ✅ **`fiberLocal!T`**: per-request state for the code below a handler, kept with the request's fiber
-- ✅ Deadlines, cancellation of abandoned requests, graceful shutdown
-
-### 🧩 Modules you attach when needed
-- 🐘 **PostgreSQL** async driver and pool (`andaime:pg`)
-- ⏰ **Background jobs and cron** with retries and uniqueness, in memory or on Postgres (`andaime:jobs`, `andaime:pgjobs`)
-- 🔐 **Crypto**: bcrypt, SHA-256, HMAC, HKDF, AES-GCM, ES256 (JWT), ECDH, Web Push (`andaime:crypto`)
-- 📡 **HTTP/HTTPS and WebSocket clients**, static files, CORS, request ids, structured logs (`text`, `kv`, `json`)
-
-### 🛡️ Safety and quality
-- ✅ **`@safe` by default**, checked with `-preview=dip1000` on DMD and LDC; your handlers may still call C libraries
-- ✅ **In-memory `TestClient`**: test routes without opening a socket
-- ✅ **Executable docs**: every `// check` example in this README and in `docs/` is compiled in CI
-- ✅ `h2spec` **146/146** over TLS, continuous **libFuzzer + ASan** on the HTTP/1, HTTP/2, WebSocket and JSON parsers
-- ✅ **Zero DUB dependencies** in the core. OpenSSL, libpq and zlib are loaded at run time (`dlopen`), never needed to build
-
-<details>
-<summary><b>👀 Show me the code for these features</b></summary>
-
-#### Parameters from anywhere
-
-```d
-// GET /items?q=book&tag=dlang&tag=web&limit=10
-Item[] search(string q, string[] tag, Header!"Accept-Language" lang, int limit = 20) { ... }
-
-// PATCH /users/{id}: PatchField tells an omitted field from an explicit null
-User updateUser(long id, JsonBody!UserPatch patch, Local!Caller caller) { ... }
-```
-
-#### Middleware, groups and logs
-
-```d
-app.use(requestId());
-app.use(accessLog());
-app.use(cors(CorsConfig(["https://app.example.com"])));
-
-auto api = app.group("/api");
-api.use((Context ctx, Next next) {
-    if (bearerToken(ctx) != secret)
-        throw new HttpError(401, "invalid or missing token");
-    next();
-});
-
-logInfo("order created", "order_id", order.id, "plan", order.plan);   // carries request_id automatically
-```
-
-#### Server-Sent Events
-
-```d
-EventStream ticks() => EventStream((scope EventWriter w) {
-    foreach (i; 0 .. 10)
-    {
-        w.send("tick");
-        sleep(1.seconds); // suspends only this fiber
-    }
-});
-```
-
-#### HTTP client and offload
-
-```d
-auto quote = httpClient().get("https://api.example.com/quote").body;   // waits without blocking the worker
-auto png = offload(() => renderChart(data));                         // CPU-heavy work on the thread pool
-```
-
-#### Crypto
-
-```d
-string hash = bcryptHashOffload(password);
-bool ok = bcryptVerifyOffload(password, hash);
-auto sig = es256Sign(vapidKey, jwtSigningInput);
-```
-
-#### HTTPS and HTTP/2 in production
-
-```d
-ServerConfig cfg;
-cfg.port = 443;
-cfg.tls.certFile = "/etc/letsencrypt/live/example.com/fullchain.pem";
-cfg.tls.keyFile  = "/etc/letsencrypt/live/example.com/privkey.pem";
-cfg.tls.redirectPort = 80; // ACME challenges + redirect to HTTPS
-serve(&buildApp, cfg);
-```
-
-</details>
-
----
-
-<a id="examples"></a>
-
-## 🧪 Examples: database, WebSockets, jobs
-
-Short and complete enough to copy. Each one links to its full guide.
-
-### 🐘 PostgreSQL
-
-```sdl
-dependency "andaime:pg" path="../andaime"
-```
-
-```d
-import andaime;
-import andaime.db;
-
-struct User { int id; string name; }
-struct NewUser { @minLength(2) string name; }
-
-PgPool db() => pgPool("host=localhost dbname=app user=app");   // one pool per worker, created on first use
-
-User getUser(int id)                                            // GET /users/{id}
-{
-    auto rows = db.query("select id, name from users where id = $1", id).rowsAs!User;
-    if (rows.length == 0)
-        throw new HttpError(404, "user not found");
-    return rows[0];
-}
-
-@status(201)
-User createUser(JsonBody!NewUser body_)                         // POST /users
-    => db.query("insert into users(name) values ($1) returning id, name", body_.name).one!User;
-```
-
-- ⏳ A query suspends only this request's fiber: the worker keeps serving others
-- 🔁 Transactions: `db.transaction((PgConn c) { ... })`, **ambient**: every query on the pool from that request joins it, so two repositories write in one transaction. `db.afterCommit(...)` for effects after the commit. In tests: `db.rollbackAfter(() { ... })`
-- 🩺 A pooled connection the server closed (a restart, a failover) is dropped before use (`PgConfig.pingAfter`)
-- ➡️ [Database guide](docs/database.md)
-
-### 🔌 WebSockets
-
-```d
-import andaime;
-
-WebSocket chat(string room, Header!"Authorization" auth)        // validated like any other route
-{
-    if (auth.value != "Bearer secret")
-        throw new HttpError(403, "forbidden");                  // a plain 403: no upgrade
-    return WebSocket((scope WsConn ws) {
-        ws.send("welcome to " ~ room);
-        foreach (msg; ws)                                       // every message until the client closes
-            ws.send(msg.text);
-    });                                                         // returning closes the connection (1000)
-}
-
-App buildApp()
-{
-    auto app = new App;
-    app.ws!("/rooms/{room}", chat);                             // over HTTP/1.1 and HTTP/2
-    return app;
-}
-
-unittest                                                        // in memory, no socket
-{
-    auto r = TestClient(buildApp()).websocket("/rooms/a", WsScript().text("hi").close(),
-        hdr("Authorization", "Bearer secret"));
-    assert(r.status == 101 && r.texts == ["welcome to a", "hi"]);
-}
-```
-
-- 💓 Pings, the close handshake, fragmentation and `permessage-deflate` are handled for you
-- 📡 Client side: `wsConnect("wss://...")`
-- ➡️ [WebSockets guide](docs/websocket.md)
-
-### ⏰ Background jobs and cron
-
-```sdl
-dependency "andaime:jobs" path="../andaime"
-```
-
-```d
-import andaime;
-import andaime.jobs;
-
-@Job("mail") @Retry(5, BackoffStrategy.exponential)
-struct SendWelcome
-{
-    string to;
-    void perform(ref JobContext ctx) @safe { /* send the e-mail; throwing schedules a retry */ }
-}
-
-@Job("reports") @Cron("15 6 * * *")                             // every day at 06:15
-struct DailyReport
-{
-    void perform(ref JobContext ctx) @safe { /* ... */ }
-}
-
-InMemoryJobStore store;                                         // PgJobStore (andaime:pgjobs) for durable queues
-
-string signUp(string email)                                     // POST /signup?email=...
-{
-    enqueue(store, SendWelcome(email));
-    return "queued";
-}
-
-App buildApp()
-{
-    auto app = new App;
-    app.post!("/signup", signUp);
-    return app;
-}
-
-void main(string[] args)                                        // run with --role=all: API and jobs in one process
-{
-    store = new InMemoryJobStore;
-    auto startup = parseStartup(args);
-    ServerConfig cfg;
-    cfg.workers = 1;                                            // the in-memory store is one thread
-    applyJobGrace(cfg);
-    serve(&buildApp, cfg, supervisorHook!(SendWelcome, DailyReport)(store, startup));
-}
-```
-
-- 🧭 One binary, three roles: `--role=api` (only enqueues), `--role=worker` (only runs jobs), `--role=all`
-- 🛡️ `@UniqueJob(15.minutes)` drops duplicates, `@Offload` runs CPU-heavy jobs on the thread pool, `@Every(...)` for intervals
-- 🧩 A job may be a plain payload with a **handler** that receives its use case (`JobHandlers`), built per worker like the routes
-- 📮 Inside a Postgres transaction, `enqueue` joins it: the **transactional outbox** with no connection passed around
-- 🧹 Finished jobs are purged after a retention period; `@Job("mail") @DropOnSuccess` leaves no payload behind
-- 🧪 `TestJobStore` with `assertEnqueued` and `drainJobs` for tests
-- ➡️ [Jobs and cron guide](docs/jobs-and-cron.md)
-
----
-
-## 🔗 A backend for TypeScript frontends
-
-JSON, the `422` body and the OpenAPI document are all generated from the same structs, so the types your frontend
-generates are the types on the wire. There is no schema to keep in sync by hand.
-
-```d
-// check
-@safe:
-
-import andaime;
-
-struct ProfilePatch
-{
-    @minLength(2) PatchField!string displayName;  // absent: keep it, null: clear it, a value: set it
-    PatchField!string bio;
-}
-
-struct Profile { long userId; string displayName; Optional!string bio; }
-
-Profile current = Profile(7, "Ana", Optional!string("mathematician"));  // stands in for a database row
-
-Profile patchProfile(long id, JsonBody!ProfilePatch patch)               // PATCH /profiles/{id}
-{
-    if (patch.displayName.hasValue)
-        current.displayName = patch.displayName.value;
-    if (patch.bio.isNull)
-        current.bio = Optional!string.none;
-    else if (patch.bio.hasValue)
-        current.bio = Optional!string(patch.bio.value);
-    return current;
-}
-
-App buildApp()
-{
-    auto app = new App;
-    app.patch!("/profiles/{id}", patchProfile);
-    app.serveOpenApi(OpenApiInfo("Profiles", "1.0.0"));
-    return app;
-}
-
-void main() { serve(&buildApp, 8080); }
-```
-
-```sh
-npx openapi-typescript http://localhost:8080/openapi.json -o api.d.ts
-```
-
-```ts
-Profile:      { userId: number; displayName: string; bio?: string | null }
-ProfilePatch: { displayName?: string | null; bio?: string | null }   // plus the 422 body, HTTPValidationError
-```
-
-- 🩹 **True `PATCH`**: `PatchField` tells an omitted field from an explicit `null`, and becomes optional and nullable in the
-  schema. ➡️ [Partial updates](docs/requests.md#partial-updates-patchfield)
-- 🏷️ **Wire names in one place**: D's camelCase fields are already what TypeScript expects. For another convention,
-  `@naming(Naming.snakeCase)` on a struct renames its fields in JSON, query strings, the `422` `loc` and OpenAPI at once.
-  ➡️ [Wire names](docs/requests.md#wire-names-naming-and-wirename)
-- 🧾 **Errors that map to inputs**: every `422` entry has a `loc` such as `["body", "displayName"]`, so a form can show each
-  message next to its field.
-
----
-
-## 🧩 Modular by design
-
-The name says it: a small scaffold you build on. `import andaime;` gives you the server. Everything else is a separate
-package you add to `dub.sdl` when you need it.
-
-```mermaid
-flowchart LR
-    http["andaime:http<br/>parsers, HTTP/2, WebSocket codec"]
-    web["andaime:web<br/>App, router, JSON, OpenAPI"]
-    engine["andaime:engine<br/>event loop, fibers, clients, TLS"]
-    root(["andaime<br/>import andaime;"])
-    jobs["andaime:jobs<br/>jobs and cron"]
-    crypto["andaime:crypto<br/>bcrypt, JWT, AES-GCM"]
-    pg["andaime:pg<br/>PostgreSQL"]
-    pgjobs["andaime:pgjobs<br/>durable job queue"]
-
-    http --> web --> root
-    http --> engine --> root
-    web --> jobs
-    engine --> jobs
-    engine --> crypto
-    engine --> pg
-    jobs --> pgjobs
-    pg --> pgjobs
-```
-
-| Package | Import | What you get |
-|---------|--------|--------------|
-| 🏗️ `andaime` | `import andaime;` | The server: `http` + `web` + `engine`, `serve`, static files |
-| 📨 `andaime:http` | `import andaime.http;` | Zero-copy HTTP/1.1 parser, HTTP/2 session and HPACK, WebSocket codec, `Optional`, `PatchField`. No I/O, so it also works on its own, inside your own event loop |
-| 🧭 `andaime:web` | `import andaime.web;` | `App`, router, compile-time handler introspection, JSON, OpenAPI, middleware, logs, `TestClient` |
-| ⚙️ `andaime:engine` | `import andaime.engine;` | Event loop, fibers, buffer pool, `offload`, HTTP/WebSocket clients, OpenSSL and zlib loaders |
-| ⏰ `andaime:jobs` | `import andaime.jobs;` | Background jobs, retries, uniqueness, cron, in-memory and test stores |
-| 🔐 `andaime:crypto` | `import andaime.crypto;` | bcrypt, SHA-256, HMAC, HKDF, AES-128-GCM, P-256 (ES256, ECDH), Web Push encryption |
-| 🐘 `andaime:pg` | `import andaime.db.pg;` | Async PostgreSQL driver and pool over `libpq` |
-| 🗄️ `andaime:pgjobs` | `import andaime.jobs.pg;` | Durable job queue: `SKIP LOCKED`, `LISTEN`/`NOTIFY`, one cron run across processes |
-| 🛠️ `andaime:cli` | `dub build :cli` | The `andaime` command: new projects, generators, the route table, the dependency rule |
-
----
-
-## 🏛️ An architecture, if you want one
-
-andaime does not impose a structure. For applications that will grow, the optional `andaime` command generates one
-based on Clean Architecture and SOLID, in the spirit of `rails new` and `rails generate`. The folders are the layers,
-a feature is the same file name in each of them, and dependencies point inward:
-
-```
-source/domain/users.d             entities and business rules: no framework, no database
-source/usecases/users.d           one class per use case, and the ports (interfaces) they need
-source/adapters/http/users.d      a controller: the HTTP contract and its OpenAPI
-source/adapters/postgres/users.d  the repository over PostgreSQL; adapters/memory/ has the same in memory
-source/app.d                      the composition root: buildApp, once per worker, no DI container
-```
-
-```sh
-andaime new my-api --jobs --tenant                          # also: --db none, --template minimal
-andaime generate resource user name:string email:string:unique
-andaime generate job users SendWelcome user_id:long
-andaime routes                                              # every route and its handler
-andaime openapi > openapi.json                              # the OpenAPI document, for a typed frontend
-andaime check                                               # the dependency rule, from the compiler's imports
-```
-
-The template also has a unit of work (one transaction across repositories, rolled back in memory too), a transactional
-outbox for jobs, one error format, and ports for the clock, ids and tokens; `--tenant` adds a typed `Tenant`, the acting
-user (`Actor`) and a companies feature. The generated code is plain code you own, with tests over an in-memory store.
-[`examples/clean`](examples/clean) is the exact output of the commands above. Why it is shaped this way (no presenters, no container, interfaces rather than
-templates for ports) is in [Architecture](docs/architecture.md), and the commands are in
-[The andaime command](docs/cli.md).
-
----
-
-<a id="performance"></a>
-
-## ⚡ Performance
-
-**Throughput of one worker, one CPU core** (LDC `-O3`, loopback, server pinned to one core, load generator on the others):
-
-| Scenario | Requests per second | |
-|---|---:|---|
-| One request at a time per connection | **~95,000** | `████▎` |
-| 16 pipelined requests per connection | **~444,000** | `████████████████████` |
-
-Production runs one worker per core, so these numbers are a per-core baseline. About **10 µs of CPU per request**, most of
-it in the kernel (`read`, `send`, `epoll_wait`). The web layer (parsing, routing, validation, encoding) is about **5%** of
-that: ~190 ns to parse a request head, ~210 ns for the app.
-
-**Peak memory with 1,000 concurrent connections, one worker** (`tools/check.sh` fails the build above the limit):
-
-| Workload | DMD | LDC | Limit |
-|---|---:|---:|---:|
-| 1,000 in-flight requests, HTTP/2 | 16.7 MB | 20.6 MB | 30 MB |
-| 1,000 open WebSockets | ~21 MB | ~21 MB | 30 MB |
-| 1,000 in-flight requests, HTTP/1.1 | 25.2 MB | 27.1 MB | 30 MB |
-| 1,000 in-flight requests, HTTPS (HTTP/2) | 54.6 MB | 57.5 MB | 80 MB |
-| 1,000 in-flight requests, HTTPS (HTTP/1.1) | 68.3 MB | 70.9 MB | 80 MB |
-
-Most of the HTTPS memory is OpenSSL 3 itself. A cheap VPS with 512 MB is plenty.
-
-**♻️ GC-free hot path.** After warm-up, serving a request allocates nothing on the GC heap: buffers are pooled.
-`tests/alloc` checks it for HTTP/1.1, HTTP/2, WebSockets and logging, so a regression fails CI.
-
-> [!TIP]
-> Reproduce on your machine: `tools/bench.sh` (throughput) and `ANDAIME_ONLY="memory:" tools/check.sh` (memory). Numbers
-> depend on the hardware. Run them twice and compare before/after, not across machines.
-
----
-
-<a id="compile-speed"></a>
-
-## ⏱️ Compile speed
-
-Fast feedback is a design goal, guarded in CI:
-
-| What | Time | Guard |
-|---|---:|---|
-| Type-check of `examples/hello` (DMD, `-o-`) | **335–430 ms** | 🎯 target 400 ms, CI fails above 440 ms |
-| Edit one file and `dub build` again (debug) | **~0.8–1.0 s** | 📏 reported on every run |
-
-How it stays fast:
-- 🪶 The core avoids heavy Phobos modules (`std.format`, `std.conv`, `std.json`, `std.regex`, `std.algorithm`, `std.range`)
-- 🧱 Compile-time code uses shallow `static foreach` / `static if`, not deep recursive templates
-- 🗣️ Signature checks end in one `static assert` line, so a mistake is cheap to read and to fix
-
----
-
-<a id="comparison"></a>
-
-## 📊 How it compares
-
-Built-in features only, without third-party plugins.
-
-| | 🏗️ andaime (D) | vibe.d (D) | FastAPI (Python) | Express (Node.js) | Gin (Go) | Rails (Ruby) |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|
-| Parameters bound from the signature | ✅ | ⚠️ REST interfaces | ✅ | ❌ | ⚠️ struct tags | ❌ `params` hash |
-| Declarative validation, automatic 422 | ✅ | ❌ | ✅ | ❌ | ⚠️ | ⚠️ model validations |
-| OpenAPI + Swagger UI from the code | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
-| Signature mistakes caught at compile time | ✅ | ✅ | ❌ | ❌ | ⚠️ | ❌ |
-| Native binary, no interpreter | ✅ | ✅ | ❌ | ❌ | ✅ | ❌ |
-| Sequential code, no `async`/`await` | ✅ fibers | ✅ fibers | ❌ | ❌ | ✅ goroutines | ✅ threads |
-| WebSockets | ✅ | ✅ | ✅ | ❌ | ❌ | ✅ Action Cable |
-| Background jobs and cron | ✅ | ❌ | ⚠️ background tasks | ❌ | ❌ | ✅ Active Job |
-| In-memory test client | ✅ | ⚠️ | ✅ | ❌ | ✅ `httptest` | ✅ integration tests |
-| Generators for a project structure | ✅ optional `andaime` CLI | ⚠️ `dub init` skeleton | ❌ | ⚠️ `express-generator` skeleton | ❌ | ✅ |
-| ORM and migration runner | ❌ SQL files from the CLI | ❌ | ❌ | ❌ | ❌ | ✅ Active Record |
-
-✅ built in · ⚠️ partial · ❌ needs a library or not available
-
-<sub>We do not publish throughput numbers against other frameworks until there is a reproducible side-by-side benchmark.
-Spotted something outdated in this table? Open an issue.</sub>
-
----
-
-<a id="compatibility"></a>
-
-## 🧰 Compiler compatibility and edition 2025
-
-| | |
-|---|---|
-| 🟢 **Minimum compilers** | DMD **2.112.0** and LDC **1.42.0**, the first with language editions. CI tests DMD 2.112.0, the latest DMD and the latest LDC |
-| 🆕 **D edition 2025** | The whole code base, tests and examples are written in **edition 2025** (`module x 2025;`) |
-| ✍️ **Your app** | Can be written in edition 2025 (`module app 2025;`), which the CLI templates do, or in an older edition: each template follows the edition of the module that defines it |
-| 🛡️ **DIP1000** | Library, tests and examples type-check with `-preview=dip1000` on DMD and LDC |
-
-In short: **use DMD 2.112.0 / LDC 1.42.0 or newer.**
-
----
-
-## 👋 New to D?
-
-D compiles to native code like C++ or Go, has a garbage collector like Java or Go, and has compile-time metaprogramming that
-andaime uses to read your function signatures. If you know another stack, most ideas map directly:
-
-| You know... | In andaime |
-|---|---|
-| FastAPI path/query parameters, Pydantic models | Function parameters, plain structs with attributes like `@minLength(2)` |
-| Express middleware `(req, res, next)` | `(Context ctx, Next next) { ...; next(); }` |
-| `req.locals`, FastAPI `Depends` | `Local!T`, set by middleware |
-| Go goroutines, `async`/`await` | One fiber per request: write normal blocking-looking code |
-| Pydantic `Optional`, PATCH semantics | `Optional!T`, `PatchField!T` |
-
-Install a compiler (DMD includes DUB, D's package manager and build tool):
-
-```sh
-curl -fsS https://dlang.org/install.sh | bash -s dmd   # or ldc; see https://dlang.org/download.html
 ```
 
 ---
@@ -649,45 +121,21 @@ curl -fsS https://dlang.org/install.sh | bash -s dmd   # or ldc; see https://dla
 ## 🚀 Quickstart
 
 **Requirements**
-- 🐧 **Linux x86_64** for production (epoll). The event loop also has macOS (kqueue) and Windows (WSAPoll) backends, which CI
-  type-checks but does not run yet
-- 🧑‍💻 DMD 2.112.0+ or LDC 1.42.0+, with DUB
-- 📦 Optional, loaded only when used: OpenSSL 3 (HTTPS, crypto), `libpq.so.5` (PostgreSQL), zlib (WebSocket compression),
-  `libcrypt.so.1` (bcrypt)
+- 🐧 **Linux x86_64** for production (`epoll`). macOS (`kqueue`) and Windows (`WSAPoll`) backends compile in CI and are experimental at runtime.
+- 🧑‍💻 **DMD 2.112.0+** or **LDC 1.42.0+** (includes DUB, D's package manager). The framework is written in **D Edition 2025** (`module x 2025;`) and type-checks with `-preview=dip1000`; your app can use edition 2025 or the baseline edition.
+- 📦 **Zero build-time C dependencies**: OpenSSL 3, `libpq.so.5`, `zlib`, and `libcrypt.so.1` are loaded via `dlopen` at runtime only when used.
 
-**1. Create a project and add andaime with DUB.**
+**1. Create a project**
 
 ```sh
-dub init my-api --type=minimal -n --format=sdl   # a folder with dub.sdl and source/app.d
+dub init my-api --type=minimal -n --format=sdl
 cd my-api
-dub add andaime                                  # adds: dependency "andaime" version="~>0.1.0"
+dub add andaime
 ```
 
-Open `dub.sdl` and add the two lines marked below. `main` goes in its own file because `dub test` leaves the
-`mainSourceFile` out of the test build:
+*(Or scaffold a layered project with `dub run andaime:cli -- new my-api`; see [Architecture CLI](#architecture).)*
 
-```sdl
-name "my-api"
-targetType "executable"                          # added
-mainSourceFile "source/main.d"                   # added
-dependency "andaime" version="~>0.1.0"
-```
-
-`import andaime;` is the core: HTTP, routing, JSON, validation, OpenAPI and the server. The rest is opt-in, one
-subpackage each, so you only compile and ship what you use:
-
-| Add with | For |
-|---|---|
-| `dub add andaime:jobs` | background jobs and cron |
-| `dub add andaime:pg` | the PostgreSQL driver (`import andaime.db.pg;`) |
-| `dub add andaime:pgjobs` | the durable Postgres job queue (needs `andaime:jobs` and `andaime:pg`) |
-| `dub add andaime:crypto` | bcrypt, HMAC, AES-GCM, ES256 and more |
-
-Prefer a ready structure? `dub run andaime:cli -- new my-api` creates a whole project in layers
-([the `andaime` command](docs/cli.md)). To work on andaime itself, or to try an unreleased change, depend on a checkout
-instead: `git clone https://github.com/leotada/andaime`, then `dependency "andaime" path="../andaime"`.
-
-**2. Write a route and its test** in `source/app.d`:
+**2. Write a route and an in-memory test** in `source/app.d`:
 
 ```d
 // check
@@ -712,73 +160,288 @@ unittest
     assert(client.get("/hello").body == "hello, world");
     assert(client.get("/hello?name=Ana").body == "hello, Ana");
 }
-```
 
-and the entry point in `source/main.d`:
-
-```d
-import andaime;
-import app : buildApp;
-
+version (unittest) {} else
 void main() { serve(&buildApp, 8080); }
 ```
 
-**3. Run it.**
+**3. Test and run**
 
 ```sh
-dub test                                   # in-memory tests, no socket
-dub run                                    # http://localhost:8080
+dub test                                   # runs in-memory tests, no socket opened
+dub run                                    # starts on http://localhost:8080
 curl 'http://localhost:8080/hello?name=Ana'
 ```
 
-**Examples in the repository:**
+**Examples in this repository:**
 
 ```sh
 cd examples/hello && dub test && dub run   # in-memory CRUD, controller, middleware, tests
 cd examples/api   && dub run               # PostgreSQL, HTTP client, Bearer auth, CORS, static files, OpenAPI
-cd examples/clean && dub test              # layers (domain, use cases, adapters), Postgres or memory, a job
+cd examples/clean && dub test              # Clean Architecture (domain, use cases, adapters, jobs, tenant)
 ```
 
-➡️ Step by step: [Getting started](docs/getting-started.md).
+➡️ Full walkthrough: [Getting started](docs/getting-started.md).
+
+---
+
+<a id="features"></a>
+
+## ✨ Features & Modularity
+
+### 🎯 Ergonomics & TypeScript-friendly Contracts
+- **Signature = contract**: path, query, headers, cookies, JSON, forms, and multipart bound by name and type.
+- **Declarative validation** (`@minLength`, `@inRange`, ...) with automatic **422** responses and localizable messages (`app.validationMessages(...)`).
+- **OpenAPI 3 + Swagger UI** generated from the same structs—pair with `npx openapi-typescript` for end-to-end type safety with zero manual schemas.
+- **Domain value types** (`andaime.values`): `PatchField!T` (distinguishes omitted from `null` in `PATCH`), `Optional!T`, `JsonValue`, `Uuid` (v4/v7), `Timestamp`, and `CalendarDate`.
+- **Project-wide conventions**: `app.errorBody(...)` for unified error responses (including ready-made RFC 9457), and `versions "AndaimeNamingSnakeCase"` to rename JSON, queries, OpenAPI, and SQL columns at once.
+- **Middleware state & DTO helpers**: `Local!T` for request-scoped middleware values, `copyAs!Dst(src)` for mapping DTOs.
+
+### 🌐 Protocols (No Reverse Proxy Needed)
+- **HTTP/1.1** with pipelining, **HTTP/2** over TLS and cleartext (`h2c`), `h2spec` **146/146**.
+- **HTTPS** with live certificate reload, HTTP → HTTPS redirect, and ACME HTTP-01 challenges.
+- **WebSockets**: RFC 6455 with `permessage-deflate`, plus RFC 8441 over HTTP/2.
+- **Streaming** responses and **Server-Sent Events (SSE)** with backpressure.
+
+### 🧵 Concurrency & Safety
+- **One worker per core** (`SO_REUSEPORT`), each running its own event loop.
+- **One fiber per request**: write sequential code without `async`/`await`. I/O or `sleep` suspends only that fiber; `fiberLocal!T` holds per-request context.
+- **`offload(...)`** runs CPU-heavy or blocking work on a bounded thread pool.
+- **Deadlines**, cancellation of abandoned requests, and graceful shutdown.
+- **`@safe` + `dip1000`** across the codebase (while still allowing `@system` user handlers), plus continuous **libFuzzer + ASan** on HTTP/1.1, HTTP/2, WebSocket, and JSON parsers.
+
+### 🧩 Modular Packages
+
+`import andaime;` gives you the web server. Add optional packages to `dub.sdl` only when needed:
+
+| Package | Add / Build | Import | What you get |
+|---|---|---|---|
+| 🏗️ `andaime` | `dub add andaime` | `import andaime;` | Server (`http` + `web` + `engine`), `serve`, static files |
+| 🐘 `andaime:pg` | `dub add andaime:pg` | `import andaime.db;` | Async PostgreSQL driver, connection pool, ambient transactions |
+| ⏰ `andaime:jobs` | `dub add andaime:jobs` | `import andaime.jobs;` | Background jobs, retries, uniqueness, cron, in-memory & test stores |
+| 🗄️ `andaime:pgjobs` | `dub add andaime:pgjobs` | `import andaime.jobs.pg;` | Durable Postgres job queue (`SKIP LOCKED`, `LISTEN`/`NOTIFY`) |
+| 🔐 `andaime:crypto` | `dub add andaime:crypto` | `import andaime.crypto;` | bcrypt, SHA-256, HMAC, HKDF, AES-128-GCM, ES256 (JWT), ECDH, Web Push |
+| 🛠️ `andaime:cli` | `dub build :cli` | *(CLI tool)* | `andaime` command: scaffolding, generators, route table, architecture checks |
+| 🧱 `http` / `web` / `engine` | *(subpackages of `andaime`)* | `import andaime.http;` etc. | Use standalone if you only want the zero-copy parsers, `TestClient`, or event loop |
+
+---
+
+<a id="examples"></a>
+
+## 🧪 Examples
+
+### 🐘 PostgreSQL (`andaime:pg`)
+
+Queries suspend only the calling fiber. Transactions (`db.transaction(...)`) are ambient: every query on the pool from that request automatically joins the active transaction.
+
+```d
+import andaime;
+import andaime.db;
+
+struct User { int id; string name; }
+struct NewUser { @minLength(2) string name; }
+
+PgPool db() => pgPool("host=localhost dbname=app user=app");   // one pool per worker, created on first use
+
+User getUser(int id)                                            // GET /users/{id}
+{
+    auto rows = db.query("select id, name from users where id = $1", id).rowsAs!User;
+    if (rows.length == 0)
+        throw new HttpError(404, "user not found");
+    return rows[0];
+}
+
+@status(201)
+User createUser(JsonBody!NewUser body_)                         // POST /users
+    => db.query("insert into users(name) values ($1) returning id, name", body_.name).one!User;
+```
+
+➡️ [Database guide](docs/database.md)
+
+### 🔌 WebSockets & Server-Sent Events
+
+WebSocket routes validate parameters like any HTTP route before upgrading, and work over both HTTP/1.1 and HTTP/2:
+
+```d
+import andaime;
+
+WebSocket chat(string room, Header!"Authorization" auth)
+{
+    if (auth.value != "Bearer secret")
+        throw new HttpError(403, "forbidden");                  // rejected before upgrade
+    return WebSocket((scope WsConn ws) {
+        ws.send("welcome to " ~ room);
+        foreach (msg; ws)                                       // reads until client closes
+            ws.send(msg.text);
+    });
+}
+
+EventStream ticks() => EventStream((scope EventWriter w) {      // GET SSE stream
+    foreach (i; 0 .. 10) { w.send("tick"); sleep(1.seconds); }
+});
+```
+
+➡️ [WebSockets guide](docs/websocket.md) · [Streaming and SSE guide](docs/streaming.md)
+
+### ⏰ Background Jobs & Cron (`andaime:jobs`)
+
+Run API and workers in one binary (`--role=all`) or split them (`--role=api`, `--role=worker`). Inside a Postgres transaction, `enqueue` joins it automatically as a transactional outbox.
+
+```d
+import andaime;
+import andaime.jobs;
+
+@Job("mail") @Retry(5, BackoffStrategy.exponential) @UniqueJob(15.minutes)
+struct SendWelcome
+{
+    string to;
+    void perform(ref JobContext ctx) @safe { /* send email; throwing schedules a retry */ }
+}
+
+@Job("reports") @Cron("15 6 * * *")                             // every day at 06:15
+struct DailyReport
+{
+    void perform(ref JobContext ctx) @safe { /* ... */ }
+}
+```
+
+➡️ [Jobs and cron guide](docs/jobs-and-cron.md)
+
+### 🛡️ Middleware, Auth, HTTP Client & TLS
+
+```d
+// Middleware & structured logging
+app.use(requestId());
+app.use(accessLog());
+app.use(cors(CorsConfig(["https://app.example.com"])));
+logInfo("order created", "order_id", order.id);                 // includes request_id automatically
+
+// Non-blocking HTTP client & CPU thread-pool offload
+auto quote = httpClient().get("https://api.example.com/quote").body;
+auto hash  = bcryptHashOffload(password);
+
+// Production HTTPS + HTTP/2 + automatic HTTP->HTTPS redirect
+ServerConfig cfg;
+cfg.port = 443;
+cfg.tls.certFile = "/etc/letsencrypt/live/example.com/fullchain.pem";
+cfg.tls.keyFile  = "/etc/letsencrypt/live/example.com/privkey.pem";
+cfg.tls.redirectPort = 80;
+serve(&buildApp, cfg);
+```
+
+➡️ [Middleware](docs/middleware.md) · [HTTP client](docs/http-client.md) · [Cryptography](docs/crypto.md) · [HTTPS and TLS](docs/tls.md)
+
+---
+
+<a id="architecture"></a>
+
+## 🏛️ Optional Clean Architecture CLI
+
+andaime does not force a project layout. For larger apps, the optional `andaime` CLI scaffolds a layered Clean Architecture project (domain, use cases, HTTP/Postgres/in-memory adapters, unit of work, and transactional outbox) where dependencies point strictly inward:
+
+```text
+source/domain/users.d             entities & business rules (no framework or DB imports)
+source/usecases/users.d           use cases & port interfaces
+source/adapters/http/users.d      controllers & OpenAPI contracts
+source/adapters/postgres/users.d  PostgreSQL repository (mirrored in adapters/memory/)
+source/app.d                      composition root (built once per worker, no DI container)
+```
+
+```sh
+andaime new my-api --jobs --tenant                          # also: --db none, --template minimal
+andaime generate resource user name:string email:string:unique
+andaime generate job users SendWelcome user_id:long
+andaime routes                                              # print every route and handler
+andaime openapi > openapi.json                              # export OpenAPI spec without starting the server
+andaime check                                               # verify layer dependency rules via compiler imports
+```
+
+[`examples/clean`](examples/clean) is the exact output of these commands. ➡️ [Architecture guide](docs/architecture.md) · [CLI reference](docs/cli.md)
+
+---
+
+<a id="performance"></a>
+
+## ⚡ Performance & Compile Speed
+
+Measured on a single worker pinned to **one CPU core** (`tools/bench.sh` and `tools/check.sh`, guarded in CI):
+
+| Metric | Value | Notes / CI Guard |
+|---|---:|---|
+| **Throughput (1 CPU core)** | **~95,000 req/s** | 1 request at a time per connection (~10 µs/req; web layer is ~5%) |
+| **Throughput (1 core, pipelined)** | **~444,000 req/s** | 16 pipelined requests per connection |
+| **GC allocations on hot path** | **0** | Buffers are pooled; enforced by `tests/alloc` across HTTP/1.1, HTTP/2, WS, logs |
+| **Type-check `examples/hello`** | **335–430 ms** | DMD `-o-`; CI fails above 440 ms (core avoids heavy Phobos modules & deep templates) |
+| **Incremental `dub build`** | **~0.8–1.0 s** | Edit one file and rebuild (debug) |
+
+**Peak RSS memory with 1,000 concurrent connections (1 worker):**
+
+| Workload | DMD | LDC | CI Limit |
+|---|---:|---:|---:|
+| 1,000 in-flight requests, HTTP/2 | 16.7 MB | 20.6 MB | 30 MB |
+| 1,000 open WebSockets | ~21 MB | ~21 MB | 30 MB |
+| 1,000 in-flight requests, HTTP/1.1 | 25.2 MB | 27.1 MB | 30 MB |
+| 1,000 in-flight requests, HTTPS (HTTP/2) | 54.6 MB | 57.5 MB | 80 MB |
+| 1,000 in-flight requests, HTTPS (HTTP/1.1) | 68.3 MB | 70.9 MB | 80 MB |
+
+---
+
+<a id="comparison"></a>
+
+## 📊 How It Compares
+
+Built-in features without third-party plugins (✅ built in · ⚠️ partial · ❌ external library or N/A):
+
+| Feature | 🏗️ andaime (D) | vibe.d (D) | FastAPI (Python) | Express (Node) | Gin (Go) | Rails (Ruby) |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|
+| Signature-bound parameters | ✅ | ⚠️ REST interfaces | ✅ | ❌ | ⚠️ struct tags | ❌ `params` |
+| Declarative validation + auto 422 | ✅ | ❌ | ✅ | ❌ | ⚠️ | ⚠️ models |
+| OpenAPI + Swagger UI from code | ✅ | ❌ | ✅ | ❌ | ❌ | ❌ |
+| Compile-time signature checking | ✅ | ✅ | ❌ | ❌ | ⚠️ | ❌ |
+| Native binary, sequential fibers | ✅ | ✅ | ❌ | ❌ | ✅ goroutines | ❌ |
+| WebSockets, background jobs & cron | ✅ | ⚠️ WS only | ⚠️ basic tasks | ❌ | ❌ | ✅ |
+| In-memory test client | ✅ | ⚠️ | ✅ | ❌ | ✅ `httptest` | ✅ |
+| Project & layer generators | ✅ | ⚠️ `dub init` | ❌ | ⚠️ skeleton | ❌ | ✅ |
+
+### 👋 New to D?
+
+D compiles to native code like C++ or Go, has a garbage collector, and offers compile-time reflection that reads your function signatures directly:
+
+| If you know... | In andaime |
+|---|---|
+| FastAPI path/query params & Pydantic | Function parameters & plain `struct`s with `@minLength(2)`, `@inRange(...)` |
+| Express `(req, res, next)` / `req.locals` | `(Context ctx, Next next) { ...; next(); }` / `Local!T` parameter |
+| Go goroutines / `async` & `await` | One fiber per request—write normal sequential code |
+| Pydantic `Optional` / PATCH semantics | `Optional!T` / `PatchField!T` |
+
+Install DMD or LDC (includes DUB): `curl -fsS https://dlang.org/install.sh | bash -s dmd`
 
 ---
 
 ## 📚 Documentation
 
-Start at the [documentation index](docs/README.md) or jump to a guide:
+Start at the [Documentation Index](docs/README.md) or jump to a guide:
 
-| | Guides |
+| Category | Guides |
 |---|---|
 | 🎓 **Fundamentals** | [Getting started](docs/getting-started.md) · [Routing](docs/routing.md) · [Reading the request](docs/requests.md) · [Validation and errors](docs/validation.md) · [Responses](docs/responses.md) |
 | 🧱 **Building APIs** | [Middleware](docs/middleware.md) · [Logging](docs/logging.md) · [Streaming and SSE](docs/streaming.md) · [WebSockets](docs/websocket.md) · [Static files and OpenAPI](docs/static-files-and-openapi.md) |
 | 🔌 **Async, data, auth** | [Concurrency](docs/concurrency.md) · [Database](docs/database.md) · [Jobs and cron](docs/jobs-and-cron.md) · [HTTP client](docs/http-client.md) · [Cryptography](docs/crypto.md) |
-| 🧪 **Quality and safety** | [Testing](docs/testing.md) · [Memory safety](docs/safety.md) |
-| 🏛️ **Structure** | [Architecture](docs/architecture.md) · [The andaime command](docs/cli.md) |
+| 🧪 **Quality & structure** | [Testing](docs/testing.md) · [Memory safety](docs/safety.md) · [Architecture](docs/architecture.md) · [The andaime command](docs/cli.md) |
 | 🚢 **Production** | [Deploying](docs/deploy.md) · [HTTPS and TLS](docs/tls.md) · [HTTP/2](docs/http2.md) · [Configuration](docs/configuration.md) |
 
 ---
 
-## 🚧 Status
+## 🚧 Status & Roadmap
 
-andaime is **pre-1.0**: APIs may still change before the first tagged release. What is there is tested in CI on DMD and LDC
-(see [CONTRIBUTING.md](CONTRIBUTING.md)):
-
-- ✅ **HTTP/1.1 and HTTP/2**: `h2spec` 146/146 over TLS; tested against Chromium, `curl`, `python-h2` and Caddy (`h2c`); fuzzed
-- ✅ **WebSockets**: tested against Chromium, Python's `websockets` and `python-h2`
-- ✅ **PostgreSQL, jobs, crypto, clients**: tested against real PostgreSQL, TLS upstreams and official test vectors
+andaime is **pre-1.0**: APIs may evolve before `1.0.0`, though all existing modules are tested in CI on DMD and LDC against real PostgreSQL, Chromium, `curl`, `python-h2`, `websockets`, Caddy, and `h2spec`.
 
 **Not there yet:**
-- 🔜 macOS and Windows at run time (the backends compile, they are not tested by running yet); `io_uring`
-- 🔜 Streamed (unbuffered) request bodies: bodies are buffered up to `limits.maxBodyBytes` (1 MiB by default); `Range` requests
-- 🔜 HTTP/2 trailers (gRPC), server push and priorities; WebSocket client over HTTP/2
-- 🔜 IPv6 listeners, OCSP stapling
+- 🔜 Runtime CI testing for macOS (`kqueue`) and Windows (`WSAPoll`); `io_uring` backend
+- 🔜 Unbuffered request body streaming (currently buffered up to `limits.maxBodyBytes`, default 1 MiB) and `Range` requests
+- 🔜 HTTP/2 trailers (gRPC) and WebSocket client over HTTP/2
+- 🔜 IPv6 listeners and OCSP stapling
 
----
+## 🤝 Contributing & License
 
-## 🤝 Contributing
-
-Building, `tools/check.sh`, the fuzzers and the architecture rules are in [CONTRIBUTING.md](CONTRIBUTING.md).
-
-## 📄 License
-
-[MIT](LICENSE).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, `tools/check.sh`, fuzzing, and architecture rules. Licensed under [MIT](LICENSE).

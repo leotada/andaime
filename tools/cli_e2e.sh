@@ -103,6 +103,7 @@ run "$A" new "$work/nodb" --db none --tenant --andaime-path ../..
     run "$A" g u blog_posts PublishPost
     run "$A" g j blog_posts NotifyFollowers post_id:long "note:string?" --every 15.minutes
     run "$A" g j blog_posts Digest --cron "0 6 * * *" --queue reports
+    ("$A" openapi > tests/openapi.json 2> "$log") || { echo "FAILED: andaime openapi"; cat "$log"; exit 1; }
     run dub test $dubc -q
     run dub build $dubc -q
     run "$A" check

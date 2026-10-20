@@ -1,0 +1,12 @@
+# GitHub Linguist language bar overrides
+# Give .d.tpl files D syntax highlighting when browsed on GitHub
+*.d.tpl linguist-language=D
+
+# Exclude CLI project scaffolding templates (misclassified by Linguist as Go Template / Smarty)
+cli/templates/** linguist-detectable=false
+
+# Exclude interop test scripts and fixtures from the language statistics bar
+tests/**/*.py linguist-detectable=false
+
+# Exclude build, CI, and verification shell scripts from the language statistics bar
+tools/** linguist-detectable=false

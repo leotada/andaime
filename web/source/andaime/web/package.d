@@ -22,7 +22,7 @@ public import andaime.web.errors : ErrorInfo, ProblemDetails, ProblemField, prob
 public import andaime.log;
 public import andaime.web.testing;
 public import andaime.web.cors;
-public import andaime.web.openapi : OpenApiInfo, summary;
+public import andaime.web.openapi : OpenApiInfo, SecurityScheme, bearerScheme, apiKeyScheme, summary;
 public import andaime.web.middleware;
 public import andaime.web.stream : Stream, StreamWriter, EventStream, EventWriter, produces, sendResponse;
 public import andaime.web.websocket : WebSocket;

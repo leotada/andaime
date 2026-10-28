@@ -34,6 +34,35 @@ app.use((Context ctx, Next next) { next(); });           // a lambda works too, 
 - Registration order relative to routes does not matter: a middleware applies to every route of its App or group, including
   routes added before it.
 
+## A middleware for some routes of a group
+
+A public route and a protected one can share a group. Define a marker (any `enum` or `struct` UDA), put it on the handlers,
+and choose the routes when you register the middleware:
+
+```d
+enum Public;
+
+final class Sessions
+{
+    @Public @Post("/login") string login() => "token";   // skips requireLogin
+    @Get("/me") string me() => "ana";                    // runs it
+}
+
+api.useUnless!Public(&requireLogin, "bearer");   // every route except the ones marked @Public
+api.useOnly!Admin(&requireAdmin, "admin");       // only the routes marked @Admin
+api.mount(new Sessions);
+```
+
+The choice is made once, when the app freezes, so a request pays nothing for it. Markers go on controller methods and on
+named functions (`@Public string health() => "ok";`); a lambda cannot carry a UDA, so it is never selected by `useOnly`
+and always runs `useUnless`. The optional second argument names an OpenAPI security scheme: every operation the middleware
+runs on lists it under `security` (one requirement object when several apply), and `OpenApiInfo.securitySchemes` declares
+it (`bearerScheme()`, `apiKeyScheme("admin", "X-Admin")`, or a `SecurityScheme(name, json)` of your own):
+
+```d
+app.serveOpenApi(OpenApiInfo("My API", "1.0.0", securitySchemes: [bearerScheme()]));
+```
+
 ## Passing data to handlers: `ctx.locals` and `Local!T`
 
 A middleware stores a typed value for this request; a handler declares it as a parameter:

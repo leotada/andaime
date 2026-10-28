@@ -45,7 +45,25 @@ struct OpenApiInfo
     /// The default is a pinned jsDelivr release, loaded with Subresource Integrity; set it to self-host (then no
     /// integrity check is added, because the files are yours).
     string swaggerUiBase = defaultSwaggerUiBase;
+    /// Security schemes the document declares (`components/securitySchemes`). A group middleware registered with
+    /// `use(mw, "name")` puts that name in the `security` of every operation it runs on.
+    SecurityScheme[] securitySchemes;
 }
+
+/// One entry of `components/securitySchemes`: `json` is the scheme object, e.g. `{"type":"http","scheme":"bearer"}`.
+struct SecurityScheme
+{
+    string name;
+    string json;
+}
+
+/// An HTTP bearer scheme (`Authorization: Bearer <token>`), named `name` in the document.
+SecurityScheme bearerScheme(string name = "bearer", string format = "JWT") pure @safe
+    => SecurityScheme(name, `{"type":"http","scheme":"bearer"` ~ (format.length ? `,"bearerFormat":"` ~ format ~ `"` : "") ~ `}`);
+
+/// An API key in a header (`name` is the header, `scheme` the key under which the document declares it).
+SecurityScheme apiKeyScheme(string scheme, string header) pure @safe
+    => SecurityScheme(scheme, `{"type":"apiKey","in":"header","name":"` ~ header ~ `"}`);
 
 /// jsDelivr's copy of swagger-ui-dist, pinned. The integrity hashes below belong to exactly these two files. To update:
 ///   curl -sL <base>/swagger-ui.css | openssl dgst -sha384 -binary | openssl base64 -A     (same for the bundle .js)
@@ -581,6 +599,7 @@ struct OpRecord
     OpDescribe describe; // null for routes without introspection (static files...)
     ValidationDoc validation; // filled when the app freezes
     string handler;     // what `App.routeTable` shows: a qualified name, `file:line` of a lambda, or a label
+    string[] security;  // names of the security schemes of the middlewares that run on the route; filled when the app freezes
 }
 
 /// `{*rest}` -> `{rest}` (OpenAPI does not know the asterisk).
@@ -621,7 +640,15 @@ string buildOpenApi(const(OpRecord)[] ops, OpenApiInfo info, string delegate(ref
             case Method.unknown: continue;
         }
         comps.validation = op.validation;
-        auto body_ = q(verb) ~ ":" ~ op.describe(comps, op.pattern);
+        auto described = op.describe(comps, op.pattern);
+        if (op.security.length)
+        {
+            string req;
+            foreach (s; op.security)
+                req ~= (req.length ? "," : "") ~ q(s) ~ `:[]`;
+            described = described[0 .. $ - 1] ~ `,"security":[{` ~ req ~ `}]}`; // one object: every scheme must pass (AND)
+        }
+        auto body_ = q(verb) ~ ":" ~ described;
         if (auto cur = p in byPath)
             *cur ~= "," ~ body_;
         else
@@ -641,7 +668,11 @@ string buildOpenApi(const(OpRecord)[] ops, OpenApiInfo info, string delegate(ref
     string o = `{"openapi":"3.0.3","info":{"title":` ~ q(info.title) ~ `,"version":` ~ q(info.version_);
     if (info.description.length)
         o ~= `,"description":` ~ q(info.description);
-    o ~= `},"paths":{` ~ paths ~ `},"components":{"schemas":{` ~ schemas ~ `}}}`;
+    string schemes;
+    foreach (s; info.securitySchemes)
+        schemes ~= (schemes.length ? "," : "") ~ q(s.name) ~ ":" ~ s.json;
+    o ~= `},"paths":{` ~ paths ~ `},"components":{"schemas":{` ~ schemas ~ `}`
+        ~ (schemes.length ? `,"securitySchemes":{` ~ schemes ~ `}` : "") ~ `}}`;
     return o;
 }
 

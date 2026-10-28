@@ -179,7 +179,7 @@ final class Group
     private App app;
     private string prefix;
     private Group parent;
-    private Middleware[] mws;
+    private GroupMiddleware[] mws;
     private ValidationHook validation;
     private bool slashSet;
     private TrailingSlash slash;
@@ -211,12 +211,37 @@ final class Group
     void use(Middleware mw)
     {
         app.mustBeOpen();
-        mws ~= mw;
+        mws ~= GroupMiddleware(mw);
+    }
+
+    /// ditto. `security` names an OpenAPI security scheme (`OpenApiInfo.securitySchemes`) that the middleware enforces:
+    /// every operation it runs on lists it under `security`.
+    void use(Middleware mw, string security)
+    {
+        app.mustBeOpen();
+        mws ~= GroupMiddleware(mw, null, MiddlewareScope.always, security);
     }
 
     void use(void function(Context, Next) @system mw)
     {
         use((Context c, Next n) @trusted => mw(c, n));
+    }
+
+    /// A middleware for the routes of this group (and its subgroups') whose handler carries the marker `M`, a UDA the
+    /// application defines: `enum Authenticated;` then `@Authenticated @Get("/me") User me()` on a controller method or a
+    /// named function. Handlers written as lambdas carry no UDAs, so this never selects them. `security`: see `use`.
+    void useOnly(M)(Middleware mw, string security = null)
+    {
+        app.mustBeOpen();
+        mws ~= GroupMiddleware(mw, typeid(M), MiddlewareScope.only, security);
+    }
+
+    /// A middleware for every route of this group except the ones whose handler carries the marker `M`
+    /// (`@Public @Post("/login") ...`): one group holds public and protected routes. `security`: see `use`.
+    void useUnless(M)(Middleware mw, string security = null)
+    {
+        app.mustBeOpen();
+        mws ~= GroupMiddleware(mw, typeid(M), MiddlewareScope.unless, security);
     }
 
     /// The trailing-slash policy of this group's routes (and its subgroups', unless they set their own): `strict` or
@@ -248,10 +273,11 @@ final class Group
     }
 
     /// `name` is what `App.routeTable` shows for the route (`get!` and `mount` pass the handler's qualified name).
-    void register(Method method, string path, HandlerFn h, OpDescribe describe = null, string name = null)
+    void register(Method method, string path, HandlerFn h, OpDescribe describe = null, string name = null,
+        const(TypeInfo)[] markers = null)
     {
         auto full = (path == "/" && prefix.length) ? prefix : prefix ~ path;
-        app.registerIn(this, method, full, h, describe, name);
+        app.registerIn(this, method, full, h, describe, name, markers);
     }
 
     /// Registers every method of `controller` annotated with @Get/@Post/..., like `App.mount`. The paths are relative to
@@ -261,12 +287,61 @@ final class Group
         mixin(mountBody);
     }
 
-    private void collect(ref Middleware[] outer) // root first
+    /// The middlewares that apply to a route whose handler carries `markers`, root group first; the security schemes of
+    /// the ones that apply are added to `security` (once each).
+    private void collect(ref Middleware[] outer, ref string[] security, const(TypeInfo)[] markers) // root first
     {
         if (parent !is null)
-            parent.collect(outer);
-        outer ~= mws;
+            parent.collect(outer, security, markers);
+        foreach (ref g; mws)
+        {
+            bool marked;
+            foreach (m; markers)
+                if (g.marker !is null && m is g.marker)
+                    marked = true;
+            final switch (g.when)
+            {
+                case MiddlewareScope.always: break;
+                case MiddlewareScope.only: if (!marked) continue; break;
+                case MiddlewareScope.unless: if (marked) continue; break;
+            }
+            outer ~= g.mw;
+            if (g.security.length)
+            {
+                bool seen;
+                foreach (s; security)
+                    seen = seen || s == g.security;
+                if (!seen)
+                    security ~= g.security;
+            }
+        }
     }
+}
+
+private enum MiddlewareScope : ubyte { always, only, unless }
+
+/// A group's middleware with the rule that selects the routes it runs on.
+private struct GroupMiddleware
+{
+    Middleware mw;
+    const(TypeInfo) marker;   // the marker UDA of `only` and `unless`
+    MiddlewareScope when;
+    string security;          // OpenAPI scheme this middleware enforces, or null
+}
+
+/// The marker UDAs on a handler: `@Public` (a type) or `@Public()` (a value) of any struct or enum. Only a named function
+/// or a controller method carries any.
+const(TypeInfo)[] markersOf(alias fn)() @safe
+{
+    const(TypeInfo)[] r;
+    static foreach (attr; __traits(getAttributes, fn))
+    {
+        static if (is(attr))
+            r ~= typeid(attr);
+        else
+            r ~= typeid(typeof(attr));
+    }
+    return r;
 }
 
 /// What a request whose path differs from a route only by a trailing slash (`/tasks/` for `/tasks`, or the reverse) gets.
@@ -320,6 +395,7 @@ final class App
     private Router router;
     private HandlerFn[] handlers;
     private Group[] owners;          // owners[i] = group of handlers[i], or null
+    private const(TypeInfo)[][] markersOfRoute; // markers on handlers[i] (see `markersOf`)
     private Middleware[] middlewares;
     private ErrorHandler errorHandler;
     private UserHandler notFoundHandler;
@@ -532,16 +608,19 @@ final class App
 
     /// Registers an already-generated handler. The `get`/`post`/... functions below
     /// validate the signature at compile time and call this. `name` is what `routeTable` shows for the route.
-    void register(Method method, string path, HandlerFn h, OpDescribe describe = null, string name = null)
+    void register(Method method, string path, HandlerFn h, OpDescribe describe = null, string name = null,
+        const(TypeInfo)[] markers = null)
     {
-        registerIn(null, method, path, h, describe, name);
+        registerIn(null, method, path, h, describe, name, markers);
     }
 
-    private void registerIn(Group owner, Method method, string path, HandlerFn h, OpDescribe describe, string name)
+    private void registerIn(Group owner, Method method, string path, HandlerFn h, OpDescribe describe, string name,
+        const(TypeInfo)[] markers)
     {
         mustBeOpen();
         handlers ~= h;
         owners ~= owner;
+        markersOfRoute ~= markers;
         router.add(method, path, cast(int)(handlers.length - 1));
         OpRecord op;
         op.method = method;
@@ -576,7 +655,7 @@ final class App
             if (g is null)
                 continue;
             Middleware[] all;
-            g.collect(all);
+            g.collect(all, ops[i].security, markersOfRoute[i]);
             if (all.length == 0)
                 continue;
             auto c = new Chain;
@@ -1002,11 +1081,11 @@ private enum string mountBody = q{
                             static assert(0, err);
                         else static if (attr.websocket) // not in OpenAPI, which cannot describe WebSockets
                             register(attr.method, attr.path, delegate(Context c) { dispatch!(attr.method, attr.path, ov)(c, controller); },
-                                null, __traits(fullyQualifiedName, ov) ~ " (WebSocket)");
+                                null, __traits(fullyQualifiedName, ov) ~ " (WebSocket)", markersOf!ov);
                         else
                             register(attr.method, attr.path, delegate(Context c) { dispatch!(attr.method, attr.path, ov)(c, controller); },
                                 delegate string(ref Components cs, string pat) @safe { return describeOperation!(attr.method, attr.path, ov)(cs, pat); },
-                                __traits(fullyQualifiedName, ov));
+                                __traits(fullyQualifiedName, ov), markersOf!ov);
                     }}
                 }
             }
@@ -1029,7 +1108,7 @@ void get(string path, alias fn, string file = __FILE__, size_t line = __LINE__, 
     static if (err.length) static assert(0, err);
     else app.register(Method.GET, path, delegate(Context c) { dispatch!(Method.GET, path, fn)(c); },
         delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.GET, path, fn)(cs, pat); },
-        handlerName!(fn, file, line));
+        handlerName!(fn, file, line), markersOf!fn);
 }
 
 void post(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R)(R app) if (isRouteTarget!R)
@@ -1038,7 +1117,7 @@ void post(string path, alias fn, string file = __FILE__, size_t line = __LINE__,
     static if (err.length) static assert(0, err);
     else app.register(Method.POST, path, delegate(Context c) { dispatch!(Method.POST, path, fn)(c); },
         delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.POST, path, fn)(cs, pat); },
-        handlerName!(fn, file, line));
+        handlerName!(fn, file, line), markersOf!fn);
 }
 
 void put(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R)(R app) if (isRouteTarget!R)
@@ -1047,7 +1126,7 @@ void put(string path, alias fn, string file = __FILE__, size_t line = __LINE__, 
     static if (err.length) static assert(0, err);
     else app.register(Method.PUT, path, delegate(Context c) { dispatch!(Method.PUT, path, fn)(c); },
         delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.PUT, path, fn)(cs, pat); },
-        handlerName!(fn, file, line));
+        handlerName!(fn, file, line), markersOf!fn);
 }
 
 void patch(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R)(R app) if (isRouteTarget!R)
@@ -1056,7 +1135,7 @@ void patch(string path, alias fn, string file = __FILE__, size_t line = __LINE__
     static if (err.length) static assert(0, err);
     else app.register(Method.PATCH, path, delegate(Context c) { dispatch!(Method.PATCH, path, fn)(c); },
         delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.PATCH, path, fn)(cs, pat); },
-        handlerName!(fn, file, line));
+        handlerName!(fn, file, line), markersOf!fn);
 }
 
 void del(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R)(R app) if (isRouteTarget!R)
@@ -1065,7 +1144,7 @@ void del(string path, alias fn, string file = __FILE__, size_t line = __LINE__, 
     static if (err.length) static assert(0, err);
     else app.register(Method.DELETE, path, delegate(Context c) { dispatch!(Method.DELETE, path, fn)(c); },
         delegate string(ref Components cs, string pat) @safe { return describeOperation!(Method.DELETE, path, fn)(cs, pat); },
-        handlerName!(fn, file, line));
+        handlerName!(fn, file, line), markersOf!fn);
 }
 
 /// A WebSocket route: a GET whose handler returns `WebSocket` (see andaime.web.websocket). Not in the OpenAPI document,
@@ -1075,5 +1154,5 @@ void ws(string path, alias fn, string file = __FILE__, size_t line = __LINE__, R
     enum err = handlerError!(Method.GET, path, fn, file, line, true);
     static if (err.length) static assert(0, err);
     else app.register(Method.GET, path, delegate(Context c) { dispatch!(Method.GET, path, fn)(c); }, null,
-        handlerName!(fn, file, line) ~ " (WebSocket)");
+        handlerName!(fn, file, line) ~ " (WebSocket)", markersOf!fn);
 }

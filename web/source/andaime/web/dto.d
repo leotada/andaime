@@ -16,6 +16,9 @@ struct schemaName { string name; }
 enum optional;
 /// Field never read from or written to JSON.
 enum jsonIgnore;
+/// An empty `Optional` is left out of the JSON object instead of written as `null`. On a field, it applies to that field;
+/// on a struct, to every `Optional` field of it. OpenAPI then drops `nullable` from the field (it is never null).
+enum omitIfAbsent;
 /// Minimum string/array length.
 struct minLength { size_t value; }
 /// Maximum string/array length.
@@ -25,6 +28,21 @@ struct inRange { double min; double max; }
 
 // The error accumulator lives in andaime:http (JsonValue reads with it); this module keeps its old names.
 public import andaime.http.fielderrors;
+
+/// true if an empty `Optional` member `i` of T is left out of its JSON object (`@omitIfAbsent` on the field or on T).
+template omitsAbsent(T, size_t i)
+{
+    enum omitsAbsent = () {
+        bool r;
+        static foreach (attr; __traits(getAttributes, T.tupleof[i]))
+            static if (is(attr == omitIfAbsent))
+                r = true;
+        static foreach (attr; __traits(getAttributes, T))
+            static if (is(attr == omitIfAbsent))
+                r = true;
+        return r;
+    }();
+}
 
 /// true if member `i` of T carries the UDA `A` (type or enum).
 template hasUda(T, size_t i, alias A)

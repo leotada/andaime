@@ -98,8 +98,8 @@ void writeJson(T)(ref ByteBuffer o, ref const T v)
         {
             static if (!hasUda!(T, i, jsonIgnore))
             {
-                // an absent PatchField is not written at all
-                if (!isPatchField!(typeof(T.tupleof[i])) || isPresentField(v.tupleof[i]))
+                // an absent PatchField, and an empty Optional marked @omitIfAbsent, are not written at all
+                if (isPresentField!(omitsAbsent!(T, i))(v.tupleof[i]))
                 {
                     if (!first)
                         o.put(',');
@@ -118,11 +118,13 @@ void writeJson(T)(ref ByteBuffer o, ref const T v)
 
 private enum string quotedKey(T, size_t i) = "\"" ~ jsonKeyOf!(T, i) ~ "\":";
 
-/// Whether a struct member is written: always, except an absent `PatchField`.
-private bool isPresentField(F)(ref const F f)
+/// Whether a struct member is written: always, except an absent `PatchField` and, with `omit`, an empty `Optional`.
+private bool isPresentField(bool omit, F)(ref const F f)
 {
     static if (isPatchField!F)
         return f.isPresent;
+    else static if (omit && isOptional!F)
+        return f.has;
     else
         return true;
 }

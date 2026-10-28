@@ -20,7 +20,7 @@ module andaime.web.openapi 2025;
 import andaime.http.types : Method, methodName, statusText;
 import andaime.web.params;
 import andaime.web.context : Context;
-import andaime.web.dto : schemaName, jsonKeyOf, optional, jsonIgnore, minLength, maxLength, inRange, hasUda;
+import andaime.web.dto : schemaName, jsonKeyOf, optional, jsonIgnore, omitsAbsent, minLength, maxLength, inRange, hasUda;
 import andaime.http.naming : enumWireNames;
 import andaime.web.numtext : itoa, numText, ctNum;
 import andaime.web.handler_traits : parseRoute, indexOfName;
@@ -288,7 +288,7 @@ private string structSchema(T)(ref Components comps) @safe
                 else static if (is(typeof(attr) == inRange))
                     extra ~= `,"minimum":` ~ numText(attr.min) ~ `,"maximum":` ~ numText(attr.max);
             }
-            static if (is(F == Optional!U, U) || isPatchField!F0)
+            static if ((is(F == Optional!U, U) && !omitsAbsent!(T, i)) || isPatchField!F0)
                 extra ~= `,"nullable":true`;
             if (extra.length)
             {

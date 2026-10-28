@@ -7,7 +7,7 @@ module andaime.web 2025;
 public import andaime.web.application;
 public import andaime.web.context;
 public import andaime.web.params;
-public import andaime.web.dto : jsonKey, optional, jsonIgnore, minLength, maxLength, inRange, schemaName,
+public import andaime.web.dto : jsonKey, optional, jsonIgnore, omitIfAbsent, minLength, maxLength, inRange, schemaName,
     ValidationErrors, FieldError, ErrorSource, LocPart;
 public import andaime.http.naming : Naming, naming, wireName, defaultNaming;
 public import andaime.web.handler_traits : writeDefaultValidationErrors;

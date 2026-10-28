@@ -233,7 +233,7 @@ final class Group
     void useOnly(M)(Middleware mw, string security = null)
     {
         app.mustBeOpen();
-        mws ~= GroupMiddleware(mw, typeid(M), MiddlewareScope.only, security);
+        mws ~= GroupMiddleware(mw, M.mangleof, MiddlewareScope.only, security);
     }
 
     /// A middleware for every route of this group except the ones whose handler carries the marker `M`
@@ -241,7 +241,7 @@ final class Group
     void useUnless(M)(Middleware mw, string security = null)
     {
         app.mustBeOpen();
-        mws ~= GroupMiddleware(mw, typeid(M), MiddlewareScope.unless, security);
+        mws ~= GroupMiddleware(mw, M.mangleof, MiddlewareScope.unless, security);
     }
 
     /// The trailing-slash policy of this group's routes (and its subgroups', unless they set their own): `strict` or
@@ -274,7 +274,7 @@ final class Group
 
     /// `name` is what `App.routeTable` shows for the route (`get!` and `mount` pass the handler's qualified name).
     void register(Method method, string path, HandlerFn h, OpDescribe describe = null, string name = null,
-        const(TypeInfo)[] markers = null)
+        string[] markers = null)
     {
         auto full = (path == "/" && prefix.length) ? prefix : prefix ~ path;
         app.registerIn(this, method, full, h, describe, name, markers);
@@ -289,7 +289,7 @@ final class Group
 
     /// The middlewares that apply to a route whose handler carries `markers`, root group first; the security schemes of
     /// the ones that apply are added to `security` (once each).
-    private void collect(ref Middleware[] outer, ref string[] security, const(TypeInfo)[] markers) // root first
+    private void collect(ref Middleware[] outer, ref string[] security, string[] markers) // root first
     {
         if (parent !is null)
             parent.collect(outer, security, markers);
@@ -297,7 +297,7 @@ final class Group
         {
             bool marked;
             foreach (m; markers)
-                if (g.marker !is null && m is g.marker)
+                if (g.marker.length && m == g.marker)
                     marked = true;
             final switch (g.when)
             {
@@ -324,22 +324,22 @@ private enum MiddlewareScope : ubyte { always, only, unless }
 private struct GroupMiddleware
 {
     Middleware mw;
-    const(TypeInfo) marker;   // the marker UDA of `only` and `unless`
+    string marker;             // the marker UDA of `only` and `unless`
     MiddlewareScope when;
     string security;          // OpenAPI scheme this middleware enforces, or null
 }
 
 /// The marker UDAs on a handler: `@Public` (a type) or `@Public()` (a value) of any struct or enum. Only a named function
 /// or a controller method carries any.
-const(TypeInfo)[] markersOf(alias fn)() @safe
+string[] markersOf(alias fn)() @safe
 {
-    const(TypeInfo)[] r;
+    string[] r;
     static foreach (attr; __traits(getAttributes, fn))
     {
         static if (is(attr))
-            r ~= typeid(attr);
+            r ~= attr.mangleof;
         else
-            r ~= typeid(typeof(attr));
+            r ~= typeof(attr).mangleof;
     }
     return r;
 }
@@ -395,7 +395,7 @@ final class App
     private Router router;
     private HandlerFn[] handlers;
     private Group[] owners;          // owners[i] = group of handlers[i], or null
-    private const(TypeInfo)[][] markersOfRoute; // markers on handlers[i] (see `markersOf`)
+    private string[][] markersOfRoute; // markers on handlers[i] (see `markersOf`)
     private Middleware[] middlewares;
     private ErrorHandler errorHandler;
     private UserHandler notFoundHandler;
@@ -609,13 +609,13 @@ final class App
     /// Registers an already-generated handler. The `get`/`post`/... functions below
     /// validate the signature at compile time and call this. `name` is what `routeTable` shows for the route.
     void register(Method method, string path, HandlerFn h, OpDescribe describe = null, string name = null,
-        const(TypeInfo)[] markers = null)
+        string[] markers = null)
     {
         registerIn(null, method, path, h, describe, name, markers);
     }
 
     private void registerIn(Group owner, Method method, string path, HandlerFn h, OpDescribe describe, string name,
-        const(TypeInfo)[] markers)
+        string[] markers)
     {
         mustBeOpen();
         handlers ~= h;

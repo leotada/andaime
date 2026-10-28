@@ -353,8 +353,21 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
                     default:
                         break;
                 }
-                if (!known && !r.skipValue())
-                    return false; // unknown fields are ignored
+                if (!known)
+                {
+                    static if (isStrict!T)
+                    {
+                        // the path keeps the name past this call: copy it (an error path, so the allocation is fine)
+                        string name = key.idup;
+                        if (esc && !decodeJsonString(key, true, name))
+                            return r.syntax();
+                        immutable mark = path.pushKey(name);
+                        errs.addPath(path, "extra_forbidden", "Extra inputs are not permitted");
+                        path.pop(mark);
+                    }
+                    if (!r.skipValue())
+                        return false; // unknown fields are ignored, unless T is @strict (reported above)
+                }
             }
             while (r.eat(','));
             if (!r.eat('}'))

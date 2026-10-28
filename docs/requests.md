@@ -55,7 +55,9 @@ Order create(JsonBody!NewOrder body_)
 
 - The `Content-Type` is not checked; the body must be valid JSON for `T` (a struct, an array, a map `V[string]` or a scalar).
   An empty body is a 422 (`missing`). `GET` and `HEAD` routes cannot take a body (compile error); one body per handler.
-- Unknown fields are ignored. A field without a default and not `Optional` (or `PatchField`, see
+- Unknown fields are ignored, unless the struct is marked `@strict`: each unknown key then answers a 422 with type
+  `extra_forbidden` and the key in `loc` (`["body", "address", "zip"]`), and OpenAPI says `additionalProperties: false`.
+  It applies to JSON bodies, and to each struct that carries it, so mark nested structs too. A field without a default and not `Optional` (or `PatchField`, see
   [partial updates](#partial-updates-patchfield)) is required.
 - `@jsonKey("page_size")` sets the external name (`@naming` on the struct sets all of them, see
   [wire names](#wire-names-naming-and-wirename)), `@jsonIgnore` skips a field. Validation attributes are in

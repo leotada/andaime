@@ -20,7 +20,7 @@ module andaime.web.openapi 2025;
 import andaime.http.types : Method, methodName, statusText;
 import andaime.web.params;
 import andaime.web.context : Context;
-import andaime.web.dto : schemaName, jsonKeyOf, optional, jsonIgnore, omitsAbsent, minLength, maxLength, inRange, hasUda;
+import andaime.web.dto : schemaName, jsonKeyOf, optional, jsonIgnore, omitsAbsent, isStrict, minLength, maxLength, inRange, hasUda;
 import andaime.http.naming : enumWireNames;
 import andaime.web.numtext : itoa, numText, ctNum;
 import andaime.web.handler_traits : parseRoute, indexOfName;
@@ -305,7 +305,8 @@ private string structSchema(T)(ref Components comps) @safe
                 req ~= (req.length ? "," : "") ~ q(key);
         }}
     }
-    return `{"type":"object","properties":{` ~ props ~ `}` ~ (req.length ? `,"required":[` ~ req ~ `]` : "") ~ `}`;
+    return `{"type":"object","properties":{` ~ props ~ `}` ~ (req.length ? `,"required":[` ~ req ~ `]` : "")
+        ~ (isStrict!T ? `,"additionalProperties":false` : "") ~ `}`;
 }
 
 // ------------------------------------------------------------ description of an operation

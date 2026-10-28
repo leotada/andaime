@@ -119,6 +119,7 @@ tools/bench.sh [seconds]       # throughput (req/s) of one worker, with and with
 tools/h2_interop.sh            # HTTP/2 against curl, python-h2 and h2spec (H2SPEC=/path); also run by check.sh
 ```
 
+- **Local development uses DMD**, which builds much faster than LDC. Use LDC only for release builds and the final check that a feature compiles on it.
 - A change is done when `tools/check.sh` passes on **both** DMD and LDC (minimum supported: DMD 2.112.0, LDC 1.42.0; CI tests DMD 2.112.0 and the latest DMD and LDC), with new
   tests, a `compile_fail` case for every new signature rule, the hot path still GC-free and the memory numbers within their limits.
 - **Skips**: a test or helper that cannot run prints `skip: <reason>` to stderr and exits **77**; `check.sh` lists the skips in its

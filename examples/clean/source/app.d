@@ -61,7 +61,7 @@ Adapters postgresAdapters()
     a.uow = new PgUnitOfWork(db); // ambient: the repositories over `db` join its transactions
     a.companies = new PgCompanyRepository(db);
     a.memberships = new PgMembershipRepository(db);
-    a.jobStore = new PgJobStore(config.databaseUrl); // the same conninfo as `db`: an enqueue joins its transaction
+    a.jobStore = new PgJobStore(db); // over the repositories' pool: an enqueue joins its transaction
     a.users = new PgUserRepository(db);
     a.sendWelcome = new QueuedSendWelcome(a.jobStore);
     // andaime:postgres

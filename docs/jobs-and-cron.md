@@ -487,8 +487,11 @@ insert with the typed payload. `store.enqueue(spec)` borrows a pooled connection
 
 **The outbox without a connection.** `PgPool.transaction` is ambient (see [Database](database.md#one-transaction-across-repositories)):
 inside it, a plain `enqueue(store, job)` on this fiber joins the transaction when the store's pool is the same one, that
-is when the store and the repositories use the same conninfo on the same worker (`pgPool` is per thread and keyed by
-conninfo). So a use case that writes a user and schedules its welcome e-mail needs no `PgConn`:
+is when the store and the repositories use the same pool. Build the store over the application's pool,
+`new PgJobStore(db)`; a store made from a conninfo gets `pgPool(conninfo)`, which is the same pool only on the same
+worker (`pgPool` is per thread and keyed by conninfo). A store over a second `new PgPool` on the same database cannot
+join: its `enqueue` stores the job at once, outside the transaction, and logs a warning (once per store) when it runs
+inside a transaction of another pool. So a use case that writes a user and schedules its welcome e-mail needs no `PgConn`:
 
 ```d
 db.transaction((PgConn _) {

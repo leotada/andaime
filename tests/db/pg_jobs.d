@@ -170,6 +170,44 @@ void testAmbientEnqueue(PgConn admin)
     assert(got.length == 1 && got[0].payload == `{"n": 2}`, got.length ? got[0].payload : "none"); // jsonb's spacing
 }
 
+/// A store over a second pool on the same database cannot join the app's transaction: it warns once. A store built
+/// over the app's own pool joins it and stays quiet.
+void testSiblingPool(PgConn admin)
+{
+    reset(admin);
+    auto appPool = pgPool(pgConninfo());
+    PgConfig cfg;
+    cfg.conninfo = pgConninfo();
+    auto otherPool = new PgPool(cfg);
+
+    auto stray = new PgJobStore(otherPool);
+    stray.ensureSchema(admin);
+    auto logs = captureLog({
+        appPool.transaction((PgConn _) {
+            enqueue(stray, Ping(1)); // not in the transaction: stored at once
+            enqueue(stray, Ping(2));
+        });
+    });
+    assert(logs.length == 1 && logs[0].level == LogLevel.warn, "the stray store should warn exactly once");
+    assert(qint(admin, "select count(*)::int from andaime_jobs") == 2);
+
+    reset(admin);
+    auto own = new PgJobStore(appPool);
+    own.ensureSchema(admin);
+    bool threw;
+    logs = captureLog({
+        try
+            appPool.transaction((PgConn _) {
+                enqueue(own, Ping(3));
+                throw new Exception("rollback");
+            });
+        catch (Exception e)
+            threw = true;
+    });
+    assert(threw && logs.length == 0, "a store over the app's pool joins its transaction without a warning");
+    assert(qint(admin, "select count(*)::int from andaime_jobs") == 0, "the job left with the rollback");
+}
+
 /// ROLLBACK drops the inserted row and does not leave a job `claimBatch` can see.
 void testRollback(PgConn admin)
 {
@@ -632,6 +670,8 @@ void main()
     ok("@DropOnSuccess leaves no payload; purge deletes old completed and discarded rows and cron slots");
     testAmbientEnqueue(admin);
     ok("enqueue joins the pool's transaction: rolled back with it, claimed after its commit");
+    testSiblingPool(admin);
+    ok("a store over a second pool warns once; over the app's pool it joins the transaction");
     testLegacyTables(admin);
     ok("ensureSchema warns once about a vela_jobs table");
     printf("all Postgres job tests passed\n");

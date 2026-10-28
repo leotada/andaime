@@ -8,7 +8,7 @@
     { "path": "source/app.d", "marker": "// andaime:imports", "text": "import andaime.jobs.pg : PgJobStore;\n", "if": "pg" },
     { "path": "source/app.d", "marker": "// andaime:adapters", "text": "JobStore jobStore;\n" },
     { "path": "source/app.d", "marker": "// andaime:postgres",
-      "text": "a.jobStore = new PgJobStore(config.databaseUrl); // the same conninfo as `db`: an enqueue joins its transaction\n",
+      "text": "a.jobStore = new PgJobStore(db); // over the repositories' pool: an enqueue joins its transaction\n",
       "if": "pg" },
     { "path": "source/app.d", "marker": "// andaime:memory", "text": "a.jobStore = uow.track(new InMemoryJobStore);\n" }
   ],

@@ -1242,6 +1242,9 @@ final class PgPool
         this.cfg = cfg;
     }
 
+    /// The configuration this pool was built with.
+    PgConfig config() const nothrow => cfg;
+
     /// Open connections (idle + lent out) and idle ones.
     uint openCount() const nothrow => open;
     size_t idleCount() const nothrow => idle.length;
@@ -1441,6 +1444,18 @@ final class PgPool
 
     /// True while this fiber is inside a `transaction` on this pool.
     bool inTransaction() nothrow => ambient() !is null;
+
+    /// True when this fiber has a transaction open on another pool that talks to the same database (the same conninfo)
+    /// and none on this one: a second `new PgPool` next to the application's, whose statements will not join it.
+    bool transactionOnSiblingPool() nothrow
+    {
+        if (ambient() !is null)
+            return false;
+        for (auto a = fiberLocal!PgAmbient; a !is null; a = a.next)
+            if (a.pool.cfg.conninfo == cfg.conninfo)
+                return true;
+        return false;
+    }
 
     /// Runs `dg` once the outermost `transaction` of this fiber on this pool has committed, on the same fiber, in the
     /// order registered; never after a rollback (nor when a savepoint that registered it rolls back). Outside a

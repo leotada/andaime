@@ -56,6 +56,7 @@ final class PgJobStore : JobStore, JobRuntime, JobPayloadDrop
     private Duration leasePeriod;
     private bool schemaReady;
     private bool servicesStarted;
+    private bool warnedSiblingPool;
     private int wakeGen;
 
     /// `conninfo` is `host=... dbname=...`. `leasePeriod` is how long `running` may sit before `reap` (default 15 minutes).
@@ -82,6 +83,22 @@ final class PgJobStore : JobStore, JobRuntime, JobPayloadDrop
         this.cfg = cfg;
         this.leasePeriod = leasePeriod;
         pool = pgPool(cfg);
+    }
+
+    /// ditto, over the application's own pool: pass the pool the repositories use, so an `enqueue` inside their
+    /// transaction joins it (the outbox). A second `new PgPool` on the same database would not join: `enqueue` warns
+    /// once when it sees that.
+    this(PgPool pool, Duration leasePeriod = 15.minutes)
+    {
+        if (pool is null)
+            throw new JobStoreError("andaime.jobs: PgJobStore needs a pool");
+        if (leasePeriod <= Duration.zero)
+            throw new JobStoreError("andaime.jobs: lease must be positive");
+        this.cfg = pool.config;
+        if (cfg.conninfo.length == 0)
+            throw new JobStoreError("andaime.jobs: PgJobStore needs a conninfo");
+        this.leasePeriod = leasePeriod;
+        this.pool = pool;
     }
 
     /// How old a `running` row must be before `reap` returns it.
@@ -124,6 +141,13 @@ final class PgJobStore : JobStore, JobRuntime, JobPayloadDrop
     {
         prepare(spec);
         ready();
+        if (!warnedSiblingPool && pool.transactionOnSiblingPool)
+        {
+            warnedSiblingPool = true;
+            logAndaime(LogLevel.warn, "andaime.jobs: enqueue runs outside the open transaction of this fiber because "
+                ~ "the store's pool is not the one that transaction is on (same database, two pools); build the store "
+                ~ "with new PgJobStore(pool) over the application's pool", "enqueue is outside the open transaction");
+        }
         return pool.transaction((PgConn c) => insertRow(c, spec));
     }
 

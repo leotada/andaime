@@ -150,8 +150,9 @@ db.transaction((PgConn _) {
   the sending fiber has a transaction open fails with an `andaime.db:` assertion. Run the query before or after `offload`.
 - A statement outside any transaction autocommits, as before. `PgConfig.requireTransaction = true` makes `query` and `exec`
   on the pool throw instead, for an application that wants every statement inside a unit of work.
-- andaime:pgjobs' `enqueue(store, job)` joins it too when the store uses the same conninfo: the job exists only if the
-  transaction commits (see [Background jobs](jobs-and-cron.md)).
+- andaime:pgjobs' `enqueue(store, job)` joins it too when the store uses the same pool (`new PgJobStore(db)`): the job exists
+  only if the transaction commits (see [Background jobs](jobs-and-cron.md)). `db.transactionOnSiblingPool` tells whether
+  this fiber holds a transaction on another pool of the same database, which statements on `db` cannot join.
 
 ### After the commit: `afterCommit`
 

@@ -344,7 +344,7 @@ source/domain/users.d             entities & business rules (no framework or DB 
 source/usecases/users.d           use cases & port interfaces
 source/adapters/http/users.d      controllers & OpenAPI contracts
 source/adapters/postgres/users.d  PostgreSQL repository (mirrored in adapters/memory/)
-source/app.d                      composition root (built once per worker, no DI container)
+source/app.d                      composition root (built once per worker, no DI container; construct!T wires a class from its constructor)
 ```
 
 ```sh

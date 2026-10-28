@@ -115,10 +115,8 @@ App buildAppWith(Adapters a)
     auto api = app.group("/api/v1");
     auto members = app.group("/api/v1"); // the routes that know who calls (adapters/http/auth.d)
     members.use(devAuth());
-    members.mount(new CompanyController(new CreateCompany(a.uow, a.companies, a.memberships, a.clock, a.ids),
-        new GetCompany(a.companies), new ListMembers(a.memberships)));
-    api.mount(new UserController(new ListUsers(a.users), new GetUser(a.users), new CreateUser(a.users),
-        new UpdateUser(a.users), new DeleteUser(a.users)));
+    members.mount(construct!CompanyController(a));
+    api.mount(construct!UserController(a));
     // andaime:mount
 
     app.serveOpenApi(OpenApiInfo("clean", "0.1.0"));

@@ -5,6 +5,7 @@ module andaime.web 2025;
 @safe:
 
 public import andaime.web.application;
+public import andaime.web.compose : construct;
 public import andaime.web.context;
 public import andaime.web.params;
 public import andaime.web.dto : jsonKey, optional, jsonIgnore, omitIfAbsent, strict, minLength, maxLength, inRange, schemaName,

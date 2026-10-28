@@ -9,10 +9,10 @@
   ],
   "insert": [
     { "path": "source/jobs.d", "marker": "// andaime:imports",
-      "text": "import adapters.jobs.{{feature}} : {{Name}}Job, {{Name}}Handler;\nimport usecases.{{feature}} : {{Name}};\n" },
+      "text": "import adapters.jobs.{{feature}} : {{Name}}Job, {{Name}}Handler;\n" },
     { "path": "source/jobs.d", "marker": "// andaime:jobs", "text": "{{Name}}Job,\n" },
     { "path": "source/jobs.d", "marker": "// andaime:handlers",
-      "text": "handlers.handle!{{Name}}Job(new {{Name}}Handler(new {{Name}}(currentAdapters().{{featureCamel}})));\n" },
+      "text": "handlers.handle!{{Name}}Job(construct!{{Name}}Handler(currentAdapters()));\n" },
     { "path": "source/app.d", "marker": "// andaime:imports", "text": "import adapters.jobs.{{feature}} : Queued{{Name}};\n" },
     { "path": "source/app.d", "marker": "// andaime:adapters", "text": "{{Name}}Scheduler {{instance}};\n" },
     { "path": "source/app.d", "marker": "// andaime:postgres", "text": "a.{{instance}} = new Queued{{Name}}(a.jobStore);\n",

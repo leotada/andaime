@@ -9,7 +9,6 @@ import andaime.jobs;
 import std.meta : AliasSeq;
 import app : buildApp, currentAdapters;
 import adapters.jobs.users : SendWelcomeJob, SendWelcomeHandler;
-import usecases.users : SendWelcome;
 // andaime:imports
 
 /// Every job of the application: the worker runs these.
@@ -23,7 +22,7 @@ alias AllJobs = AliasSeq!(
 JobHandlers buildJobs()
 {
     auto handlers = new JobHandlers;
-    handlers.handle!SendWelcomeJob(new SendWelcomeHandler(new SendWelcome(currentAdapters().users)));
+    handlers.handle!SendWelcomeJob(construct!SendWelcomeHandler(currentAdapters()));
     // andaime:handlers
     return handlers;
 }

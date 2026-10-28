@@ -112,13 +112,20 @@ App buildAppWith(Adapters a)
     app.mapError!Conflict(409);
     app.mapError!RuleViolation(422);
     auto api = app.group("/api/v1");
-    api.mount(new UserController(new ListUsers(a.users), new GetUser(a.users), /* ... */));
+    api.mount(construct!UserController(a));   // its use cases, and their ports, are found in `a` by type
     app.serveOpenApi(OpenApiInfo("clean", "0.1.0"));
     return app;
 }
 
 App buildApp() => buildAppWith(currentAdapters());   // Postgres, or memory with STORE=memory
 ```
+
+`construct!T(a)` reads the constructor of `T` and fills each parameter from the field of `Adapters` with that type, or by
+building it the same way when it is a concrete class (the controller's use cases). A value that is not a port, such as a
+JWT secret, is an extra argument: `construct!Login(a, secret)`. It is resolved at compile time: a parameter with no
+value, two fields of one type, a cycle or a class with several constructors is a one-line compile error that names the
+class and the parameter. Writing the `new` lines by hand still works; `construct!` only removes the lines that repeat the
+constructor.
 
 ## What is kept from Clean Architecture, and what is changed
 
@@ -132,9 +139,10 @@ Changed, because of andaime and D:
   document. A presenter writing to an output port would make handlers return `void` and lose the response schema. Use
   cases return values; controllers map them to response DTOs.
 - **No interfaces for the use cases.** Tests replace the ports, not the use cases, and `final` methods are not virtual.
-- **No dependency injection container.** `buildApp` already runs once per worker: it is the composition root, written by
-  hand ("pure DI"). A compile-time container would cost compile time and hide the wiring; D has no runtime reflection for
-  a runtime one.
+- **No dependency injection container.** `buildApp` already runs once per worker: it is the composition root ("pure
+  DI"). `construct!T(adapters)` only fills a constructor by type at compile time, from a struct you wrote; there is no
+  registry, nothing is looked up at run time, and a missing port does not build. D has no runtime reflection for a
+  runtime container.
 - **Interfaces, not templates, for ports.** Templated use cases would be compiled again for each use, slow the build and
   make the error messages worse. A virtual call costs nanoseconds next to a database round trip.
 - **Exceptions for business errors.** `domain/errors.d` has `NotFound`, `Conflict` and `RuleViolation`, each with a
@@ -341,11 +349,9 @@ that is in no layer is reported too. Edit the rules to fit your own architecture
   layer of `andaime.json`.
 - **A package prefix**: an application whose modules are `visto.domain.users`, `visto.usecases.users`... uses globs with
   it in `andaime.json` (`"modules": ["visto.domain.*"]`); the longest matching glob decides a module's layer.
-- **A composition root with many use cases** (an open question): wiring a hundred use cases by hand is noise, but a
-  runtime container hides the wiring and finds a missing registration only at run time. If it hurts, a compile-time
-  `construct!T(adapters)` that fills a constructor's parameters by type from `Adapters`, and fails to compile when one is
-  missing, would keep the checks; andaime does not have it yet, and whether it is worth it is to be decided from a real
-  application's numbers.
+- **A composition root with many use cases**: the generators emit `construct!X(a)` for controllers and job handlers, so a
+  hundred use cases are not a hundred hand-written `new` lines, and a changed constructor needs no edit at the call
+  sites. Two ports of one type (two `Clock`s, say) are told apart by giving one of them as an extra argument.
 - **When not to use this**: a service with a handful of routes and no business rules gains little from four layers.
   `andaime new --template minimal` keeps the routes, handlers and tests in one module.
 

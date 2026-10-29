@@ -152,6 +152,16 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
             auto info = parseRoute(path);
             if (info.error.length)
                 return head ~ info.error;
+            static foreach (attr; __traits(getAttributes, fn))
+            {
+                static if (is(typeof(attr) == bodyLimit))
+                {
+                    if (attr.bytes == 0)
+                        return head ~ "@bodyLimit(0): a body limit must be at least 1 byte";
+                    if (method == Method.GET || method == Method.HEAD)
+                        return head ~ "@bodyLimit on " ~ methodName(method) ~ ", which has no body";
+                }
+            }
             auto used = new bool[info.params.length];
             size_t bodies = 0;
 

@@ -72,6 +72,11 @@ struct status { int code; }
 /// handler still produces it by throwing `HttpError`.
 struct responds { int code; string description; }
 
+/// The largest request body a route accepts, in bytes: `@bodyLimit(100 << 20) @Post("/files") ...`. Above it the
+/// request gets a 413 without its body being read (see `App.bodyLimit` for the default of every route). It cannot raise
+/// `ServerConfig.limits.maxBodyBytes`, which the engine enforces first.
+struct bodyLimit { ulong bytes; }
+
 /// The `@status` code of handler `fn`, or 0 when it has none.
 template successStatus(alias fn)
 {

@@ -64,7 +64,8 @@ Order create(JsonBody!NewOrder body_)
   [validation.md](validation.md).
 - An `enum` is its member name as a JSON string. A map keeps the last value of a repeated key; its output order is unspecified.
 - Bodies are buffered whole, up to `limits.maxBodyBytes` (1 MiB by default; 413 above). HTTP/1.1 chunked uploads are accepted.
-  For a body to read as it arrives, see [large uploads](#large-uploads-spooledfile-and-bodystream).
+  For a body to read as it arrives, see [large uploads](#large-uploads-spooledfile-and-bodystream); for a limit per
+  route, see [body limits](#body-limits).
 
 ## Query and form models
 
@@ -272,6 +273,46 @@ void main()
   100-continue` is answered when the handler first reads.
 - `TestClient` delivers a body above its `bufferBodyBytes` (256 KiB) in small pieces through the same reader, so tests
   exercise the streamed path.
+
+## Body limits
+
+`ServerConfig.limits.maxBodyBytes` is one limit for the whole server, and the upload routes set how high it must be. A
+limit per route keeps every other route small:
+
+```d
+// check
+@safe:
+
+import andaime;
+
+struct Note { string text; }
+
+string note(JsonBody!Note n) => n.text;
+
+@bodyLimit(100 << 20) @Post("/files")
+string upload(Form!Upload f) => f.file.filename;
+
+struct Upload { SpooledFile file; }
+
+void main()
+{
+    auto app = new App;          // with ServerConfig.limits.maxBodyBytes = 100 << 20 when serving
+    app.bodyLimit(1 << 20);      // every route: 1 MiB
+    app.post!("/notes", note);
+    app.post!("/files", upload); // its @bodyLimit wins
+    auto imports = app.group("/imports");
+    imports.bodyLimit(10 << 20); // this group and its subgroups, unless a route says otherwise
+}
+```
+
+- The nearest limit wins: the handler's `@bodyLimit`, then its group's (or a parent group's), then `App.bodyLimit`.
+  None set: only `maxBodyBytes`, which the engine applies first, so a route limit above it has no effect.
+- A body over the limit gets a 413 (`request body too large`) before it is read: a body still arriving stays unread
+  and the connection closes after the answer. The app middleware runs and sees the 413; the route's group middleware
+  runs first too, so an authentication middleware answers 401 before the limit is looked at.
+- A body whose size is not announced is counted as it is read, and stops with a 413 at the limit.
+- `@bodyLimit` on a `GET` or `HEAD` route, or a limit of 0, is a compile error (`Group.bodyLimit(0)` and
+  `App.bodyLimit(0)` throw `RouteError`).
 
 ## Headers and cookies
 

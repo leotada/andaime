@@ -17,6 +17,29 @@ package(andaime) final class BodyState
     size_t pos;                  /// bytes of a buffered `request.body` that `readBodyInto` already handed out
     const(SpoolConfig)* spool;   /// set by `App.handle`: where `SpooledFile` parts go
     string[] spooledFiles;       /// temporary files of this request, removed when `App.handle` ends
+    ulong limit;                 /// the route's body limit (`App.bodyLimit`), 0 = none; set by `App.handle`
+    ulong taken;                 /// bytes read from `request.bodyReader`, checked against `limit`
+    bool tooLarge;               /// the body is over `limit`: the route answers 413 and the body stays unread
+
+    void reset() nothrow @nogc
+    {
+        pos = 0;
+        limit = taken = 0;
+        tooLarge = false;
+    }
+
+    /// Counts `n` more bytes read from a body still arriving; over the limit is a 413 (the rest stays unread).
+    void count(size_t n)
+    {
+        taken += n;
+        if (limit && taken > limit)
+        {
+            import andaime.web.params : HttpError;
+
+            tooLarge = true;
+            throw new HttpError(413, "request body too large");
+        }
+    }
 }
 
 /// A request body's buffer: a `NO_SCAN` GC block like the engine's (see `andaime.http.buffer`).
@@ -345,7 +368,7 @@ final class Context
         locals.reset();
         scratchUsed = 0;
         if (bodyState_ !is null)
-            bodyState_.pos = 0;
+            bodyState_.reset();
     }
 
     // ---- the request body
@@ -355,7 +378,11 @@ final class Context
     size_t readBodyInto(scope ubyte[] into)
     {
         if (request.bodyReader !is null)
-            return request.bodyReader.read(into);
+        {
+            immutable got = request.bodyReader.read(into);
+            bodyState.count(got);
+            return got;
+        }
         auto st = bodyState;
         immutable left = request.body.length - st.pos;
         immutable n = into.length < left ? into.length : left;
@@ -387,6 +414,7 @@ final class Context
             immutable n = reader.read(block[got .. $]);
             if (n == 0)
                 break;
+            bodyState.count(n);
             got += n;
         }
         request.body = block[0 .. got];

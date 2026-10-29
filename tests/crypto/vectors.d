@@ -40,6 +40,21 @@ void testSha256()
     assert(sha256("abc")[] == hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
     assert(sha256("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")[]
         == hex("248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"));
+
+    // in pieces: the same digest, whatever the split; FIPS 180-2's one million 'a' in 1000-byte pieces
+    immutable text = "abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq";
+    foreach (step; [1, 3, 7, 56])
+    {
+        auto h = Sha256.start();
+        for (size_t i = 0; i < text.length; i += step)
+            h.put(text[i .. i + step < text.length ? i + step : text.length]);
+        assert(h.finish() == sha256(text));
+    }
+    auto million = Sha256.start();
+    foreach (_; 0 .. 1000)
+        million.put(rep('a', 1000));
+    assert(million.finish()[] == hex("cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"));
+    assert(Sha256.start().finish() == sha256(""));
 }
 
 void testHmac()

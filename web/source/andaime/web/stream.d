@@ -39,6 +39,9 @@ struct Stream
     /// The exact number of bytes the body will write, when known (a file): the response then has a Content-Length and
     /// the transport checks the body against it. -1 = unknown (chunked on HTTP/1.1).
     long contentLength = -1;
+    /// Runs once when the response ends, whether `body` ran or not (a HEAD request runs only the head): releases what
+    /// the body would read, such as an open file or an upstream response (`ClientStream.close`).
+    void delegate() @system done;
 }
 
 /// Where a `Stream` body writes. Valid only inside the body.
@@ -201,10 +204,18 @@ private void callEvents(void delegate(scope EventWriter) @system body, scope Eve
     body(w);
 }
 
+private void callDone(void delegate() @system done) @trusted
+{
+    done();
+}
+
 /// Runs a stream body as the response (also used by `serveStatic` for big files). Not for application code: return a
 /// `Stream` from the handler instead.
 void runStream(Context ctx, ref Stream st)
 {
+    scope (exit)
+        if (st.done !is null)
+            callDone(st.done);
     ctx.response.contentType = st.contentType;
     ctx.streamLength = st.contentLength;
     runBody(ctx, (StreamWriter w) { if (st.body !is null) callStream(st.body, w); });

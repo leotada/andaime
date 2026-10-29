@@ -57,7 +57,9 @@ A browser reads Server-Sent Events with `new EventSource("/clock")`. Named event
   when the body returns). A handler that throws before that gets an ordinary error response; after it, the response is aborted
   (HTTP/1.1: connection closed without the final chunk, HTTP/2: `RST_STREAM(INTERNAL_ERROR)`) and the error is logged. Headers
   set after the commit are ignored, with one log line.
-- HEAD gets the head only. `TestClient` records one chunk per `write` (`response.chunks`).
+- HEAD gets the head only: the body does not run. `TestClient` records one chunk per `write` (`response.chunks`).
+- `Stream.done` (optional) runs once when the response ends, whether the body ran, failed or did not run (HEAD): close
+  there what the body reads, such as a file or an upstream download (`Stream(type, body, length, () { s.close(); })`).
 - `EventWriter.send(data, event, id)`: several lines of `data` become several `data:` lines; a CR or LF in the event name or id
   aborts the stream. `comment()` is a heartbeat, `retry(ms)` tells the browser when to reconnect. `Cache-Control: no-cache` and
   `X-Accel-Buffering: no` are set for you.

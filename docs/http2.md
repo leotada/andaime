@@ -25,10 +25,15 @@ cfg.http2ConnectionWindowBytes = 1 << 20; // connection receive window: request 
 cfg.http2WebSockets = true;     // default; WebSockets as streams (RFC 8441), see websocket.md
 ```
 
-The windows only limit upload throughput: HTTP/2 request bodies are buffered whole either way (up to `maxBodyBytes`; only
-HTTP/1.1 streams them to `BodyStream` and `SpooledFile`, see [requests.md](requests.md#large-uploads-spooledfile-and-bodystream)), so memory does
-not depend on them. One stream uploads at most one stream window per round trip, so with a 50 ms round trip the default
-256 KiB allows about 5 MB/s per stream; raise it for large uploads over long distances. Values below 65,535 are raised to it.
+A request body up to `bufferBodyBytes` (256 KiB) is buffered whole, as over HTTP/1.1. A larger one (announced by
+`content-length`, or past that size without END_STREAM) is handed to `BodyStream` and `SpooledFile` as it arrives (see
+[requests.md](requests.md#large-uploads-spooledfile-and-bodystream)), and then the stream window is the backpressure:
+it reopens (WINDOW_UPDATE) only as the handler reads, so a stream never holds more than one window the handler has not
+read, and a handler that stops reading stops the client. An answer before the body ended is followed by
+RST_STREAM(NO_ERROR) for the rest (RFC 9113 §8.1); RST_STREAM from the client cancels a handler waiting for the body.
+One stream uploads at most one stream window per round trip, so with a 50 ms round trip the default 256 KiB allows
+about 5 MB/s per stream; raise it for large uploads over long distances (each streamed upload may then hold that much).
+Values below 65,535 are raised to it.
 
 ## Behind a proxy or between services
 

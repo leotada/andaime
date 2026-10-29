@@ -256,10 +256,10 @@ private HeaderField[] mp() => [hdr("Content-Type", "multipart/form-data; boundar
     assert(r.status == 200 && r.body == "-|c.bin,600000,disk,exists," ~ sum, r.body);
     assert(seenByMiddleware == "0/stream", seenByMiddleware);
 
-    // HTTP/2 bodies are always buffered: the same form binds from memory
+    // over HTTP/2 too: the same form streams to disk
     c.http2 = true;
     r = c.post("/upload", form(field("files", big, "h2.bin")), mp());
-    assert(r.body == "-|h2.bin,600000,memory,-," ~ sum, r.body);
+    assert(r.body == "-|h2.bin,600000,disk,exists," ~ sum, r.body);
 }
 
 private size_t walkLength(R)(R r) @system

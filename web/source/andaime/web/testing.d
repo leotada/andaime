@@ -360,9 +360,9 @@ struct TestClient
     /// Set by `websocket` for the request it sends; see `Request.connectProtocol`.
     private string connectProtocol;
 
-    /// Like the server's `ServerConfig.bufferBodyBytes`: an HTTP/1 body larger than this reaches the app unread, through
-    /// `Request.bodyReader`, in pieces of `streamPieceBytes`, so tests go through the same path as a large upload.
-    /// 0 = every body is buffered.
+    /// Like the server's `ServerConfig.bufferBodyBytes`: a body larger than this reaches the app unread, through
+    /// `Request.bodyReader`, in pieces of `streamPieceBytes`, so tests go through the same path as a large upload (over
+    /// HTTP/1.1 or HTTP/2). 0 = every body is buffered.
     size_t bufferBodyBytes = 256 << 10;
     /// ditto
     size_t streamPieceBytes = 4093;
@@ -378,7 +378,7 @@ struct TestClient
         req.target = target;
         splitTarget(target, req.path, req.query);
         req.headers = cookies ? withJarCookies(req.path, headers) : headers.dup;
-        if (!http2 && bufferBodyBytes && body.length > bufferBodyBytes)
+        if (bufferBodyBytes && body.length > bufferBodyBytes)
             req.bodyReader = new PieceReader(cast(const(ubyte)[]) body, streamPieceBytes, chunkedBodies);
         else
             req.body = cast(const(ubyte)[]) body;

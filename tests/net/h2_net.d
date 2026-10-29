@@ -36,6 +36,40 @@ string nap(int ms)
     return "slept";
 }
 
+/// Reads a streamed body to the end: "<bytes>:<sum of the bytes>:<unread before the first read>".
+string streamSum(BodyStream body)
+{
+    import std.conv : to;
+
+    immutable before = body.unread;
+    ubyte[10_000] buf;
+    ulong n, sum;
+    for (size_t got; (got = body.read(buf[])) > 0;)
+    {
+        n += got;
+        foreach (b; buf[0 .. got])
+            sum += b;
+    }
+    return n.to!string ~ ":" ~ sum.to!string ~ ":" ~ (before == unknownLength ? "?" : before.to!string);
+}
+
+/// Waits before reading: the client must stop at the stream window meanwhile.
+string holdThenSum(BodyStream body)
+{
+    sleep(msecs(600));
+    return streamSum(body);
+}
+
+/// Answers after 3 bytes without reading the rest.
+string firstThree(BodyStream body)
+{
+    ubyte[3] b;
+    size_t got;
+    while (got < 3)
+        got += body.read(b[got .. $]);
+    return (() @trusted => cast(string) b.idup)();
+}
+
 string cancelMe()
 {
     scope (exit)
@@ -155,6 +189,9 @@ App buildApp()
     app.get!("/cancel", cancelMe);
     app.get!("/big/{kib}", big);
     app.post!("/len", bodyLen);
+    app.post!("/stream", streamSum);
+    app.post!("/hold", holdThenSum);
+    app.post!("/first3", firstThree);
     app.get!("/proto", proto);
     app.get!("/host", host);
     app.get!("/ip", myIp);
@@ -315,6 +352,10 @@ final class H2Client
     bool eof;
     bool autoWindow = true;
     uint nextId = 1;
+    // the server's receive windows, which request bodies respect (as real clients do): a streamed body reopens its
+    // stream's window only as the handler reads
+    long connWindow = 65_535, peerInitial = 65_535;
+    long[uint] streamWindow;
 
     this(ushort port, const(ubyte)[] settings = null, bool preface = true, int rcvTimeoutMs = 5000)
     {
@@ -331,8 +372,8 @@ final class H2Client
         fd = -1;
     }
 
-    /// Sends a request; returns its stream id.
-    uint request(string method, string path, const(ubyte)[] body = null, string[2][] extra = null)
+    /// Sends a request; returns its stream id. `open`: the body goes on with `send` (no END_STREAM yet).
+    uint request(string method, string path, const(ubyte)[] body = null, string[2][] extra = null, bool open = false)
     {
         ByteBuffer b;
         encodeField(b, ":method", method);
@@ -344,15 +385,41 @@ final class H2Client
         immutable sid = nextId;
         nextId += 2;
         auto blk = cast(const(ubyte)[]) b.data;
-        txAll(fd, frame(1, flagEndHeaders | (body.length ? 0 : flagEndStream), sid, blk));
+        txAll(fd, frame(1, flagEndHeaders | (body.length || open ? 0 : flagEndStream), sid, blk));
+        resp[sid] = Resp.init;
+        streamWindow[sid] = peerInitial;
+        if (body.length)
+            send(sid, body, !open);
+        return sid;
+    }
+
+    /// DATA for `sid` within the server's windows, reading frames (WINDOW_UPDATE) while they are closed; an empty body
+    /// with `end` is a bare END_STREAM. Returns the bytes sent: fewer when the stream got its answer or a reset first, or
+    /// when no frame came within the receive timeout (`eof` is then set; clear it to go on).
+    size_t send(uint sid, const(ubyte)[] body, bool end)
+    {
+        if (!body.length && end)
+            txAll(fd, frame(0, flagEndStream, sid, null));
+        size_t sent;
         while (body.length)
         {
-            auto n = body.length < 16_384 ? body.length : 16_384;
-            txAll(fd, frame(0, n == body.length ? flagEndStream : 0, sid, body[0 .. n]));
+            long room = connWindow < streamWindow[sid] ? connWindow : streamWindow[sid];
+            if (room > 16_384)
+                room = 16_384;
+            if (room <= 0)
+            {
+                if (resp[sid].done || !step())
+                    return sent;
+                continue;
+            }
+            immutable n = body.length < room ? body.length : cast(size_t) room;
+            txAll(fd, frame(0, end && n == body.length ? flagEndStream : 0, sid, body[0 .. n]));
+            connWindow -= n;
+            streamWindow[sid] -= n;
             body = body[n .. $];
+            sent += n;
         }
-        resp[sid] = Resp.init;
-        return sid;
+        return sent;
     }
 
     void reset(uint sid, uint code = 8)
@@ -390,7 +457,24 @@ final class H2Client
         {
             case FrameType.settings:
                 if (!(f.flags & flagAck))
+                {
+                    for (size_t i = 0; i + 6 <= f.payload.length; i += 6)
+                        if (((f.payload[i] << 8) | f.payload[i + 1]) == 4) // SETTINGS_INITIAL_WINDOW_SIZE
+                        {
+                            immutable v = f.u32at(i + 2);
+                            foreach (ref w; streamWindow)
+                                w += v - peerInitial;
+                            peerInitial = v;
+                        }
                     txAll(fd, frame(4, flagAck, 0, null));
+                }
+                break;
+            case FrameType.windowUpdate:
+                immutable inc = f.u32at(0) & 0x7fff_ffff;
+                if (f.sid == 0)
+                    connWindow += inc;
+                else if (auto w = f.sid in streamWindow)
+                    *w += inc;
                 break;
             case FrameType.headers:
             case FrameType.continuation:
@@ -798,6 +882,79 @@ void testFlowControlLargeBodies()
     ok("flow control: 4 MiB response with a 16 KiB client window, 900 KB upload");
 }
 
+void testStreamedBodiesOverH2()
+{
+    import std.conv : to;
+
+    ServerConfig cfg;
+    cfg.bufferBodyBytes = 64 << 10;
+    cfg.limits.maxBodyBytes = 8 << 20;
+    cfg.headerTimeoutMs = 1500;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+
+    auto big = new ubyte[3 << 20];
+    ulong sum;
+    foreach (i, ref b; big)
+    {
+        b = cast(ubyte)(i * 7 % 251);
+        sum += b;
+    }
+    immutable expect = big.length.to!string ~ ":" ~ sum.to!string;
+
+    // announced above bufferBodyBytes: handed out at its HEADERS; unannounced: once 64 KiB arrived
+    auto c = new H2Client(s.port);
+    auto a = c.request("POST", "/stream", big, [["content-length", big.length.to!string]]);
+    c.wait(a);
+    assert(c.resp[a].status == 200 && c.resp[a].body == expect ~ ":" ~ big.length.to!string, c.resp[a].body);
+    auto b = c.request("POST", "/stream", big);
+    c.wait(b);
+    assert(c.resp[b].status == 200 && c.resp[b].body == expect ~ ":?", c.resp[b].body);
+
+    // a route that does not stream gets it whole, read before the handler without knowing its size
+    auto l = c.request("POST", "/len", big);
+    c.wait(l);
+    assert(c.resp[l].status == 200 && c.resp[l].body == big.length.to!string, c.resp[l].body);
+
+    // an answer before the end of the body: the response, then RST_STREAM(NO_ERROR) for the rest (§8.1), and the
+    // connection goes on
+    auto f = c.request("POST", "/first3", big);
+    c.wait(f);
+    assert(c.resp[f].status == 200 && c.resp[f].body == cast(string) big[0 .. 3].idup, c.resp[f].headers);
+    assert(c.get("/fast").body == "ok");
+    c.hang();
+
+    // backpressure: while the handler does not read, the client is held at the stream window (256 KiB) plus what was
+    // buffered; then everything arrives
+    auto h = new H2Client(s.port, null, true, 300);
+    immutable hs = h.request("POST", "/hold", null, [["content-length", big.length.to!string]], true);
+    immutable early = h.send(hs, big, true);
+    assert(early > 0 && early <= (256 << 10) + (64 << 10), "sent before the handler read: " ~ early.to!string);
+    h.eof = false;
+    h.send(hs, big[early .. $], true);
+    h.wait(hs);
+    assert(h.resp[hs].status == 200 && h.resp[hs].body == expect ~ ":" ~ big.length.to!string, h.resp[hs].body);
+    h.hang();
+
+    // above maxBodyBytes without content-length: the handler's read fails with 413
+    c = new H2Client(s.port);
+    auto huge = new ubyte[9 << 20];
+    auto t = c.request("POST", "/stream", huge);
+    c.wait(t);
+    assert(c.resp[t].status == 413, c.resp[t].headers);
+    assert(c.get("/fast").body == "ok", "the connection survives a 413");
+
+    // the client resets the stream in the middle: the reader is cancelled, the fiber released
+    immutable r = c.request("POST", "/stream", big[0 .. 100_000], null, true);
+    assert(waitFor(() => s.loop.stats().inFlight == 1, 1000));
+    c.reset(r);
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 1000), "RST_STREAM must cancel the reader");
+    assert(c.get("/fast").body == "ok");
+    c.hang();
+    ok("streamed bodies over HTTP/2: past bufferBodyBytes (announced or not) read as they arrive, the window as "
+        ~ "backpressure, a buffered route, an early answer, 413 mid-body, RST_STREAM while reading");
+}
+
 void testUpgrade()
 {
     auto s = start(ServerConfig.init);
@@ -976,6 +1133,7 @@ void main()
     testCancellation();
     testDeadlineAndCeiling();
     testFlowControlLargeBodies();
+    testStreamedBodiesOverH2();
     testUpgrade();
     testTimeouts();
     testGracefulStop();

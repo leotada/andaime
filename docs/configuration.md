@@ -12,7 +12,7 @@
 | `maxIdleWorkers` | 64 | idle fibers kept; the rest are torn down |
 | `fiberStackBytes` | 256 KiB | virtual stack per fiber; an overflow is a SIGSEGV that ends the process (the message names the request) |
 | `headerTimeoutMs` | 10,000 | first byte to end of head (slowloris); also the no-progress limit while a chunked or streamed body arrives |
-| `bufferBodyBytes` | 256 KiB | an HTTP/1.1 body above it is handed over unread (a `Content-Length` one at once, a chunked one once that much is decoded): a `BodyStream` or `SpooledFile` route reads it as it arrives, any other route gets it read whole first (see [requests.md](requests.md#large-uploads-spooledfile-and-bodystream)); 0 = always buffer. HTTP/2 bodies are always buffered |
+| `bufferBodyBytes` | 256 KiB | a request body above it is handed over unread (one with a length at once, a chunked or unannounced HTTP/2 one once that much arrived): a `BodyStream` or `SpooledFile` route reads it as it arrives, any other route gets it read whole first (see [requests.md](requests.md#large-uploads-spooledfile-and-bodystream)); 0 = always buffer |
 | `idleTimeoutMs` | 60,000 | idle keep-alive |
 | `requestTimeoutMs` | 30,000 | until the handler starts the response; past it the request is cancelled (504) |
 | `writeTimeoutMs` | 30,000 | a client that does not read; also each blocked write of a streamed response |

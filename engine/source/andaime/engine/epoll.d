@@ -279,7 +279,12 @@ private final class Worker : LocalFiber, ResponseSink, BodyReader
 
     // BodyReader (a streamed request body): the same kind of small @trusted bodies
     override size_t read(scope ubyte[] into) @trusted { return loop.bodyRead(this, into); }
-    override ulong unread() const @trusted { return conn is null || !conn.streaming ? 0 : conn.bodyLeft; }
+    override ulong unread() const @trusted
+    {
+        if (stream !is null)
+            return conn is null || conn.h2 is null || !stream.streamedBody ? 0 : conn.h2.bodyUnread(stream);
+        return conn is null || !conn.streaming ? 0 : conn.bodyLeft;
+    }
 
     void resetResponseState() nothrow @nogc
     {
@@ -1783,6 +1788,8 @@ final class EpollLoop : EventLoop, Scheduler
         Conn c = w.conn;
         if (w.cancelled)
             throw cancelledEx;
+        if (w.stream !is null)
+            return h2BodyRead(w, into);
         if (c is null || !c.streaming || c.bodyLeft == 0 || into.length == 0)
             return 0;
         if (cast(Worker) Fiber.getThis() !is w)
@@ -1916,6 +1923,47 @@ final class EpollLoop : EventLoop, Scheduler
                 return failChunks(c, 400);
             case ChunkResult.tooLarge:
                 return failChunks(c, 413);
+        }
+    }
+
+    /// `bodyRead` of an HTTP/2 stream whose body was handed out unread (`H2Stream.streamedBody`): the DATA the session
+    /// kept, consumed as it is copied out. Consuming reopens the stream's window (a WINDOW_UPDATE, sent before the fiber
+    /// waits), so the client never has more than one window in flight that the handler has not read. RST_STREAM or the
+    /// connection going away cancels the request.
+    private size_t h2BodyRead(Worker w, scope ubyte[] into)
+    {
+        if (cast(Worker) Fiber.getThis() !is w)
+            throw new Exception("andaime: only the request's own fiber can read its body");
+        auto st = w.stream;
+        if (!st.streamedBody || into.length == 0)
+            return 0;
+        for (;;)
+        {
+            Conn c = w.conn;
+            if (w.cancelled)
+                throw cancelledEx;
+            if (c.fd < 0 || c.h2 is null || st.resetByPeer)
+            {
+                w.cancelled = true;
+                throw cancelledEx;
+            }
+            if (immutable status = c.h2.bodyError(st))
+                throw new BodyError(status, "request body too large");
+            const have = c.h2.tunnelInput(st);
+            if (have.length)
+            {
+                immutable n = have.length < into.length ? have.length : into.length;
+                into[0 .. n] = have[0 .. n];
+                c.h2.tunnelConsume(st, n);
+                st.deadlineMs = nowMs + cfg.requestTimeoutMs;
+                return n;
+            }
+            if (c.h2.tunnelEnded(st))
+                return 0;
+            flushH2(c); // the WINDOW_UPDATEs of what was consumed, before the client is expected to send more
+            if (w.cancelled || c.fd < 0)
+                continue;
+            waitReadable(w);
         }
     }
 
@@ -3314,6 +3362,7 @@ final class EpollLoop : EventLoop, Scheduler
         hc.connectionWindowSize = cfg.http2ConnectionWindowBytes;
         hc.maxHeaders = maxHeaders;
         hc.limits = cfg.limits;
+        hc.bufferBodyBytes = cfg.bufferBodyBytes;
         hc.settingsTimeoutMs = cfg.headerTimeoutMs; // a client this slow to acknowledge is gone
         hc.enableConnectProtocol = cfg.http2WebSockets;
         return new H2Session(hc);
@@ -3465,6 +3514,8 @@ final class EpollLoop : EventLoop, Scheduler
         {
             auto w = cast(Worker) st.task;            if (w !is null && w.tunnel !is null && w.tunnel.reading)
                 wsDefer(w); // new bytes (or the end) for a WebSocket's reader
+            else if (w !is null && w.waitingRead && w.stream is st)
+                wsDefer(w); // ... or for a handler reading a streamed body (`h2BodyRead`)
         }
         while (c.fd >= 0 && s.popReady(st))
             startStream(c, st);
@@ -3483,6 +3534,7 @@ final class EpollLoop : EventLoop, Scheduler
         Worker w = acquireWorker();
         w.req = st.req;
         w.req.peer = IpAddress.fromNetworkOrderV4(c.peerIp, c.peerPort);
+        w.req.bodyReader = st.streamedBody ? w : null; // read through `h2BodyRead`
         w.conn = c;
         w.stream = st;
         w.output.clear();

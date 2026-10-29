@@ -163,6 +163,11 @@ private final class Conn : Item
     bool chunkDone;        /// the last chunk and the trailers were read
     ChunkedDecoder dec;
     size_t headLen, total; /// geometry of the current request (valid with haveHead)
+    /// The body is read by the handler as it arrives (`Request.bodyReader`, above `bufferBodyBytes`): `bodyOff` is the
+    /// first byte in `buf` not handed out yet (the body's first bytes came with the head), `bodyLeft` what is still due.
+    bool streaming;
+    size_t bodyOff;
+    ulong bodyLeft;
     uint headSerial;       /// counts the heads parsed on this connection (tells `parsedHead` whose head it holds)
     Worker worker;         /// while running/writing
     size_t sent;           /// bytes of worker.output already sent
@@ -217,7 +222,7 @@ private struct Timer
     uint gen;
 }
 
-private final class Worker : LocalFiber, ResponseSink
+private final class Worker : LocalFiber, ResponseSink, BodyReader
 {
     EpollLoop loop;
     RequestCallback cb;
@@ -242,6 +247,7 @@ private final class Worker : LocalFiber, ResponseSink
     bool h2done;           /// HTTP/2: endResponse gave the stream back to the session
     bool flushedAny;       /// some response bytes already reached the transport: a 500 is no longer possible
     bool waitingWrite;     /// suspended until the connection (or the stream's output) can take more
+    bool waitingRead;      /// suspended in `BodyReader.read` until more of the request body arrives
     bool poisoned;        /// an `Error` escaped the handler: cleanup code may not have run, so this fiber is never reused
     bool background;       /// `spawn`: no connection and no HTTP/2 stream
     void delegate() @safe bg; /// the background work, while `background`
@@ -270,11 +276,15 @@ private final class Worker : LocalFiber, ResponseSink
         return loop.sinkUpgrade(this, head, protocol);
     }
 
+    // BodyReader (a streamed request body): the same kind of small @trusted bodies
+    override size_t read(scope ubyte[] into) @trusted { return loop.bodyRead(this, into); }
+    override ulong unread() const @trusted { return conn is null || !conn.streaming ? 0 : conn.bodyLeft; }
+
     void resetResponseState() nothrow @nogc
     {
         cancelled = timedOut = failed = closeAfter = upgraded = false;
         tunnel = null;
-        started = ended = chunked = noBody = committed = h2done = flushedAny = waitingWrite = false;
+        started = ended = chunked = noBody = committed = h2done = flushedAny = waitingWrite = waitingRead = false;
         remaining = -1;
         h2head = ResponseHead.init;
     }
@@ -1028,6 +1038,9 @@ final class EpollLoop : EventLoop, Scheduler
             c.sent100 = false;
             c.chunked = c.chunkDone = false;
             c.headLen = c.total = c.sent = 0;
+            c.streaming = false;
+            c.bodyOff = 0;
+            c.bodyLeft = 0;
             c.worker = null;
             clearPending(c);
             c.closeWhenSent = false;
@@ -1091,6 +1104,19 @@ final class EpollLoop : EventLoop, Scheduler
     {
         if (c.fd < 0)
             return; // closed in this same batch
+        if (c.lingering)
+            return drainLingering(c, events);
+        if (c.phase == Phase.running && c.worker !is null && c.worker.waitingRead)
+        {
+            // the handler waits for more of a streamed body: it reads (or sees the end, or the error) itself
+            auto w = c.worker;
+            w.wakeEvents = events;
+            wake(w);
+            resume(w);
+            if (c.fd >= 0 && c.phase == Phase.reading)
+                drive(c);
+            return;
+        }
         if (c.phase == Phase.h2)
             return onH2Event(c, events);
         if (c.phase == Phase.handshake)
@@ -1195,7 +1221,7 @@ final class EpollLoop : EventLoop, Scheduler
                         break;
                     }
                     // (an upgrade behind held-back responses is served as HTTP/1.1: the 101 must not overtake them)
-                    if (cfg.http2 && !stopping && !c.hasPending && tryUpgrade(c))
+                    if (cfg.http2 && !stopping && !c.hasPending && !c.streaming && tryUpgrade(c))
                         return;
                     startRequest(c);
                     break; // back to the top: there may be another pipelined request
@@ -1289,6 +1315,16 @@ final class EpollLoop : EventLoop, Scheduler
             c.chunked = h.chunked;
             c.chunkDone = false;
             c.dec = ChunkedDecoder.init;
+            if (!c.chunked && !c.redirect && cfg.bufferBodyBytes && h.contentLength > cfg.bufferBodyBytes)
+            {
+                // Too large to buffer: the request starts now and the handler reads the body as it arrives (the bytes
+                // that came with the head first). `Expect: 100-continue` is answered at its first read.
+                c.streaming = true;
+                c.bodyOff = c.headLen;
+                c.bodyLeft = h.contentLength;
+                c.total = c.headLen;
+                return Step.ready;
+            }
             if (!c.chunked && c.total > c.buf.mem.length && !pool.grow(c.buf, c.total))
             {
                 sendErrorAndClose(c, 413);
@@ -1380,6 +1416,7 @@ final class EpollLoop : EventLoop, Scheduler
         w.req = *r;
         w.req.headers = w.store[0 .. n];
         w.req.body = c.buf.mem[c.headLen .. c.total];
+        w.req.bodyReader = c.streaming ? w : null;
         w.req.peer = IpAddress.fromNetworkOrderV4(c.peerIp, c.peerPort);
         if (stopping)
             w.req.keepAlive = false; // draining: the response announces Connection: close
@@ -1561,7 +1598,8 @@ final class EpollLoop : EventLoop, Scheduler
             return;
         }
         w.conn.deadlineMs = limit;
-        bool keep = w.req.keepAlive && !stopping;
+        // a body the handler left unread cannot be skipped to reach the next request: the connection ends with this one
+        bool keep = w.req.keepAlive && !stopping && !(w.conn.streaming && w.conn.bodyLeft);
         if (head.contentLength < 0 && !w.noBody)
         {
             if (w.req.http11)
@@ -1714,6 +1752,73 @@ final class EpollLoop : EventLoop, Scheduler
         if (w.wakeEvents == 0)
         {
             w.cancelled = true; // the timer fired: the client does not read
+            throw cancelledEx;
+        }
+    }
+
+    // ---- a streamed request body (`BodyReader`)
+
+    /// Up to `into.length` bytes of the body: first what came with the head, then from the socket, suspending the fiber
+    /// while the client sends. 0 = the body ended. Each read that makes progress restarts `requestTimeoutMs` (it counts
+    /// from the end of the body, as for a buffered one); a client that sends nothing for `headerTimeoutMs` is cancelled.
+    private size_t bodyRead(Worker w, scope ubyte[] into)
+    {
+        Conn c = w.conn;
+        if (w.cancelled)
+            throw cancelledEx;
+        if (c is null || !c.streaming || c.bodyLeft == 0 || into.length == 0)
+            return 0;
+        if (cast(Worker) Fiber.getThis() !is w)
+            throw new Exception("andaime: only the request's own fiber can read its body");
+        immutable want = into.length < c.bodyLeft ? into.length : cast(size_t) c.bodyLeft;
+        if (c.bodyOff < c.buf.len)
+        {
+            immutable have = c.buf.len - c.bodyOff;
+            immutable n = have < want ? have : want;
+            into[0 .. n] = c.buf.mem[c.bodyOff .. c.bodyOff + n];
+            c.bodyOff += n;
+            c.bodyLeft -= n;
+            return n;
+        }
+        if (!c.sent100)
+        {
+            c.sent100 = true;
+            if (equalsIgnoreCase(w.req.header("expect"), "100-continue"))
+                sendRaw(c, "HTTP/1.1 100 Continue\r\n\r\n");
+        }
+        for (;;)
+        {
+            immutable r = ioRead(c, into.ptr, want);
+            if (r > 0)
+            {
+                c.bodyLeft -= r;
+                c.deadlineMs = nowMs + cfg.requestTimeoutMs;
+                return cast(size_t) r;
+            }
+            if (r < 0 && errno == EINTR)
+                continue;
+            if (r < 0 && errno == EAGAIN)
+            {
+                waitReadable(w);
+                continue;
+            }
+            w.cancelled = true; // the client closed (or broke) the connection before the end of the body
+            throw cancelledEx;
+        }
+    }
+
+    /// Suspends the fiber until the connection has input (or an error, or the end), `headerTimeoutMs` at most.
+    private void waitReadable(Worker w) @trusted
+    {
+        w.waitingRead = true;
+        beginWait(w, cfg.headerTimeoutMs);
+        Fiber.yield();
+        w.waitingRead = false;
+        if (w.cancelled)
+            throw cancelledEx;
+        if (w.wakeEvents == 0)
+        {
+            w.cancelled = true; // the timer fired: the client stopped sending
             throw cancelledEx;
         }
     }
@@ -1929,6 +2034,12 @@ final class EpollLoop : EventLoop, Scheduler
         if (w.upgraded)
             return finishUpgraded(w);
         Conn c = w.conn;
+        if (c.streaming)
+        {
+            c.total = c.bodyOff; // the next request starts where the body ended (when it was all read)
+            if (c.bodyLeft)
+                w.closeAfter = true;
+        }
         if (w.cancelled)
         {
             if (w.timedOut && !w.started)
@@ -2106,12 +2217,22 @@ final class EpollLoop : EventLoop, Scheduler
         releaseWorker(w);
         if (!keep)
         {
+            // with part of a streamed body still coming, close(2) would answer RST and the client could lose the
+            // response it is about to read: send FIN and discard the rest for a moment first
+            if (c.streaming && c.bodyLeft)
+            {
+                c.phase = Phase.writing;
+                return lingerClose(c);
+            }
             closeConn(c);
             return;
         }
         c.buf.compact(c.total); // what is left over is the next request (pipelining)
         c.haveHead = false;
         c.sent100 = false;
+        c.streaming = false;
+        c.bodyOff = 0;
+        c.bodyLeft = 0;
         c.chunked = c.chunkDone = false;
         c.headLen = c.total = c.sent = 0;
         if (c.buf.len == 0)

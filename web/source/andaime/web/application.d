@@ -11,7 +11,8 @@ import andaime.web.dto : FieldError, ValidationErrors;
 import andaime.web.numtext : itoa, ctNum;
 import andaime.log : LogLevel, logEnabled, logAndaime, setLogSyncSource;
 import andaime.web.router;
-import andaime.web.handler_traits : handlerError, dispatch;
+import andaime.web.handler_traits : handlerError, dispatch, streamsBody;
+import andaime.web.uploads : SpoolConfig, removeSpooled;
 import andaime.web.json : writeJsonString, writeJson;
 import andaime.web.errors : ErrorInfo, errorBodyError, mapBodyError, validationMessage;
 import andaime.web.openapi;
@@ -341,8 +342,14 @@ string[] markersOf(alias fn)() @safe
         else
             r ~= typeof(attr).mangleof;
     }
+    static if (streamsBody!fn)
+        r ~= streamedBodyMarker;
     return r;
 }
+
+/// The marker of a route whose handler reads the body as it arrives (`streamsBody`): `App` does not buffer it first.
+/// Not a mangled name, so it never matches a marker UDA.
+enum string streamedBodyMarker = "andaime:streamed-body";
 
 /// What a request whose path differs from a route only by a trailing slash (`/tasks/` for `/tasks`, or the reverse) gets.
 enum TrailingSlash
@@ -396,6 +403,8 @@ final class App
     private HandlerFn[] handlers;
     private Group[] owners;          // owners[i] = group of handlers[i], or null
     private string[][] markersOfRoute; // markers on handlers[i] (see `markersOf`)
+    private bool[] streamedBody;       // handlers[i] reads the body as it arrives (`streamedBodyMarker`)
+    private SpoolConfig spoolConfig;
     private Middleware[] middlewares;
     private ErrorHandler errorHandler;
     private UserHandler notFoundHandler;
@@ -621,6 +630,10 @@ final class App
         handlers ~= h;
         owners ~= owner;
         markersOfRoute ~= markers;
+        bool streams;
+        foreach (m; markers)
+            streams |= m == streamedBodyMarker;
+        streamedBody ~= streams;
         router.add(method, path, cast(int)(handlers.length - 1));
         OpRecord op;
         op.method = method;
@@ -757,15 +770,37 @@ final class App
         if (!frozen)
             freeze();
         ctx.proxies = &proxyTrust;
+        ctx.bodyState.spool = &spoolConfig;
         // without fibers (TestClient, the development server) andaime.log finds this request's id here
         auto prevLogSource = setLogSyncSource(&ctx.logRequestId);
         scope (exit)
             setLogSyncSource(prevLogSource);
+        scope (exit)
+            removeSpooled(ctx);
         try
+        {
+            // A body the engine left unread is read whole here, before the middleware, unless the route streams it.
+            if (ctx.request.bodyReader !is null && !routeStreamsBody(ctx))
+                ctx.readBody();
             runFrom(ctx, 0);
+        }
         catch (Exception e)
             fail(ctx, e);
         finishResponse(ctx);
+    }
+
+    private bool routeStreamsBody(Context ctx)
+    {
+        PathParams scratch;
+        auto r = router.match(ctx.request.method, ctx.request.path, scratch);
+        return r.status == MatchStatus.found && streamedBody[r.handler];
+    }
+
+    /// Where `SpooledFile` keeps the file parts it does not hold in memory (see `SpoolConfig`).
+    void spoolUploads(SpoolConfig config)
+    {
+        mustBeOpen();
+        spoolConfig = config;
     }
 
     /// The one validation point, after the middleware has unwound (see `checkResponse`). A streamed response whose

@@ -195,6 +195,31 @@ struct TestWsResponse
     }
 }
 
+/// A body handed over in pieces, as the engine does for a large one (see `TestClient.bufferBodyBytes`).
+private final class PieceReader : BodyReader
+{
+    private const(ubyte)[] rest;
+    private size_t piece;
+
+    this(const(ubyte)[] body, size_t piece)
+    {
+        rest = body;
+        this.piece = piece ? piece : 1;
+    }
+
+    override size_t read(scope ubyte[] into)
+    {
+        size_t n = into.length < piece ? into.length : piece;
+        if (n > rest.length)
+            n = rest.length;
+        into[0 .. n] = rest[0 .. n];
+        rest = rest[n .. $];
+        return n;
+    }
+
+    override ulong unread() const => rest.length;
+}
+
 struct TestClient
 {
     private App app;
@@ -333,6 +358,13 @@ struct TestClient
     /// Set by `websocket` for the request it sends; see `Request.connectProtocol`.
     private string connectProtocol;
 
+    /// Like the server's `ServerConfig.bufferBodyBytes`: an HTTP/1 body larger than this reaches the app unread, through
+    /// `Request.bodyReader`, in pieces of `streamPieceBytes`, so tests go through the same path as a large upload.
+    /// 0 = every body is buffered.
+    size_t bufferBodyBytes = 256 << 10;
+    /// ditto
+    size_t streamPieceBytes = 4093;
+
     TestResponse send(Method m, string target, string body, scope HeaderField[] headers)
     {
         sink.reset(m);
@@ -341,7 +373,10 @@ struct TestClient
         req.target = target;
         splitTarget(target, req.path, req.query);
         req.headers = cookies ? withJarCookies(req.path, headers) : headers.dup;
-        req.body = cast(const(ubyte)[]) body;
+        if (!http2 && bufferBodyBytes && body.length > bufferBodyBytes)
+            req.bodyReader = new PieceReader(cast(const(ubyte)[]) body, streamPieceBytes);
+        else
+            req.body = cast(const(ubyte)[]) body;
         req.peer = peer;
         req.protocol = http2 ? Protocol.http2 : Protocol.http1;
         req.connectProtocol = connectProtocol;

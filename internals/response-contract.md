@@ -21,6 +21,13 @@ Read before touching `engine/`, `server.d` or `web/.../stream.d`.
   finish with `sendResponse`.
 - Request bodies: HTTP/1 chunked bodies are decoded in place by `ChunkedDecoder` (`tryParse`); the decoded body ends up right after
   the head and the next pipelined request right behind it, so `compact(c.total)` is unchanged.
+- Streamed bodies: a `Content-Length` body above `bufferBodyBytes` makes `tryParse` return `ready` after the head with
+  `Conn.streaming`, `bodyOff` (the unread prefix already in the buffer) and `bodyLeft`; the worker is the request's
+  `BodyReader`, and `bodyRead` serves the prefix, then reads the socket (suspending in `waitReadable`, which also sends a
+  lazy `100 Continue`). `onConnEvent` resumes a worker with `waitingRead` instead of parsing. `finish` sets `c.total` to the
+  bytes of the buffer actually consumed, so a pipelined request after the body survives `compact`. A body left unread makes
+  `sinkStart` send `Connection: close` and `completeResponse` go through `lingerClose`. The web layer reads such a body
+  whole (`Context.readBody`) before the middleware unless the route's markers carry `andaime:streamed-body`.
 - Pipelining (cleartext HTTP/1.1): when the next request is already in the buffer, `coalesce` appends the finished response to
   `Conn.pending` instead of sending it, so a batch of responses leaves in one send (16 KiB at most). `pendingQ` sends it at the end
   of the event batch at the latest. **Every write to the connection sends `pending` first**: `trySend`, `sendFully` (from the

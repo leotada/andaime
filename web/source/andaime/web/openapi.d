@@ -26,6 +26,11 @@ import andaime.web.numtext : itoa, numText, ctNum;
 import andaime.web.handler_traits : parseRoute, indexOfName;
 import andaime.web.stream : Stream, EventStream, produces;
 import andaime.web.models : isQueryModel, isFormModel, formHasFiles, modelFieldOptional, UploadedFile;
+import andaime.web.uploads : BodyStream, SpooledFile;
+
+/// One file field (its `@minLength`/`@maxLength` count bytes, not items).
+private enum isSingleFile(F) = is(F == UploadedFile) || is(F == Optional!UploadedFile) || is(F == SpooledFile)
+    || is(F == Optional!SpooledFile);
 import andaime.http.texttype : isTextType, textTypeFormat;
 import andaime.web.jsonvalue : Json, JsonValue;
 
@@ -187,7 +192,7 @@ string schemaOf(T)(ref Components comps) @safe
         else
             return `{"type":"string"}`;
     }
-    else static if (is(T == UploadedFile))
+    else static if (is(T == UploadedFile) || is(T == SpooledFile))
         return `{"type":"string","format":"binary"}`;
     else static if (is(T == Stream))
         return `{"type":"string","format":"binary"}`;
@@ -291,14 +296,14 @@ private string structSchema(T)(ref Components comps) @safe
             {
                 static if (is(typeof(attr) == minLength))
                 {
-                    static if (is(F == UploadedFile) || is(F == Optional!UploadedFile))
+                    static if (isSingleFile!F)
                         extra ~= `,"minLength":` ~ itoa(attr.value);
                     else
                         extra ~= `,"` ~ (is(F : const(char)[]) ? "minLength" : "minItems") ~ `":` ~ itoa(attr.value);
                 }
                 else static if (is(typeof(attr) == maxLength))
                 {
-                    static if (is(F == UploadedFile) || is(F == Optional!UploadedFile))
+                    static if (isSingleFile!F)
                         extra ~= `,"maxLength":` ~ itoa(attr.value);
                     else
                         extra ~= `,"` ~ (is(F : const(char)[]) ? "maxLength" : "maxItems") ~ `":` ~ itoa(attr.value);
@@ -319,7 +324,8 @@ private string structSchema(T)(ref Components comps) @safe
                     sch = sch[0 .. $ - 1] ~ extra ~ `}`;
             }
             props ~= (props.length ? "," : "") ~ q(key) ~ ":" ~ sch;
-            static if (!hasUda!(T, i, optional) && !isOptional!F && !isPatchField!F0 && !is(F == UploadedFile[]))
+            static if (!hasUda!(T, i, optional) && !isOptional!F && !isPatchField!F0 && !is(F == UploadedFile[])
+                && !is(F == SpooledFile[]))
                 req ~= (req.length ? "," : "") ~ q(key);
         }}
     }
@@ -352,6 +358,12 @@ string describeOperation(Method method, string path, alias fn)(ref Components co
                 params ~= (params.length ? "," : "") ~ `{"name":` ~ q(pname) ~ `,"in":"path","required":true,"schema":`
                     ~ schemaOf!T(comps) ~ `}`;
                 canFail = true;
+            }
+            else static if (is(T == BodyStream))
+            {
+                bodySchema = `{"type":"string","format":"binary"}`;
+                bodyMedia = "application/octet-stream";
+                bodyRequired = true;
             }
             else static if (is(T == Context) || isLocal!T || isClientIp!T)
             {

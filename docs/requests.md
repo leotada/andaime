@@ -64,6 +64,7 @@ Order create(JsonBody!NewOrder body_)
   [validation.md](validation.md).
 - An `enum` is its member name as a JSON string. A map keeps the last value of a repeated key; its output order is unspecified.
 - Bodies are buffered whole, up to `limits.maxBodyBytes` (1 MiB by default; 413 above). HTTP/1.1 chunked uploads are accepted.
+  For a body to read as it arrives, see [large uploads](#large-uploads-spooledfile-and-bodystream).
 
 ## Query and form models
 
@@ -200,10 +201,77 @@ void main()
 - The whole body, files included, is buffered up to `limits.maxBodyBytes` (1 MiB by default; 413 above). A multipart body
   is also limited to 128 parts, 8 KiB of headers per part, a name of 256 bytes and a filename of 1024. Over that, or any
   other broken framing, is 400. A text part whose charset is not `utf-8` or `us-ascii` is 400; a file part keeps its
-  charset in `contentType` and is not decoded. Unbuffered request bodies are not implemented: raise `maxBodyBytes` for a
-  larger upload.
+  charset in `contentType` and is not decoded. For uploads larger than you want in memory, use `SpooledFile` (below).
 - OpenAPI describes a file field as a string with `format: binary`. A form that has a file documents
   `multipart/form-data` only; a text-only form documents both content types.
+
+## Large uploads: SpooledFile and BodyStream
+
+An `UploadedFile` is a view into the buffered body, so 20 uploads of 25 MB hold 500 MB while they last (and the GC keeps
+that high-water mark afterwards). Two parameter kinds read the body as it arrives instead:
+
+```d
+// check
+@safe:
+
+import andaime;
+
+struct Upload
+{
+    Optional!string folder;
+    @maxLength(100 << 20) SpooledFile file; // bytes, as on UploadedFile
+    SpooledFile[] attachments;
+}
+
+string save(Form!Upload f)
+{
+    f.file.moveTo("/srv/files/" ~ "upload.bin"); // a rename when the spool directory is on the same file system
+    return f.file.filename ~ " " ~ (f.file.onDisk ? "was spooled" : "was in memory");
+}
+
+string checksum(BodyStream body)
+{
+    ubyte[64 << 10] buf;
+    ulong sum;
+    size_t n;
+    while ((n = body.read(buf[])) > 0)
+        foreach (b; buf[0 .. n])
+            sum += b;
+    return "ok";
+}
+
+void main()
+{
+    auto app = new App; // and ServerConfig.limits.maxBodyBytes = 200 << 20 when serving
+    app.spoolUploads(SpoolConfig(256 << 10, "/srv/files/.tmp"));
+    app.post!("/upload", save);
+    app.put!("/blob", checksum);
+}
+```
+
+- **`SpooledFile`** (a `Form!T` field: `SpooledFile`, `Optional!SpooledFile`, `SpooledFile[]`) keeps a part up to
+  `SpoolConfig.memoryBytes` (256 KiB) in `memory` and writes a larger one to a temporary file (`path`, mode 0600) in
+  `SpoolConfig.directory` (empty: `$TMPDIR`, else `/tmp`). It has `filename`, `contentType`, `size`, `onDisk`, `bytes()`
+  (the whole content: it reads the file in), `open()` (a reader, `while ((n = r.read(buf)) > 0)`) and `moveTo(dest)`,
+  which takes the file (a rename, or a copy across file systems; a part in memory is written out). The temporary files
+  are removed when the request ends, whatever happened, unless `moveTo` took them. The other rules of
+  [file uploads](#file-uploads) hold: limits, 400 on broken framing, 422 for a missing part or `@maxLength`, OpenAPI.
+- **`BodyStream`** is the raw body: `read(buf)` copies up to `buf.length` bytes and returns 0 at the end, `unread` is
+  what is left, `readAll()` reads the rest into memory. Not on `GET`/`HEAD`, not `Optional`, and not next to `JsonBody`
+  or `Form` (compile errors).
+- They apply to an HTTP/1.1 body with `Content-Length` above `ServerConfig.bufferBodyBytes` (256 KiB): the engine hands
+  it over unread, and memory stays at a 64 KiB window per request whatever the size. A smaller body, a chunked one or
+  one over HTTP/2 is already buffered and is read from memory the same way. `limits.maxBodyBytes` still applies (413
+  before anything is read).
+- Every other route gets a large body read whole before the middleware runs, as before. On a streaming route the
+  middleware runs first and sees `ctx.request.body` empty (`ctx.request.bodyReader` is set): it must not need the body.
+- The handler may answer without reading the whole body; the response then says `Connection: close` and the server
+  drains what the client still sends for a moment before closing, so the client gets the response and not a reset.
+- While the handler waits for the body, `requestTimeoutMs` restarts with each piece that arrives, and a client that
+  sends nothing for `headerTimeoutMs` cancels the request (`RequestCancelled`, like a disconnect). `Expect:
+  100-continue` is answered when the handler first reads.
+- `TestClient` delivers a body above its `bufferBodyBytes` (256 KiB) in small pieces through the same reader, so tests
+  exercise the streamed path.
 
 ## Headers and cookies
 

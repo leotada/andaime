@@ -25,7 +25,8 @@ cfg.http2ConnectionWindowBytes = 1 << 20; // connection receive window: request 
 cfg.http2WebSockets = true;     // default; WebSockets as streams (RFC 8441), see websocket.md
 ```
 
-The windows only limit upload throughput: request bodies are buffered whole either way (up to `maxBodyBytes`), so memory does
+The windows only limit upload throughput: HTTP/2 request bodies are buffered whole either way (up to `maxBodyBytes`; only
+HTTP/1.1 streams them to `BodyStream` and `SpooledFile`, see [requests.md](requests.md#large-uploads-spooledfile-and-bodystream)), so memory does
 not depend on them. One stream uploads at most one stream window per round trip, so with a 50 ms round trip the default
 256 KiB allows about 5 MB/s per stream; raise it for large uploads over long distances. Values below 65,535 are raised to it.
 

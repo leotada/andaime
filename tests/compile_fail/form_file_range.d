@@ -1,4 +1,4 @@
-// EXPECT: @inRange does not apply to UploadedFile
+// EXPECT: @inRange does not apply to a file (UploadedFile)
 import andaime;
 @safe:
 struct Profile { @inRange(0, 1) UploadedFile avatar; }

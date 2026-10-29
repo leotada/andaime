@@ -105,6 +105,19 @@ struct QueryValues
     }
 }
 
+/// The part of a request body that has not been received yet: the engine hands a large HTTP/1.1 body to the handler
+/// this way instead of buffering it whole (`ServerConfig.bufferBodyBytes`). Implemented by the engine's request fiber.
+interface BodyReader
+{
+    /// Copies up to `into.length` bytes of the body into `into` and returns how many; 0 means the body ended. Suspends
+    /// the fiber while the client is sending. The engine throws `RequestCancelled` when the client goes away or stops
+    /// sending for `headerTimeoutMs`.
+    size_t read(scope ubyte[] into);
+
+    /// Bytes of the body not read yet (the declared `Content-Length` minus what `read` returned).
+    ulong unread() const;
+}
+
 /// View of an already-parsed request. Owns no memory.
 struct Request
 {
@@ -114,7 +127,12 @@ struct Request
     const(char)[] path;   /// without the query, still percent-encoded
     const(char)[] query;  /// without the '?', still percent-encoded
     HeaderField[] headers;
+    /// The whole body, when it was buffered. Empty while `bodyReader` is set.
     const(ubyte)[] body;
+    /// Set by the engine for an HTTP/1.1 body larger than `ServerConfig.bufferBodyBytes`: the body has not been
+    /// received yet and is read through it, once. The web layer reads it whole into `body` for every route except
+    /// those that take it as a stream (`BodyStream`, a form with `SpooledFile`). Null otherwise.
+    BodyReader bodyReader;
     bool keepAlive = true;
     /// HTTP/1.1 (or HTTP/2). False for an HTTP/1.0 client, which cannot be sent a chunked body.
     bool http11 = true;

@@ -1,6 +1,6 @@
 /// Upload load for the memory test (tools/check.sh): N connections POST a body of K KiB at the same time to /len and
 /// check the answer. Bodies above 64 KiB use the buffer pool's exact-size path. Exit code 1 if any upload fails.
-/// Usage: upload_loadgen <port> <connections> <KiB>
+/// Usage: upload_loadgen <port> <connections> <KiB> [path]   (path /spooled sends a multipart form, others a raw body)
 module upload_loadgen 2025;
 
 import core.atomic : atomicLoad, atomicOp, atomicStore;
@@ -30,6 +30,8 @@ ptrdiff_t sendAll(int fd, const(ubyte)[] b)
     return done;
 }
 
+__gshared string path = "/len"; // set in main before the threads start
+
 void upload(ushort port, size_t bytes)
 {
     scope (exit)
@@ -46,11 +48,22 @@ void upload(ushort port, size_t bytes)
     }
     while (!atomicLoad(go))
         Thread.sleep(1.msecs);
-    char[128] h;
-    import core.stdc.stdio : snprintf;
-    auto hn = snprintf(h.ptr, h.length, "POST /len HTTP/1.1\r\nHost: t\r\nConnection: close\r\nContent-Length: %zu\r\n\r\n", bytes);
-    auto body_ = new ubyte[bytes];
+    // /spooled takes a multipart form with one file part of `bytes` bytes; the other routes take the raw body
+    immutable form = path == "/spooled";
+    enum string partHead = "--b0und\r\nContent-Disposition: form-data; name=\"file\"; filename=\"x.bin\"\r\n\r\n";
+    enum string partTail = "\r\n--b0und--\r\n";
+    auto body_ = new ubyte[bytes + (form ? partHead.length + partTail.length : 0)];
     body_[] = 'x';
+    if (form)
+    {
+        body_[0 .. partHead.length] = cast(const(ubyte)[]) partHead;
+        body_[$ - partTail.length .. $] = cast(const(ubyte)[]) partTail;
+    }
+    char[256] h;
+    import core.stdc.stdio : snprintf;
+    auto hn = snprintf(h.ptr, h.length, "POST %.*s HTTP/1.1\r\nHost: t\r\nConnection: close\r\nContent-Length: %zu\r\n%s\r\n",
+        cast(int) path.length, path.ptr, body_.length,
+        form ? "Content-Type: multipart/form-data; boundary=b0und\r\n".ptr : "".ptr);
     if (sendAll(fd, cast(const(ubyte)[]) h[0 .. hn]) < 0 || sendAll(fd, body_) < 0)
     {
         atomicOp!"+="(failures, 1);
@@ -84,6 +97,8 @@ int main(string[] args)
     immutable port = args[1].to!ushort;
     immutable n = args[2].to!int;
     immutable bytes = args[3].to!size_t * 1024;
+    if (args.length > 4)
+        path = args[4];
     Thread[] ts;
     foreach (i; 0 .. n)
     {

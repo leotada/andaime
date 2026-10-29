@@ -405,6 +405,35 @@ s_memory_uploads() {
     return $rc
 }
 
+# 16 uploads of 8 MiB at once to routes that read the body as it arrives: a SpooledFile form (the file goes to a
+# temporary file) and a BodyStream. Buffered, they would cost 128 MiB; streamed, a window per request.
+s_memory_streamed() {
+    ulimit -n 20000 2>/dev/null || true
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    $DC -O -release tests/net/upload_loadgen.d -of"$tmp/upload_loadgen" > /dev/null
+    $DC -O -release $I -i -of"$tmp/serve_slow" tests/net/serve_slow.d > /dev/null
+    mkdir -p "$tmp/spool"
+    local rc=0 route
+    for route in /spooled /streamed; do
+        local port=$(( 18900 + RANDOM % 200 ))
+        TMPDIR="$tmp/spool" "$tmp/serve_slow" "$port" 1500 > "$tmp/srv.log" 2>&1 &
+        local srv=$!
+        sleep 0.5
+        ( while kill -0 $srv 2>/dev/null; do awk '/VmRSS/{print $2}' /proc/$srv/status 2>/dev/null; sleep 0.05; done > "$tmp/rss" ) &
+        "$tmp/upload_loadgen" "$port" 16 8192 "$route" || rc=1
+        local peak; peak=$(sort -n "$tmp/rss" | tail -1)
+        local left; left=$(find "$tmp/spool" -type f | wc -l)
+        kill -INT $srv
+        for _ in $(seq 1 30); do kill -0 $srv 2>/dev/null || break; sleep 0.1; done
+        kill -9 $srv 2>/dev/null || true
+        echo "16 uploads of 8 MiB to $route: peak RSS ${peak} KiB, temporary files left ${left}"
+        (( peak < 40 * 1024 )) || { echo "ABOVE 40 MB at the peak: the bodies were buffered"; rc=1; }
+        (( left == 0 )) || { echo "temporary files outlived their requests"; rc=1; }
+    done
+    return $rc
+}
+
 # ---------------------------------------------------------------- compile-time checks
 
 s_compile_fail() {
@@ -551,6 +580,7 @@ section "real API example end to end (Postgres + external API + auth + CORS + st
 section "memory: 1,000 in-flight requests over HTTP/1.1 and HTTP/2, 1,000 open WebSockets on each (peak RSS < 30 MB)" s_memory
 section "memory: 1,000 in-flight requests over HTTPS (peak RSS < 80 MB, depends on the OpenSSL version)" s_memory_tls
 section "memory: 200 uploads of 512 KiB at once (above the pool classes), memory comes back" s_memory_uploads
+section "memory: 16 uploads of 8 MiB at once, read as they arrive (SpooledFile, BodyStream): peak RSS < 40 MB" s_memory_streamed
 section "compile-error tests (expected message + at most 2 error lines)" s_compile_fail
 section "DUB builds and layering" s_dub
 section "cross-platform compilation (macOS Darwin and Windows MSVC type-check)" s_cross_platform

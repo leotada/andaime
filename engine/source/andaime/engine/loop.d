@@ -13,7 +13,8 @@ import andaime.http.types : Request;
 import andaime.http.response : ResponseSink;
 import andaime.http.parser : Limits;
 
-/// The engine calls this with a complete request (head + body) and a `ResponseSink` for the response: `sink.start(head)`,
+/// The engine calls this with a request (its head, and its body unless `req.bodyReader` is set: a large body is read
+/// through it as it arrives) and a `ResponseSink` for the response: `sink.start(head)`,
 /// any number of `sink.write(...)`, `sink.end()`. A response of known length is buffered and sent in one go; a streamed
 /// one (`contentLength < 0`) goes out chunk by chunk, and `write`/`flush` suspend the fiber while the client is slow.
 /// Runs inside a fiber, so it may call `sleep`/`awaitFd`.
@@ -80,6 +81,11 @@ struct ServerConfig
     /// Longest a response may take from its first byte to its end; 0 = no limit (Server-Sent Events can live for hours).
     /// `requestTimeoutMs` covers the time until the response head is started.
     uint streamTimeoutMs = 0;
+    /// An HTTP/1.1 request body with a `Content-Length` above this is not buffered: the request starts as soon as its head
+    /// is in, and the body is read as it arrives (`Request.bodyReader`), so an upload costs a small buffer instead of its
+    /// own size. The web layer still reads it whole for routes that do not stream it (see `BodyStream`, `SpooledFile`).
+    /// 0 buffers every body. Chunked bodies and HTTP/2 are always buffered; `limits.maxBodyBytes` applies to all.
+    uint bufferBodyBytes = 256 << 10;
     /// Proxies whose `X-Forwarded-For` is believed, as CIDR strings (`"10.0.0.0/8"`, `"127.0.0.1"`). For a request whose TCP
     /// peer is one of them `ctx.clientIp()` returns the first address in the header that is not a trusted proxy; for any
     /// other peer the header is ignored (anyone can send it). An invalid entry fails startup.

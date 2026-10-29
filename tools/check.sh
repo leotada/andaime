@@ -405,6 +405,32 @@ s_memory_uploads() {
     return $rc
 }
 
+# 4 uploads of 24 MiB at once, buffered: far from the 128 new fibers of a burst, but the GC heap grew by ~100 MB, so
+# the quiet-second trim (ServerConfig.trimHeapGrowthBytes) must give it back anyway.
+s_memory_trim() {
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    $DC -O -release tests/net/upload_loadgen.d -of"$tmp/upload_loadgen" > /dev/null
+    $DC -O -release $I -i -of"$tmp/serve_slow" tests/net/serve_slow.d > /dev/null
+    local port=$(( 19100 + RANDOM % 200 ))
+    "$tmp/serve_slow" "$port" 500 > "$tmp/srv.log" 2>&1 &
+    local srv=$!
+    sleep 0.5
+    ( while kill -0 $srv 2>/dev/null; do awk '/VmRSS/{print $2}' /proc/$srv/status 2>/dev/null; sleep 0.05; done > "$tmp/rss" ) &
+    local rc=0
+    "$tmp/upload_loadgen" "$port" 4 24576 || rc=1
+    local peak; peak=$(sort -n "$tmp/rss" | tail -1)
+    sleep 3
+    local after; after=$(awk '/VmRSS/{print $2}' /proc/$srv/status)
+    kill -INT $srv
+    for _ in $(seq 1 30); do kill -0 $srv 2>/dev/null || break; sleep 0.1; done
+    kill -9 $srv 2>/dev/null || true
+    echo "4 uploads of 24 MiB: peak RSS ${peak} KiB, 3 s after ${after} KiB"
+    (( peak > 80 * 1024 )) || { echo "the uploads were not buffered (peak ${peak} KiB): the test measures nothing"; rc=1; }
+    (( after < peak * 4 / 10 )) || { echo "memory did not come back (${after} KiB of ${peak} KiB)"; rc=1; }
+    return $rc
+}
+
 # 16 uploads of 8 MiB at once to routes that read the body as it arrives: a SpooledFile form (the file goes to a
 # temporary file) and a BodyStream. Buffered, they would cost 128 MiB; streamed, a window per request.
 s_memory_streamed() {
@@ -580,6 +606,7 @@ section "real API example end to end (Postgres + external API + auth + CORS + st
 section "memory: 1,000 in-flight requests over HTTP/1.1 and HTTP/2, 1,000 open WebSockets on each (peak RSS < 30 MB)" s_memory
 section "memory: 1,000 in-flight requests over HTTPS (peak RSS < 80 MB, depends on the OpenSSL version)" s_memory_tls
 section "memory: 200 uploads of 512 KiB at once (above the pool classes), memory comes back" s_memory_uploads
+section "memory: 4 buffered uploads of 24 MiB (no burst), memory comes back after a quiet second" s_memory_trim
 section "memory: 16 uploads of 8 MiB at once, read as they arrive (SpooledFile, BodyStream): peak RSS < 40 MB" s_memory_streamed
 section "compile-error tests (expected message + at most 2 error lines)" s_compile_fail
 section "DUB builds and layering" s_dub

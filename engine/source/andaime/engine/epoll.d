@@ -445,6 +445,7 @@ final class EpollLoop : EventLoop, Scheduler
     private size_t failLogged, failSuppressed;
     private long quietSinceMs;      /// since when inFlight == 0 (0 = busy)
     private size_t createdAtTrim;  /// workersCreated at the last cleanup
+    private size_t heapAtTrim;     /// GC heap (used + free) after the last cleanup
     private size_t trims;
     private long maxStallMs, lastStallLogMs = -1_000_000;
     private bool stopping;
@@ -3995,11 +3996,14 @@ final class EpollLoop : EventLoop, Scheduler
             quietSinceMs = nowMs;
             return;
         }
-        if (nowMs - quietSinceMs < 1000 || workersCreated - createdAtTrim < trimBurst)
+        if (nowMs - quietSinceMs < 1000)
+            return;
+        import core.memory : GC;
+
+        if (workersCreated - createdAtTrim < trimBurst && !heapGrew())
             return;
         createdAtTrim = workersCreated;
         trims++;
-        import core.memory : GC;
 
         // The GC returns a pool to the OS only when it is entirely free. The idle workers (a Context is several KiB, a
         // page-sized block) and the cached buffers were allocated during the burst, between its big blocks, and would pin
@@ -4019,9 +4023,26 @@ final class EpollLoop : EventLoop, Scheduler
         {
             mallocTrim(0);
         }
+        heapAtTrim = heapSize();
     }
 
     private enum trimBurst = 128;
+
+    /// The GC heap grew `trimHeapGrowthBytes` since the last cleanup: large requests left memory behind (garbage still
+    /// counts as used until a collection). What a cleanup could not return (fragmented pools) is in `heapAtTrim`, so it
+    /// does not repeat until the heap grows again.
+    private bool heapGrew() nothrow
+    {
+        return cfg.trimHeapGrowthBytes && heapSize() >= heapAtTrim + cfg.trimHeapGrowthBytes;
+    }
+
+    private static size_t heapSize() nothrow
+    {
+        import core.memory : GC;
+
+        auto s = GC.stats();
+        return s.usedSize + s.freeSize;
+    }
 
     // ------------------------------------------------------------------ stop
 

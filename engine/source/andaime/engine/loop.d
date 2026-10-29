@@ -95,6 +95,9 @@ struct ServerConfig
     uint stallWarnMs = 50;           /// warning when a handler holds the worker longer than this without yielding; 0 turns it off
     bool reusePort = true;           /// SO_REUSEPORT: one listener per worker
     bool trimAfterBurst = true;      /// returns memory to the OS 1 s after a burst (runs the GC)
+    /// With `trimAfterBurst`, also trims after a quiet second when the GC heap grew this much since the last trim, so a
+    /// few large requests (uploads, reports) give their memory back too, not only a burst of many; 0 = bursts only.
+    size_t trimHeapGrowthBytes = 32 << 20;
     /// HTTP/2 over cleartext (h2c): prior knowledge (the `PRI *` preface) and `Upgrade: h2c`.
     /// HTTP/1.1 keeps working on the same port. Each stream runs in its own fiber, like a request.
     bool http2 = true;

@@ -427,7 +427,8 @@ s_memory_trim() {
     kill -9 $srv 2>/dev/null || true
     echo "4 uploads of 24 MiB: peak RSS ${peak} KiB, 3 s after ${after} KiB"
     (( peak > 80 * 1024 )) || { echo "the uploads were not buffered (peak ${peak} KiB): the test measures nothing"; rc=1; }
-    (( after < peak * 4 / 10 )) || { echo "memory did not come back (${after} KiB of ${peak} KiB)"; rc=1; }
+    # ~30% alone; on a loaded machine one upload may land after the trim, and its 24 MiB is below the threshold
+    (( after < peak * 6 / 10 )) || { echo "memory did not come back (${after} KiB of ${peak} KiB)"; rc=1; }
     return $rc
 }
 

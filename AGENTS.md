@@ -158,6 +158,10 @@ Read the matching file before touching its area. The rules in those files are no
 - D's `args[i].ptr` of `main(string[] args)` is not NUL-terminated: use `std.conv` in tools, not `atoi`.
 - A lambda mentioned inside `typeof` still makes older compilers allocate a closure for the variables it names: get return types
   from `typeof(fn)`, not from a probe lambda (`tests/alloc` caught it).
+- RSS after a GC collection is not a stable measure across compilers: druntime gives a large object a pool of 150% of its
+  size, a small object still alive in the rest pins it, and DMD and LDC lay them out differently (4 × 24 MiB: 30 MB stay
+  on DMD, 79 MB on LDC). Memory tests check what the GC freed (`serve_slow`'s `/gc`, `gc_used` in `tools/check.sh`) and
+  enforce RSS after a trim on DMD only.
 
 ## Adding things
 

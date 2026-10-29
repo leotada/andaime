@@ -25,7 +25,7 @@
 | `stallWarnMs` | 50 | log a handler that holds the worker this long without yielding; 0 = off |
 | `reusePort` | true | `SO_REUSEPORT`: one listener per worker |
 | `trimAfterBurst` | true | after a burst and a quiet second: retire idle fibers, drop the buffer cache and collect, returning memory to the OS |
-| `trimHeapGrowthBytes` | 32 MiB | with `trimAfterBurst`, the same cleanup after a quiet second when the GC heap grew this much since the last one: a few large requests (uploads, reports) give their memory back too, not only a burst of many; 0 = bursts only |
+| `trimHeapGrowthBytes` | 32 MiB | with `trimAfterBurst`, the same cleanup after a quiet second when the GC heap grew this much since the last one: a few large requests (uploads, reports) give their memory back too, not only a burst of many; 0 = bursts only. The collection always frees what is garbage; how much of it the OS gets back depends on the druntime GC's pools (a large object gets a pool of 150% of its size, and one small object still alive in the rest keeps the pool), which can differ between compilers: on LDC a run of 4 × 24 MiB bodies kept 79 of 104 MB resident, on DMD 30 MB. The best defence is not to buffer large bodies at all (`BodyStream`, `SpooledFile`) |
 | `http2`, `http2MaxStreams`, `http2StreamWindowBytes`, `http2ConnectionWindowBytes` | true, 100, 256 KiB, 1 MiB | see [http2.md](http2.md) |
 | `http2WebSockets` | true | WebSockets as HTTP/2 streams (RFC 8441); false: browsers open an HTTP/1.1 connection for each, see [websocket.md](websocket.md#http2) |
 | `tls` (`certFile`, `keyFile`, `reloadCheckMs`, `redirectPort`, `acmeWebroot`) | off | see [tls.md](tls.md) |

@@ -60,6 +60,17 @@ string streamed(BodyStream body)
     return t[0 .. k].idup;
 }
 
+/// The GC's own view, "<used> <free>" in bytes, for the memory tests: garbage counts as used until a collection, so
+/// after the loop's trim `used` is what is really alive. Unlike RSS it does not depend on how the GC laid out its pools.
+string gcStats()
+{
+    import core.memory : GC;
+    import std.conv : to;
+
+    auto s = GC.stats;
+    return s.usedSize.to!string ~ " " ~ s.freeSize.to!string;
+}
+
 /// An echo that stays open: the memory test holds 1,000 of them at once.
 WebSocket wsEcho()
 {
@@ -91,6 +102,7 @@ void main(string[] args)
     serve(() {
         auto app = new App;
         app.get!("/slow", slow);
+        app.get!("/gc", gcStats);
         app.post!("/len", bodyLen);
         app.post!("/spooled", spooled);
         app.post!("/streamed", streamed);

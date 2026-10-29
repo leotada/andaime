@@ -273,8 +273,10 @@ void main()
 - The handler may answer without reading the whole body; the response then says `Connection: close` and the server
   drains what the client still sends for a moment before closing, so the client gets the response and not a reset.
 - While the handler waits for the body, `requestTimeoutMs` restarts with each piece that arrives, and a client that
-  sends nothing for `headerTimeoutMs` cancels the request (`RequestCancelled`, like a disconnect). `Expect:
-  100-continue` is answered when the handler first reads.
+  sends nothing for `headerTimeoutMs` cancels the request (`RequestCancelled`, like a disconnect). A client that sends,
+  but slower than `ServerConfig.minBodyRate` (240 B/s on average after 5 s of waiting for it; only waiting time
+  counts, so a handler that reads slowly is not blamed), gets a 408 from `read`. `Expect: 100-continue` is answered
+  when the handler first reads.
 - `TestClient` delivers a body above its `bufferBodyBytes` (256 KiB) in small pieces through the same reader, so tests
   exercise the streamed path; `c.chunkedBodies = true` makes it an unknown length, as a chunked upload is.
 

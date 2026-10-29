@@ -955,6 +955,32 @@ void testStreamedBodiesOverH2()
         ~ "backpressure, a buffered route, an early answer, 413 mid-body, RST_STREAM while reading");
 }
 
+void testMinBodyRateOverH2()
+{
+    ServerConfig cfg;
+    cfg.bufferBodyBytes = 1 << 10;
+    cfg.minBodyRate = 100_000;
+    cfg.minBodyRateGraceMs = 300;
+    cfg.headerTimeoutMs = 3000;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+    auto c = new H2Client(s.port);
+    immutable sid = c.request("POST", "/stream", null, [["content-length", "100000"]], true);
+    immutable t0 = MonoTime.currTime;
+    auto piece = new ubyte[10];
+    foreach (_; 0 .. 8)
+    {
+        Thread.sleep(100.msecs);
+        c.send(sid, piece, false);
+    }
+    c.wait(sid);
+    assert(c.resp[sid].status == 408, c.resp[sid].headers);
+    assert(MonoTime.currTime - t0 < 2.seconds, "the rate, not headerTimeoutMs, must end it");
+    assert(c.get("/fast").body == "ok", "the connection goes on");
+    c.hang();
+    ok("minimum body rate over HTTP/2: a trickling stream gets 408, the connection goes on");
+}
+
 void testUpgrade()
 {
     auto s = start(ServerConfig.init);
@@ -1134,6 +1160,7 @@ void main()
     testDeadlineAndCeiling();
     testFlowControlLargeBodies();
     testStreamedBodiesOverH2();
+    testMinBodyRateOverH2();
     testUpgrade();
     testTimeouts();
     testGracefulStop();

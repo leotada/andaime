@@ -13,6 +13,8 @@
 | `fiberStackBytes` | 256 KiB | virtual stack per fiber; an overflow is a SIGSEGV that ends the process (the message names the request) |
 | `headerTimeoutMs` | 10,000 | first byte to end of head (slowloris); also the no-progress limit while a chunked or streamed body arrives |
 | `bufferBodyBytes` | 256 KiB | a request body above it is handed over unread (one with a length at once, a chunked or unannounced HTTP/2 one once that much arrived): a `BodyStream` or `SpooledFile` route reads it as it arrives, any other route gets it read whole first (see [requests.md](requests.md#large-uploads-spooledfile-and-bodystream)); 0 = always buffer |
+| `minBodyRate` | 240 | bytes/s: a body arriving slower than this on average, once `minBodyRateGraceMs` passed, ends with 408 (a trickle that `headerTimeoutMs` cannot catch). Only time spent waiting for the client counts, so a slow handler is never blamed. Checked for streamed bodies and chunked ones being buffered; 0 = off |
+| `minBodyRateGraceMs` | 5,000 | waiting time before `minBodyRate` applies |
 | `idleTimeoutMs` | 60,000 | idle keep-alive |
 | `requestTimeoutMs` | 30,000 | until the handler starts the response; past it the request is cancelled (504) |
 | `writeTimeoutMs` | 30,000 | a client that does not read; also each blocked write of a streamed response |

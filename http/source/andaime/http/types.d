@@ -113,7 +113,7 @@ interface BodyReader
     /// Copies up to `into.length` bytes of the body into `into` and returns how many; 0 means the body ended. Suspends
     /// the fiber while the client is sending. The engine throws `RequestCancelled` when the client goes away or stops
     /// sending for `headerTimeoutMs`, and `BodyError` when what arrives is not a valid body (broken chunked framing:
-    /// 400) or is above `maxBodyBytes` (413).
+    /// 400), is above `maxBodyBytes` (413) or arrives below `minBodyRate` (408).
     size_t read(scope ubyte[] into);
 
     /// Bytes of the body not read yet (the declared `Content-Length` minus what `read` returned), or `unknownLength`
@@ -125,8 +125,8 @@ interface BodyReader
 enum ulong unknownLength = ulong.max;
 
 /// The body of a request broke while it was being read (`BodyReader.read`): `status` is the answer it deserves, 400
-/// for a malformed body and 413 for one above the engine's `maxBodyBytes`. The rest of the body is not read and the
-/// connection ends with this request.
+/// for a malformed body, 413 for one above the engine's `maxBodyBytes`, 408 for one arriving below `minBodyRate`. The
+/// rest of the body is not read and the connection ends with this request.
 final class BodyError : Exception
 {
     int status;

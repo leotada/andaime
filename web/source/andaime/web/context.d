@@ -42,8 +42,8 @@ package(andaime) final class BodyState
     }
 }
 
-/// `reader.read`, with a body that broke on the way (`BodyError`: bad chunked framing, above the engine's limit) turned
-/// into the answer it deserves.
+/// `reader.read`, with a body that broke on the way (`BodyError`: bad chunked framing, above the engine's limit, too
+/// slow) turned into the answer it deserves.
 private size_t pull(BodyReader reader, scope ubyte[] into)
 {
     try
@@ -52,7 +52,8 @@ private size_t pull(BodyReader reader, scope ubyte[] into)
     {
         import andaime.web.params : HttpError;
 
-        throw new HttpError(e.status, e.status == 413 ? "request body too large" : "malformed request body");
+        throw new HttpError(e.status, e.status == 413 ? "request body too large"
+            : e.status == 408 ? "request body too slow" : "malformed request body");
     }
 }
 

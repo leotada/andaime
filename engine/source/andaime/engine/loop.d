@@ -81,11 +81,19 @@ struct ServerConfig
     /// Longest a response may take from its first byte to its end; 0 = no limit (Server-Sent Events can live for hours).
     /// `requestTimeoutMs` covers the time until the response head is started.
     uint streamTimeoutMs = 0;
-    /// An HTTP/1.1 request body with a `Content-Length` above this is not buffered: the request starts as soon as its head
-    /// is in, and the body is read as it arrives (`Request.bodyReader`), so an upload costs a small buffer instead of its
-    /// own size. The web layer still reads it whole for routes that do not stream it (see `BodyStream`, `SpooledFile`).
-    /// 0 buffers every body. Chunked bodies and HTTP/2 are always buffered; `limits.maxBodyBytes` applies to all.
+    /// A request body above this is not buffered: the request starts as soon as its head is in (a `Content-Length` or
+    /// HTTP/2 `content-length` above it) or once this much arrived (chunked, HTTP/2 without a length), and the rest is
+    /// read as it arrives (`Request.bodyReader`), so an upload costs a small buffer instead of its own size. The web
+    /// layer still reads it whole for routes that do not stream it (see `BodyStream`, `SpooledFile`). 0 buffers every
+    /// body; `limits.maxBodyBytes` applies to all.
     uint bufferBodyBytes = 256 << 10;
+    /// The slowest a request body may arrive, on average, in bytes per second, once `minBodyRateGraceMs` have passed since
+    /// its head: below it the request ends with 408 (as in Kestrel). `headerTimeoutMs` only catches a client that sends
+    /// nothing; this one catches a client that sends a byte every few seconds to hold a request for hours. Checked as
+    /// the body arrives (a streamed body, a chunked one being buffered); a buffered `Content-Length` body, and any
+    /// HTTP/2 body still buffered, are already bounded by `headerTimeoutMs`. 0 turns it off.
+    uint minBodyRate = 240;
+    uint minBodyRateGraceMs = 5_000; /// ditto
     /// Proxies whose `X-Forwarded-For` is believed, as CIDR strings (`"10.0.0.0/8"`, `"127.0.0.1"`). For a request whose TCP
     /// peer is one of them `ctx.clientIp()` returns the first address in the header that is not a trusted proxy; for any
     /// other peer the header is ignored (anyone can send it). An invalid entry fails startup.

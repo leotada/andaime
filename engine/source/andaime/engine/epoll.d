@@ -161,7 +161,12 @@ private final class Conn : Item
     bool sent100;          /// already answered 100 Continue to this request
     bool chunked;          /// the request body is `Transfer-Encoding: chunked` (decoded in place by `dec`)
     bool chunkDone;        /// the last chunk and the trailers were read
-    int chunkError;        /// a streamed chunked body broke (400, 413): every later read throws `BodyError`
+    int chunkError;        /// a streamed chunked body broke (400, 413, 408): every later read throws `BodyError`
+    // `minBodyRate`: body bytes received (framing included) and the time spent waiting for them. Only waiting counts: a
+    // handler that reads slowly is not a slow client.
+    long bodySinceMs;      /// the head of the current request was parsed
+    long bodyWaitMs;       /// a streamed body: time its reader spent waiting for the client
+    ulong bodyBytes;
     ChunkedDecoder dec;
     size_t headLen, total; /// geometry of the current request (valid with haveHead)
     /// The body is read by the handler as it arrives (`Request.bodyReader`, above `bufferBodyBytes`): `bodyOff` is the
@@ -249,6 +254,8 @@ private final class Worker : LocalFiber, ResponseSink, BodyReader
     bool flushedAny;       /// some response bytes already reached the transport: a 500 is no longer possible
     bool waitingWrite;     /// suspended until the connection (or the stream's output) can take more
     bool waitingRead;      /// suspended in `BodyReader.read` until more of the request body arrives
+    long bodyWaitMs;       /// HTTP/2 streamed body: time spent waiting for it (`minBodyRate`; HTTP/1.1 keeps it in Conn)
+    ulong bodyBytes;       /// ditto: bytes read
     bool poisoned;        /// an `Error` escaped the handler: cleanup code may not have run, so this fiber is never reused
     bool background;       /// `spawn`: no connection and no HTTP/2 stream
     void delegate() @safe bg; /// the background work, while `background`
@@ -1278,6 +1285,16 @@ final class EpollLoop : EventLoop, Scheduler
                 if (wasEmpty || (c.haveHead && c.chunked))
                     c.deadlineMs = nowMs + cfg.headerTimeoutMs; // not extended on every byte, except while a chunked body makes progress
                 c.buf.len += r;
+                if (c.haveHead && c.chunked)
+                {
+                    // ... which a trickle could keep up for hours: the average rate bounds it
+                    c.bodyBytes += r;
+                    if (belowBodyRate(nowMs - c.bodySinceMs, c.bodyBytes))
+                    {
+                        sendErrorAndClose(c, 408);
+                        return false;
+                    }
+                }
                 any = true;
                 // a full buffer goes to the parser first: once it knows the head, it sizes the
                 // buffer for the whole body (growing here would only fit a head)
@@ -1327,6 +1344,9 @@ final class EpollLoop : EventLoop, Scheduler
             c.chunkDone = false;
             c.chunkError = 0;
             c.dec = ChunkedDecoder.init;
+            c.bodySinceMs = nowMs;
+            c.bodyWaitMs = 0;
+            c.bodyBytes = c.buf.len - c.headLen;
             if (!c.chunked && !c.redirect && cfg.bufferBodyBytes && h.contentLength > cfg.bufferBodyBytes)
             {
                 // Too large to buffer: the request starts now and the handler reads the body as it arrives (the bytes
@@ -1360,6 +1380,7 @@ final class EpollLoop : EventLoop, Scheduler
                         c.bodyOff = c.headLen;
                         c.bodyLeft = unknownLength;
                         c.total = c.headLen;
+                        c.bodyWaitMs = nowMs - c.bodySinceMs; // buffering it was all waiting for the client
                         return Step.ready;
                     }
                     break;
@@ -1819,13 +1840,18 @@ final class EpollLoop : EventLoop, Scheduler
             {
                 c.bodyLeft -= r;
                 c.deadlineMs = nowMs + cfg.requestTimeoutMs;
+                c.bodyBytes += r;
+                if (belowBodyRate(c.bodyWaitMs, c.bodyBytes))
+                    throw new BodyError(408, "request body too slow");
                 return cast(size_t) r;
             }
             if (r < 0 && errno == EINTR)
                 continue;
             if (r < 0 && errno == EAGAIN)
             {
+                immutable t0 = nowMs;
                 waitReadable(w);
+                c.bodyWaitMs += nowMs - t0;
                 continue;
             }
             w.cancelled = true; // the client closed (or broke) the connection before the end of the body
@@ -1840,7 +1866,7 @@ final class EpollLoop : EventLoop, Scheduler
     private size_t chunkRead(Worker w, Conn c, scope ubyte[] into)
     {
         if (c.chunkError)
-            throw new BodyError(c.chunkError, c.chunkError == 413 ? "request body too large" : "malformed chunked body");
+            throw new BodyError(c.chunkError, bodyErrorText(c.chunkError));
         for (;;)
         {
             immutable end = c.headLen + c.dec.decoded;
@@ -1888,13 +1914,18 @@ final class EpollLoop : EventLoop, Scheduler
                 {
                     c.buf.len += r;
                     c.deadlineMs = nowMs + cfg.requestTimeoutMs;
+                    c.bodyBytes += r;
+                    if (belowBodyRate(c.bodyWaitMs, c.bodyBytes))
+                        failChunks(c, 408);
                     break;
                 }
                 if (r < 0 && errno == EINTR)
                     continue;
                 if (r < 0 && errno == EAGAIN)
                 {
+                    immutable t0 = nowMs;
                     waitReadable(w);
+                    c.bodyWaitMs += nowMs - t0;
                     continue;
                 }
                 w.cancelled = true; // the client closed (or broke) the connection before the last chunk
@@ -1956,6 +1987,9 @@ final class EpollLoop : EventLoop, Scheduler
                 into[0 .. n] = have[0 .. n];
                 c.h2.tunnelConsume(st, n);
                 st.deadlineMs = nowMs + cfg.requestTimeoutMs;
+                w.bodyBytes += n;
+                if (belowBodyRate(w.bodyWaitMs, w.bodyBytes))
+                    throw new BodyError(408, "request body too slow");
                 return n;
             }
             if (c.h2.tunnelEnded(st))
@@ -1963,7 +1997,9 @@ final class EpollLoop : EventLoop, Scheduler
             flushH2(c); // the WINDOW_UPDATEs of what was consumed, before the client is expected to send more
             if (w.cancelled || c.fd < 0)
                 continue;
+            immutable t0 = nowMs;
             waitReadable(w);
+            w.bodyWaitMs += nowMs - t0;
         }
     }
 
@@ -1972,7 +2008,17 @@ final class EpollLoop : EventLoop, Scheduler
     private noreturn failChunks(Conn c, int status)
     {
         c.chunkError = status;
-        throw new BodyError(status, status == 413 ? "request body too large" : "malformed chunked body");
+        throw new BodyError(status, bodyErrorText(status));
+    }
+
+    private static string bodyErrorText(int status) pure nothrow @nogc
+        => status == 413 ? "request body too large" : status == 408 ? "request body too slow" : "malformed chunked body";
+
+    /// `bytes` of body in `waitedMs` of waiting for the client: below `minBodyRate` once the grace period is over.
+    private bool belowBodyRate(long waitedMs, ulong bytes) const nothrow @nogc
+    {
+        return cfg.minBodyRate && waitedMs > cfg.minBodyRateGraceMs
+            && bytes * 1000 < cast(ulong) cfg.minBodyRate * cast(ulong) waitedMs;
     }
 
     /// Suspends the fiber until the connection has input (or an error, or the end), `headerTimeoutMs` at most.
@@ -3535,6 +3581,8 @@ final class EpollLoop : EventLoop, Scheduler
         w.req = st.req;
         w.req.peer = IpAddress.fromNetworkOrderV4(c.peerIp, c.peerPort);
         w.req.bodyReader = st.streamedBody ? w : null; // read through `h2BodyRead`
+        w.bodyWaitMs = nowMs - st.openedMs; // the session buffered its first bytes meanwhile
+        w.bodyBytes = 0;
         w.conn = c;
         w.stream = st;
         w.output.clear();

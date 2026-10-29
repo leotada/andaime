@@ -121,6 +121,22 @@ Response owned()
 
 Response splitting(string to) => Response.redirect(to);
 
+/// Reads 4 KiB every 100 ms (40 KB/s): a handler slower than a fast client.
+string slowReader(BodyStream body)
+{
+    import std.conv : to;
+
+    ubyte[4 << 10] buf;
+    ulong total;
+    size_t n;
+    while ((n = body.read(buf[])) > 0)
+    {
+        total += n;
+        sleep(msecs(100));
+    }
+    return total.to!string;
+}
+
 /// Reads a streamed body in 10 KiB pieces: "<bytes>:<sum of the bytes>".
 string streamSum(BodyStream body)
 {
@@ -169,6 +185,7 @@ App buildApp()
     app.post!("/len", bodyLen);
     app.post!("/echo", echoBody);
     app.post!("/stream", streamSum);
+    app.post!("/slowreader", slowReader);
     app.post!("/first3", firstThree);
     return app;
 }
@@ -1378,6 +1395,59 @@ void testStreamedChunkedBodies()
         ~ "for a route that does not stream, bad framing 400 and the limit 413 mid-body, stalled clients cancelled");
 }
 
+void testMinBodyRate()
+{
+    import std.array : replicate;
+    import std.conv : to;
+
+    ServerConfig cfg;
+    cfg.bufferBodyBytes = 1 << 10;
+    cfg.minBodyRate = 100_000; // 100 KB/s, so a test trickle is far below it
+    cfg.minBodyRateGraceMs = 300;
+    cfg.headerTimeoutMs = 3000;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+    string trickle(ref Client c, int pieces, string piece)
+    {
+        foreach (_; 0 .. pieces)
+        {
+            Thread.sleep(100.msecs);
+            if (sd(c.fd, piece.ptr, piece.length) <= 0)
+                return "closed";
+        }
+        return "open";
+    }
+
+    // a streamed body arriving at 100 B/s: 408 once the grace period is over, and the connection ends
+    auto c = dial(s.port);
+    c.tx("POST /stream HTTP/1.1\r\nHost: t\r\nContent-Length: 100000\r\n\r\n" ~ "x".replicate(10));
+    immutable t0 = MonoTime.currTime;
+    trickle(c, 8, "xxxxxxxxxx");
+    auto r = c.rx();
+    assert(r.status == 408 && r.closed, r.head ~ r.body);
+    assert(MonoTime.currTime - t0 < 2.seconds);
+    c.hang();
+
+    // a chunked body trickling while it is still buffered: the same
+    c = dial(s.port);
+    c.tx("POST /len HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n\r\n");
+    immutable t1 = MonoTime.currTime;
+    trickle(c, 8, "1\r\nx\r\n");
+    r = c.rx();
+    assert(r.status == 408 && r.closed, r.head ~ r.body);
+    assert(MonoTime.currTime - t1 < 2.seconds, "the rate, not headerTimeoutMs (3 s), must end it");
+    c.hang();
+
+    // a fast client and a handler slower than the rate: only time spent waiting for the client counts, so it passes
+    auto body_ = "y".replicate(64 << 10);
+    c = dial(s.port);
+    c.tx("POST /slowreader HTTP/1.1\r\nHost: t\r\nContent-Length: " ~ body_.length.to!string ~ "\r\n\r\n" ~ body_);
+    r = c.rx();
+    assert(r.status == 200 && r.body == body_.length.to!string, r.head ~ r.body);
+    c.hang();
+    ok("minimum body rate: a trickle gets 408 (streamed, and chunked while buffered); a slow handler does not");
+}
+
 void testOffload()
 {
     // pool configured in main: 2 threads, queue of 2
@@ -1454,5 +1524,6 @@ void main()
     testLargeBodies();
     testStreamedBodies();
     testStreamedChunkedBodies();
+    testMinBodyRate();
     printf("all network tests passed\n");
 }

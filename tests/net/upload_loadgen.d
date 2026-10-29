@@ -1,6 +1,7 @@
 /// Upload load for the memory test (tools/check.sh): N connections POST a body of K KiB at the same time to /len and
 /// check the answer. Bodies above 64 KiB use the buffer pool's exact-size path. Exit code 1 if any upload fails.
-/// Usage: upload_loadgen <port> <connections> <KiB> [path]   (path /spooled sends a multipart form, others a raw body)
+/// Usage: upload_loadgen <port> <connections> <KiB> [path [chunked]]   (path /spooled sends a multipart form, others a
+/// raw body; `chunked` frames it as Transfer-Encoding: chunked)
 module upload_loadgen 2025;
 
 import core.atomic : atomicLoad, atomicOp, atomicStore;
@@ -31,6 +32,26 @@ ptrdiff_t sendAll(int fd, const(ubyte)[] b)
 }
 
 __gshared string path = "/len"; // set in main before the threads start
+__gshared bool chunked;          // ditto: `chunked` as the 5th argument sends Transfer-Encoding: chunked
+
+/// The body as it is, or in 64 KiB chunks.
+ptrdiff_t sendBody(int fd, const(ubyte)[] b)
+{
+    if (!chunked)
+        return sendAll(fd, b);
+    import core.stdc.stdio : snprintf;
+
+    char[24] line;
+    for (size_t i = 0; i < b.length; i += 64 << 10)
+    {
+        const piece = b[i .. (b.length - i < (64 << 10) ? b.length : i + (64 << 10))];
+        immutable n = snprintf(line.ptr, line.length, "%zx\r\n", piece.length);
+        if (sendAll(fd, cast(const(ubyte)[]) line[0 .. n]) < 0 || sendAll(fd, piece) < 0
+            || sendAll(fd, cast(const(ubyte)[]) "\r\n") < 0)
+            return -1;
+    }
+    return sendAll(fd, cast(const(ubyte)[]) "0\r\n\r\n");
+}
 
 void upload(ushort port, size_t bytes)
 {
@@ -61,10 +82,13 @@ void upload(ushort port, size_t bytes)
     }
     char[256] h;
     import core.stdc.stdio : snprintf;
-    auto hn = snprintf(h.ptr, h.length, "POST %.*s HTTP/1.1\r\nHost: t\r\nConnection: close\r\nContent-Length: %zu\r\n%s\r\n",
-        cast(int) path.length, path.ptr, body_.length,
+    char[64] length;
+    immutable ln = chunked ? snprintf(length.ptr, length.length, "Transfer-Encoding: chunked")
+        : snprintf(length.ptr, length.length, "Content-Length: %zu", body_.length);
+    auto hn = snprintf(h.ptr, h.length, "POST %.*s HTTP/1.1\r\nHost: t\r\nConnection: close\r\n%.*s\r\n%s\r\n",
+        cast(int) path.length, path.ptr, ln, length.ptr,
         form ? "Content-Type: multipart/form-data; boundary=b0und\r\n".ptr : "".ptr);
-    if (sendAll(fd, cast(const(ubyte)[]) h[0 .. hn]) < 0 || sendAll(fd, body_) < 0)
+    if (sendAll(fd, cast(const(ubyte)[]) h[0 .. hn]) < 0 || sendBody(fd, body_) < 0)
     {
         atomicOp!"+="(failures, 1);
         close(fd);
@@ -99,6 +123,7 @@ int main(string[] args)
     immutable bytes = args[3].to!size_t * 1024;
     if (args.length > 4)
         path = args[4];
+    chunked = args.length > 5 && args[5] == "chunked";
     Thread[] ts;
     foreach (i; 0 .. n)
     {

@@ -190,5 +190,5 @@ Read the matching file before touching its area. The rules in those files are no
 
 The rest of the performance work (M4: SIMD head search, GC tuning, `sendfile`; the benchmark, single parse and pipelined-response
 coalescing are done, see `PLAN.md` Phase 8), kqueue (M5) and io_uring (M6), streamed request bodies
-for chunked uploads and HTTP/2 (both are still buffered), the WebSocket client over HTTP/2, Range requests, serving the app in cleartext next to TLS, IPv6 listeners, OCSP
+over HTTP/2 (still buffered), the WebSocket client over HTTP/2, Range requests, serving the app in cleartext next to TLS, IPv6 listeners, OCSP
 stapling, response trailers (gRPC). Do not start these unless asked.

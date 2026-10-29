@@ -137,7 +137,8 @@ opens the WebSocket as a browser does on an HTTP/2 connection (RFC 8441): a succ
 
 A body above `c.bufferBodyBytes` (256 KiB, as `ServerConfig.bufferBodyBytes`) reaches the app unread, in pieces of
 `c.streamPieceBytes` (4,093 bytes), as the engine hands it over: tests of `BodyStream` and `SpooledFile` routes go through
-the streamed path. Set `c.bufferBodyBytes = 0` to buffer every body.
+the streamed path. Set `c.bufferBodyBytes = 0` to buffer every body, and `c.chunkedBodies = true` for the length to be
+unknown until the end (`BodyReader.unread` is `unknownLength`), as for a chunked upload.
 
 ## Logs
 

@@ -34,7 +34,8 @@ struct BodyStream
     /// Copies up to `into.length` bytes of the body into `into`; 0 = the end. Waits while the client sends.
     size_t read(scope ubyte[] into) => ctx.readBodyInto(into);
 
-    /// Bytes not read yet (`Content-Length` minus what `read` returned).
+    /// Bytes not read yet (`Content-Length` minus what `read` returned), or `unknownLength` while a chunked body has not
+    /// reached its last chunk.
     ulong unread() const => ctx.bodyUnread;
 
     /// The rest of the body in one buffer of its size: for a handler that decides, after looking at the request, that

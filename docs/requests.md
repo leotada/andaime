@@ -260,10 +260,13 @@ void main()
 - **`BodyStream`** is the raw body: `read(buf)` copies up to `buf.length` bytes and returns 0 at the end, `unread` is
   what is left, `readAll()` reads the rest into memory. Not on `GET`/`HEAD`, not `Optional`, and not next to `JsonBody`
   or `Form` (compile errors).
-- They apply to an HTTP/1.1 body with `Content-Length` above `ServerConfig.bufferBodyBytes` (256 KiB): the engine hands
-  it over unread, and memory stays at a 64 KiB window per request whatever the size. A smaller body, a chunked one or
-  one over HTTP/2 is already buffered and is read from memory the same way. `limits.maxBodyBytes` still applies (413
-  before anything is read).
+- They apply to an HTTP/1.1 body above `ServerConfig.bufferBodyBytes` (256 KiB): the engine hands it over unread, and
+  memory stays at a 64 KiB window per request whatever the size. With `Content-Length` that is decided by the header;
+  a chunked body is buffered until it passes `bufferBodyBytes`, then the request starts with what came and the rest
+  is decoded as the handler reads (`unread` is `unknownLength` until the last chunk; trailers are dropped). A smaller
+  body or one over HTTP/2 is already buffered and is read from memory the same way. `limits.maxBodyBytes` still
+  applies: 413 before anything is read for a `Content-Length` above it, and for a chunked body a 413 from `read` at
+  the chunk that would pass it (broken chunk framing in the middle of the body is a 400 the same way).
 - Every other route gets a large body read whole before the middleware runs, as before. On a streaming route the
   middleware runs first and sees `ctx.request.body` empty (`ctx.request.bodyReader` is set): it must not need the body.
 - The handler may answer without reading the whole body; the response then says `Connection: close` and the server
@@ -272,7 +275,7 @@ void main()
   sends nothing for `headerTimeoutMs` cancels the request (`RequestCancelled`, like a disconnect). `Expect:
   100-continue` is answered when the handler first reads.
 - `TestClient` delivers a body above its `bufferBodyBytes` (256 KiB) in small pieces through the same reader, so tests
-  exercise the streamed path.
+  exercise the streamed path; `c.chunkedBodies = true` makes it an unknown length, as a chunked upload is.
 
 ## Body limits
 
@@ -310,7 +313,8 @@ void main()
 - A body over the limit gets a 413 (`request body too large`) before it is read: a body still arriving stays unread
   and the connection closes after the answer. The app middleware runs and sees the 413; the route's group middleware
   runs first too, so an authentication middleware answers 401 before the limit is looked at.
-- A body whose size is not announced is counted as it is read, and stops with a 413 at the limit.
+- A body whose size is not announced (chunked) is counted as it is read, and stops with a 413 at the limit; a route
+  that does not stream reads it before the middleware, into a block that starts at 1 MiB and doubles.
 - `@bodyLimit` on a `GET` or `HEAD` route, or a limit of 0, is a compile error (`Group.bodyLimit(0)` and
   `App.bodyLimit(0)` throw `RouteError`).
 

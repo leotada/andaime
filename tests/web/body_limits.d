@@ -127,3 +127,16 @@ enum tooLarge = `{"detail":"request body too large"}`;
     assertThrown!RouteError(app.bodyLimit(0));
     assertThrown!RouteError(app.group("/g").bodyLimit(0));
 }
+
+@system unittest
+{
+    // a chunked body does not say its size: the limit is counted as it is read, for a buffered route and a streaming one
+    auto c = TestClient(build());
+    c.chunkedBodies = true;
+    assert(c.post("/upload", text(600_000)).body == "600000");
+    auto r = c.post("/upload", text(800_000));
+    assert(r.status == 413 && r.body == tooLarge, r.body);
+    assert(c.post("/stream", text(290_000)).body == "290000");
+    r = c.post("/stream", text(310_000));
+    assert(r.status == 413 && r.body == tooLarge, r.body);
+}

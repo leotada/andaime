@@ -442,13 +442,15 @@ s_memory_streamed() {
     $DC -O -release $I -i -of"$tmp/serve_slow" tests/net/serve_slow.d > /dev/null
     mkdir -p "$tmp/spool"
     local rc=0 route
-    for route in /spooled /streamed; do
+    # with Content-Length and chunked: past bufferBodyBytes both framings are read as they arrive
+    for route in /spooled /streamed "/spooled chunked" "/streamed chunked"; do
         local port=$(( 18900 + RANDOM % 200 ))
         TMPDIR="$tmp/spool" "$tmp/serve_slow" "$port" 1500 > "$tmp/srv.log" 2>&1 &
         local srv=$!
         sleep 0.5
         ( while kill -0 $srv 2>/dev/null; do awk '/VmRSS/{print $2}' /proc/$srv/status 2>/dev/null; sleep 0.05; done > "$tmp/rss" ) &
-        "$tmp/upload_loadgen" "$port" 16 8192 "$route" || rc=1
+        # shellcheck disable=SC2086 # "<path> [chunked]": two arguments
+        "$tmp/upload_loadgen" "$port" 16 8192 $route || rc=1
         local peak; peak=$(sort -n "$tmp/rss" | tail -1)
         local left; left=$(find "$tmp/spool" -type f | wc -l)
         kill -INT $srv

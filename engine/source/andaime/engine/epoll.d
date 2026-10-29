@@ -161,6 +161,7 @@ private final class Conn : Item
     bool sent100;          /// already answered 100 Continue to this request
     bool chunked;          /// the request body is `Transfer-Encoding: chunked` (decoded in place by `dec`)
     bool chunkDone;        /// the last chunk and the trailers were read
+    int chunkError;        /// a streamed chunked body broke (400, 413): every later read throws `BodyError`
     ChunkedDecoder dec;
     size_t headLen, total; /// geometry of the current request (valid with haveHead)
     /// The body is read by the handler as it arrives (`Request.bodyReader`, above `bufferBodyBytes`): `bodyOff` is the
@@ -1251,7 +1252,11 @@ final class EpollLoop : EventLoop, Scheduler
                 size_t want = c.buf.mem.length * 2;
                 if (c.haveHead && c.chunked)
                 {
-                    immutable cap = c.headLen + cfg.limits.maxBodyBytes + cfg.limits.maxHeadBytes;
+                    // a body that will stream needs room only for the decoded bytes that start it (one past
+                    // bufferBodyBytes) and a framing line not decoded yet (see `tryParse`)
+                    immutable streams = !c.redirect && cfg.bufferBodyBytes && cfg.bufferBodyBytes < cfg.limits.maxBodyBytes;
+                    immutable room = streams ? cfg.bufferBodyBytes + 1 : cfg.limits.maxBodyBytes;
+                    immutable cap = c.headLen + room + cfg.limits.maxHeadBytes;
                     if (want > cap)
                         want = cap > c.buf.mem.length ? cap : c.buf.mem.length + 1;
                 }
@@ -1315,6 +1320,7 @@ final class EpollLoop : EventLoop, Scheduler
             c.total = h.headLength + h.contentLength;
             c.chunked = h.chunked;
             c.chunkDone = false;
+            c.chunkError = 0;
             c.dec = ChunkedDecoder.init;
             if (!c.chunked && !c.redirect && cfg.bufferBodyBytes && h.contentLength > cfg.bufferBodyBytes)
             {
@@ -1341,6 +1347,16 @@ final class EpollLoop : EventLoop, Scheduler
             {
                 case ChunkResult.needMore:
                     c.buf.len = c.headLen + avail;
+                    if (!c.redirect && cfg.bufferBodyBytes && c.dec.decoded > cfg.bufferBodyBytes)
+                    {
+                        // As for a large Content-Length: the request starts with what is decoded and the handler
+                        // reads the rest as it arrives (`chunkRead`). Its length is not known until the last chunk.
+                        c.streaming = true;
+                        c.bodyOff = c.headLen;
+                        c.bodyLeft = unknownLength;
+                        c.total = c.headLen;
+                        return Step.ready;
+                    }
                     break;
                 case ChunkResult.done:
                     c.buf.len = c.headLen + avail;
@@ -1771,6 +1787,8 @@ final class EpollLoop : EventLoop, Scheduler
             return 0;
         if (cast(Worker) Fiber.getThis() !is w)
             throw new Exception("andaime: only the request's own fiber can read its body");
+        if (c.chunked)
+            return chunkRead(w, c, into);
         immutable want = into.length < c.bodyLeft ? into.length : cast(size_t) c.bodyLeft;
         if (c.bodyOff < c.buf.len)
         {
@@ -1806,6 +1824,107 @@ final class EpollLoop : EventLoop, Scheduler
             w.cancelled = true; // the client closed (or broke) the connection before the end of the body
             throw cancelledEx;
         }
+    }
+
+    /// `bodyRead` of a chunked body. The buffer holds, from `c.headLen`, the decoded bytes (handed out from
+    /// `c.bodyOff`) and then the raw bytes not decoded yet. Once every decoded byte is out, the raw ones move back to
+    /// `c.headLen` and more is read from the socket behind them, so the buffer never grows. After the last chunk the
+    /// decoded bytes are followed by the next pipelined request, and `bodyLeft` becomes what is left to hand out.
+    private size_t chunkRead(Worker w, Conn c, scope ubyte[] into)
+    {
+        if (c.chunkError)
+            throw new BodyError(c.chunkError, c.chunkError == 413 ? "request body too large" : "malformed chunked body");
+        for (;;)
+        {
+            immutable end = c.headLen + c.dec.decoded;
+            if (c.bodyOff < end)
+            {
+                immutable have = end - c.bodyOff;
+                immutable n = have < into.length ? have : into.length;
+                into[0 .. n] = c.buf.mem[c.bodyOff .. c.bodyOff + n];
+                c.bodyOff += n;
+                if (c.chunkDone)
+                    c.bodyLeft = end - c.bodyOff;
+                return n;
+            }
+            if (c.chunkDone)
+            {
+                c.bodyLeft = 0;
+                return 0;
+            }
+            // everything decoded is out: the raw bytes go back to the start of the body, and the decoder with them
+            immutable raw = c.buf.len - end;
+            if (raw && end > c.headLen)
+            {
+                import core.stdc.string : memmove;
+
+                // sound: both ranges lie inside c.buf.mem (end + raw == c.buf.len); memmove allows the overlap
+                () @trusted { memmove(c.buf.mem.ptr + c.headLen, c.buf.mem.ptr + end, raw); }();
+            }
+            c.buf.len = c.headLen + raw;
+            c.bodyOff = c.headLen;
+            c.dec.restart();
+            if (raw && feedChunks(c))
+                continue;
+            if (!c.sent100)
+            {
+                c.sent100 = true;
+                if (equalsIgnoreCase(w.req.header("expect"), "100-continue"))
+                    sendRaw(c, "HTTP/1.1 100 Continue\r\n\r\n");
+            }
+            if (c.buf.free_.length == 0 && !pool.grow(c.buf, c.buf.mem.length * 2))
+                failChunks(c, 400); // the raw bytes of one framing line fill the buffer: no client sends that
+            for (;;)
+            {
+                immutable r = ioRead(c, c.buf.free_.ptr, c.buf.free_.length);
+                if (r > 0)
+                {
+                    c.buf.len += r;
+                    c.deadlineMs = nowMs + cfg.requestTimeoutMs;
+                    break;
+                }
+                if (r < 0 && errno == EINTR)
+                    continue;
+                if (r < 0 && errno == EAGAIN)
+                {
+                    waitReadable(w);
+                    continue;
+                }
+                w.cancelled = true; // the client closed (or broke) the connection before the last chunk
+                throw cancelledEx;
+            }
+            feedChunks(c);
+        }
+    }
+
+    /// Decodes the raw bytes behind the decoded ones (see `chunkRead`). True when there is something to hand out or the
+    /// body ended.
+    private bool feedChunks(Conn c)
+    {
+        size_t avail = c.buf.len - c.headLen;
+        immutable res = c.dec.feed(c.buf.mem[c.headLen .. $], avail, cfg.limits.maxBodyBytes, cfg.limits.maxHeadBytes);
+        c.buf.len = c.headLen + avail;
+        final switch (res)
+        {
+            case ChunkResult.needMore:
+                return c.dec.decoded > 0;
+            case ChunkResult.done:
+                c.chunkDone = true;
+                c.bodyLeft = c.dec.decoded;
+                return true;
+            case ChunkResult.badRequest:
+                return failChunks(c, 400);
+            case ChunkResult.tooLarge:
+                return failChunks(c, 413);
+        }
+    }
+
+    /// The chunked body broke: this read and every later one throw `BodyError`, and the rest is never read (the
+    /// connection ends with this request, `bodyLeft` stays non-zero).
+    private noreturn failChunks(Conn c, int status)
+    {
+        c.chunkError = status;
+        throw new BodyError(status, status == 413 ? "request body too large" : "malformed chunked body");
     }
 
     /// Suspends the fiber until the connection has input (or an error, or the end), `headerTimeoutMs` at most.

@@ -45,8 +45,18 @@ struct ChunkedDecoder
     private size_t outPos;        // decoded bytes so far (== start of the undigested region after compaction)
     private size_t decodedTotal;
 
-    /// Size of the decoded body so far.
+    /// Size of the decoded body so far (since the last `restart`).
     size_t decoded() const pure nothrow @nogc => outPos;
+
+    /// The last chunk and the trailers were read.
+    bool finished() const pure nothrow @nogc => state == State.finished;
+
+    /// For a body read as it arrives: the caller handed out the `decoded` bytes and moved the undigested ones to the
+    /// start of the region, so the region starts empty again. The framing state and the count against `maxBody` go on.
+    void restart() pure nothrow @nogc
+    {
+        outPos = 0;
+    }
 
     /// Digests `region[outPos .. avail]` (everything new). `avail` is updated: after the call the region holds the
     /// decoded body followed by the undigested bytes, and `avail` is its new length.
@@ -270,6 +280,47 @@ unittest
     assert(r == ChunkResult.badRequest, "trailers are bounded");
     decodeAll("1;" ~ "e".repeatStr(300) ~ "\r\nx\r\n0\r\n\r\n", 0, b, rest, r);
     assert(r == ChunkResult.badRequest, "extensions are bounded");
+}
+
+unittest
+{
+    // read as it arrives: each decoded piece is taken out and the region restarts, the limit counts the whole body
+    immutable raw = "4\r\nabcd\r\n3\r\nefg\r\n0\r\n\r\nNEXT";
+    ubyte[64] region;
+    size_t avail;
+    ChunkedDecoder d;
+    string got;
+    ChunkResult r;
+    foreach (k, c; raw)
+    {
+        region[avail++] = c;
+        r = d.feed(region[], avail, 7, 64);
+        got ~= cast(const(char)[]) region[0 .. d.decoded];
+        avail -= d.decoded;
+        foreach (j; 0 .. avail)
+            region[j] = region[d.decoded + j];
+        d.restart();
+        if (r == ChunkResult.done)
+        {
+            assert(d.finished && got == "abcdefg" && k == raw.length - 5, got);
+            break;
+        }
+    }
+    assert(r == ChunkResult.done);
+    d = ChunkedDecoder.init;
+    avail = 0;
+    foreach (c; "4\r\nabcd\r\n4\r\nefgh\r\n")
+    {
+        region[avail++] = c;
+        r = d.feed(region[], avail, 7, 64);
+        avail -= d.decoded;
+        foreach (j; 0 .. avail)
+            region[j] = region[d.decoded + j];
+        d.restart();
+        if (r != ChunkResult.needMore)
+            break;
+    }
+    assert(r == ChunkResult.tooLarge, "the limit counts across restarts");
 }
 
 version (unittest) private string repeatStr(string s, size_t n)

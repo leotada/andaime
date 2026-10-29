@@ -42,6 +42,20 @@ package(andaime) final class BodyState
     }
 }
 
+/// `reader.read`, with a body that broke on the way (`BodyError`: bad chunked framing, above the engine's limit) turned
+/// into the answer it deserves.
+private size_t pull(BodyReader reader, scope ubyte[] into)
+{
+    try
+        return reader.read(into);
+    catch (BodyError e)
+    {
+        import andaime.web.params : HttpError;
+
+        throw new HttpError(e.status, e.status == 413 ? "request body too large" : "malformed request body");
+    }
+}
+
 /// A request body's buffer: a `NO_SCAN` GC block like the engine's (see `andaime.http.buffer`).
 private ubyte[] bodyBlock(size_t n) nothrow @trusted
 {
@@ -379,7 +393,7 @@ final class Context
     {
         if (request.bodyReader !is null)
         {
-            immutable got = request.bodyReader.read(into);
+            immutable got = pull(request.bodyReader, into);
             bodyState.count(got);
             return got;
         }
@@ -407,11 +421,22 @@ final class Context
         auto reader = request.bodyReader;
         if (reader is null)
             return request.body[(bodyState_ is null ? 0 : bodyState_.pos) .. $];
-        auto block = bodyBlock(cast(size_t) reader.unread);
+        // a chunked body does not say its size: the block starts at 1 MiB and doubles (the route's limit and the
+        // engine's `maxBodyBytes` bound it)
+        immutable known = reader.unread != unknownLength;
+        auto block = bodyBlock(known ? cast(size_t) reader.unread : 1 << 20);
         size_t got;
-        while (got < block.length)
+        for (;;)
         {
-            immutable n = reader.read(block[got .. $]);
+            if (got == block.length)
+            {
+                if (known)
+                    break;
+                auto bigger = bodyBlock(block.length * 2);
+                bigger[0 .. got] = block[];
+                block = bigger;
+            }
+            immutable n = pull(reader, block[got .. $]);
             if (n == 0)
                 break;
             bodyState.count(n);

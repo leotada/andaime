@@ -1299,6 +1299,85 @@ void testStreamedBodies()
         ~ "read, early response, stalled and departed clients, limit");
 }
 
+void testStreamedChunkedBodies()
+{
+    import std.conv : to;
+
+    ServerConfig cfg;
+    cfg.limits.maxBodyBytes = 8 << 20;
+    cfg.headerTimeoutMs = 400;
+    cfg.bufferBodyBytes = 64 << 10;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+    enum head = "POST /stream HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n\r\n";
+
+    auto big = new char[3 << 20];
+    ulong sum;
+    foreach (i, ref x; big)
+    {
+        x = cast(char)('a' + i % 23);
+        sum += x;
+    }
+    // 3 MiB in 16 KiB chunks, sent in six writes with pauses: read as they arrive, the buffer does not grow to the
+    // body, and the connection serves the next request
+    immutable framed = chunkify(big.idup, 16 << 10);
+    auto c = dial(s.port);
+    c.tx(head);
+    foreach (k; 0 .. 6)
+    {
+        c.tx(framed[k * framed.length / 6 .. (k + 1) * framed.length / 6]);
+        Thread.sleep(30.msecs);
+    }
+    auto r = c.rx();
+    assert(r.status == 200 && r.body == big.length.to!string ~ ":" ~ sum.to!string && !r.closed, r.head ~ r.body);
+    c.tx("GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
+    assert(c.rx().body == "ok");
+
+    // a pipelined request right behind the last chunk, in the same write, is served next
+    auto small = big[0 .. 100_000].idup;
+    ulong smallSum;
+    foreach (ch; small)
+        smallSum += ch;
+    c.tx(head ~ chunkify(small, 7_000) ~ "GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 200 && r.body == "100000:" ~ smallSum.to!string, r.head ~ r.body);
+    r = c.rx();
+    assert(r.status == 200 && r.body == "ok", "the request after a streamed chunked body must be served: " ~ r.head);
+
+    // a route that does not stream gets it whole (read by the web layer without knowing its size up front)
+    c.tx("POST /len HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n\r\n" ~ framed);
+    r = c.rx();
+    assert(r.status == 200 && r.body == big.length.to!string, r.head ~ r.body);
+    c.hang();
+
+    // framing that breaks after the request started: 400, and the connection ends
+    immutable open = chunkify(small, 7_000)[0 .. $ - 5]; // without the last chunk
+    c = dial(s.port);
+    c.tx(head ~ open ~ "zz\r\n");
+    r = c.rx();
+    assert(r.status == 400 && r.closed, r.head ~ r.body);
+    c.hang();
+
+    // a chunk that would take the body above maxBodyBytes: 413 when it is announced, before its bytes
+    c = dial(s.port);
+    c.tx(head ~ open ~ "800000\r\n");
+    r = c.rx();
+    assert(r.status == 413 && r.closed, r.head ~ r.body);
+    c.hang();
+
+    // a client that stops in the middle: cancelled after headerTimeoutMs, the fiber released
+    c = dial(s.port);
+    c.tx(head ~ open);
+    immutable t0 = MonoTime.currTime;
+    r = c.rx();
+    assert(r.status == 0 && r.closed, r.head);
+    assert(MonoTime.currTime - t0 < 2.seconds, "a stalled chunked body must not hold the request");
+    c.hang();
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 1000));
+    ok("streamed chunked bodies: past bufferBodyBytes read as they arrive, pipelining after the last chunk, buffered "
+        ~ "for a route that does not stream, bad framing 400 and the limit 413 mid-body, stalled clients cancelled");
+}
+
 void testOffload()
 {
     // pool configured in main: 2 threads, queue of 2
@@ -1374,5 +1453,6 @@ void main()
     testExpectContinue();
     testLargeBodies();
     testStreamedBodies();
+    testStreamedChunkedBodies();
     printf("all network tests passed\n");
 }

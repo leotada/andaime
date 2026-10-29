@@ -105,17 +105,37 @@ struct QueryValues
     }
 }
 
-/// The part of a request body that has not been received yet: the engine hands a large HTTP/1.1 body to the handler
-/// this way instead of buffering it whole (`ServerConfig.bufferBodyBytes`). Implemented by the engine's request fiber.
+/// The part of a request body that has not been received yet: the engine hands a large body to the handler this way
+/// instead of buffering it whole (`ServerConfig.bufferBodyBytes`), whatever its framing. Implemented by the engine's
+/// request fiber.
 interface BodyReader
 {
     /// Copies up to `into.length` bytes of the body into `into` and returns how many; 0 means the body ended. Suspends
     /// the fiber while the client is sending. The engine throws `RequestCancelled` when the client goes away or stops
-    /// sending for `headerTimeoutMs`.
+    /// sending for `headerTimeoutMs`, and `BodyError` when what arrives is not a valid body (broken chunked framing:
+    /// 400) or is above `maxBodyBytes` (413).
     size_t read(scope ubyte[] into);
 
-    /// Bytes of the body not read yet (the declared `Content-Length` minus what `read` returned).
+    /// Bytes of the body not read yet (the declared `Content-Length` minus what `read` returned), or `unknownLength`
+    /// while the client has not said where the body ends (a chunked body).
     ulong unread() const;
+}
+
+/// `BodyReader.unread` of a body whose end is not known yet.
+enum ulong unknownLength = ulong.max;
+
+/// The body of a request broke while it was being read (`BodyReader.read`): `status` is the answer it deserves, 400
+/// for a malformed body and 413 for one above the engine's `maxBodyBytes`. The rest of the body is not read and the
+/// connection ends with this request.
+final class BodyError : Exception
+{
+    int status;
+
+    this(int status, string msg) pure nothrow @safe
+    {
+        super(msg);
+        this.status = status;
+    }
 }
 
 /// A body sent in pieces, for a body too large to hold (a file), by the HTTP client (`httpClient().put(url, source)`):

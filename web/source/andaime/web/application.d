@@ -872,8 +872,9 @@ final class App
         st.limit = found ? routeLimit[r.handler] : 0;
         if (st.limit)
         {
+            // an unknown length (chunked) is counted as it is read instead (`BodyState.count`)
             immutable size = reader !is null ? reader.unread : ctx.request.body.length;
-            if (size > st.limit)
+            if (size != unknownLength && size > st.limit)
             {
                 st.tooLarge = true;
                 return;

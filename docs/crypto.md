@@ -79,6 +79,7 @@ void main()
 | `constantTimeEquals(a, b)` | Compares bytes or text in time that does not depend on where they differ (MACs, tokens). Needs no library. |
 | `base64UrlEncode(bytes)`, `base64UrlDecode(text, out bytes)` | base64url without padding (from `andaime:http`); decoding is strict and returns false on bad input. |
 | `sha256(data)` | SHA-256 (32 bytes). |
+| `Sha256.start()`, `put(piece)`, `finish()` | SHA-256 of data that arrives in pieces (a file read in blocks), without holding it whole. Not copyable; spent by `finish`. |
 | `hmacSha256(key, data)` | HMAC-SHA256 (32 bytes). |
 | `hkdfSha256(salt, ikm, info, length)`, `hkdfExtract`, `hkdfExpand` | HKDF (RFC 5869). |
 | `aes128GcmSeal(key, nonce, plaintext, aad)`, `aes128GcmOpen(key, nonce, sealed, out plaintext, aad)` | AES-128-GCM with a 16-byte key and a 12-byte nonce; the sealed form is the ciphertext followed by the 16-byte tag; `Open` returns false when the tag does not match. |

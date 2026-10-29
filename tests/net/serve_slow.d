@@ -28,6 +28,49 @@ string slow()
     return "ok";
 }
 
+struct OneFile
+{
+    SpooledFile file;
+}
+
+/// A form upload read as it arrives (the file goes to a temporary file), then held for the wait.
+string spooled(Form!OneFile form)
+{
+    import core.stdc.stdio : snprintf;
+
+    sleep(msecs(waitMs));
+    char[24] t;
+    auto n = (() @trusted => snprintf(t.ptr, t.length, "%llu", form.file.size))();
+    return t[0 .. n].idup;
+}
+
+/// A raw body read as it arrives and dropped, then held for the wait.
+string streamed(BodyStream body)
+{
+    import core.stdc.stdio : snprintf;
+
+    ubyte[64 << 10] buf;
+    ulong total;
+    size_t n;
+    while ((n = body.read(buf[])) > 0)
+        total += n;
+    sleep(msecs(waitMs));
+    char[24] t;
+    auto k = (() @trusted => snprintf(t.ptr, t.length, "%llu", total))();
+    return t[0 .. k].idup;
+}
+
+/// The GC's own view, "<used> <free>" in bytes, for the memory tests: garbage counts as used until a collection, so
+/// after the loop's trim `used` is what is really alive. Unlike RSS it does not depend on how the GC laid out its pools.
+string gcStats()
+{
+    import core.memory : GC;
+    import std.conv : to;
+
+    auto s = GC.stats;
+    return s.usedSize.to!string ~ " " ~ s.freeSize.to!string;
+}
+
 /// An echo that stays open: the memory test holds 1,000 of them at once.
 WebSocket wsEcho()
 {
@@ -50,6 +93,7 @@ void main(string[] args)
     cfg.workers = 1;
     cfg.maxConnections = 15_000;
     cfg.maxInFlight = 15_000;
+    cfg.limits.maxBodyBytes = 32 << 20; // the streamed-upload test sends 16 MiB
     if (args.length > 4)
     {
         cfg.tls.certFile = args[3];
@@ -58,7 +102,10 @@ void main(string[] args)
     serve(() {
         auto app = new App;
         app.get!("/slow", slow);
+        app.get!("/gc", gcStats);
         app.post!("/len", bodyLen);
+        app.post!("/spooled", spooled);
+        app.post!("/streamed", streamed);
         app.ws!("/ws", wsEcho);
         return app;
     }, cfg);

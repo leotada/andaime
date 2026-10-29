@@ -299,3 +299,39 @@ unittest
     fake.uninstall();
     assert(setHttpTransport(null) is null);
 }
+
+// streamed bodies: a BodySource is recorded whole, and `open` reads the reply in pieces
+unittest
+{
+    import andaime.engine.httpclient : BodySource, httpClient;
+
+    auto fake = new FakeHttpClient;
+    fake.expect("PUT", "https://bucket.example.com/big").respond(200);
+    fake.expect("GET", "https://bucket.example.com/big").respond(200, "0123456789", [HeaderPair("ETag", `"e"`)]);
+    fake.expect("GET", "https://bucket.example.com/none").respond(404);
+    fake.install();
+    scope (exit) fake.uninstall();
+
+    auto source = BodySource(6, (scope sink) {
+        immutable(ubyte)[3] a = ['a', 'b', 'c'], b = ['d', 'e', 'f'];
+        sink(a[]);
+        sink(b[]);
+    });
+    assert(httpClient().put("https://bucket.example.com/big", source).status == 200);
+    assert(fake.requests[0].text == "abcdef");
+
+    auto s = httpClient().open("GET", "https://bucket.example.com/big");
+    scope (exit) s.close();
+    assert(s.ok && s.header("etag") == `"e"` && s.contentLength == 10);
+    ubyte[4] buf;
+    string got;
+    size_t n;
+    while ((n = s.read(buf[])) > 0)
+        got ~= cast(const(char)[]) buf[0 .. n];
+    assert(got == "0123456789");
+
+    auto missing = httpClient().open("GET", "https://bucket.example.com/none");
+    assert(missing.status == 404 && missing.read(buf[]) == 0);
+    missing.close();
+    fake.verify();
+}

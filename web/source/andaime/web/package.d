@@ -30,4 +30,5 @@ public import andaime.web.websocket : WebSocket;
 public import andaime.http.websocket : WsConn, WsMessage, WsKind, WsCloseCode, WsClosed;
 public import andaime.web.router : RouteError;
 public import andaime.web.models : Query, Form, UploadedFile;
+public import andaime.web.uploads : BodyStream, SpooledFile, SpooledReader, SpoolConfig;
 public import andaime.web.cookies : cookie, setCookie, deleteCookie, CookieOptions, SameSite;

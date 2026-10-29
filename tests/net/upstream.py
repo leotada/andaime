@@ -3,9 +3,18 @@
 
 Uso: upstream.py <cert.pem> <key.pem>
 Prints "PLAIN <port> TLS <port>" on standard output when ready.
-Routes: /hello, /chunked, /close, /stale, /slow/<ms>, /echo (POST and PUT), /big, /stats
+Routes: /hello, /chunked, /close, /stale, /slow/<ms>, /echo (POST and PUT), /big, /stats,
+/stream/<n>[?chunked][&pause=<ms>] (n bytes, byte i = i % 251, in 64 KiB blocks), /sink (PUT/POST: "<n>:<sha256>")
 """
-import ssl, sys, threading, time
+import hashlib, ssl, sys, threading, time
+
+BLOCK = 64 << 10
+PATTERN = bytes(i % 251 for i in range(BLOCK + 251))
+
+def pattern(offset, n):
+    """The bytes [offset, offset + n) of the /stream body (n <= BLOCK)."""
+    s = offset % 251
+    return PATTERN[s:s + n]
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
 conns = 0
@@ -68,6 +77,27 @@ class H(BaseHTTPRequestHandler):
         elif p == "/stats":
             with lock:
                 self.send_body(str(conns).encode())
+        elif p.startswith("/stream/"):
+            path, _, query = p[8:].partition("?")
+            n = int(path)
+            chunked = "chunked" in query
+            pause = int(query.split("pause=")[1].split("&")[0]) / 1000 if "pause=" in query else 0
+            self.send_response(200)
+            self.send_header("Transfer-Encoding", "chunked") if chunked else self.send_header("Content-Length", str(n))
+            self.end_headers()
+            off = 0
+            try:
+                while off < n:
+                    part = pattern(off, min(BLOCK, n - off))
+                    self.wfile.write(b"%x\r\n" % len(part) + part + b"\r\n" if chunked else part)
+                    off += len(part)
+                    if pause:
+                        self.wfile.flush()
+                        time.sleep(pause)
+                if chunked:
+                    self.wfile.write(b"0\r\n\r\n")
+            except (BrokenPipeError, ConnectionResetError):
+                self.close_connection = True  # the client stopped reading: expected in the close-early test
         else:
             self.send_response(404)
             self.send_header("Content-Length", "0")
@@ -75,6 +105,16 @@ class H(BaseHTTPRequestHandler):
 
     def do_POST(self):
         n = int(self.headers.get("Content-Length", "0"))
+        if self.path == "/sink":
+            h, left = hashlib.sha256(), n
+            while left:
+                data = self.rfile.read(min(BLOCK, left))
+                if not data:
+                    return
+                h.update(data)
+                left -= len(data)
+            self.send_body(b"%d:%s" % (n, h.hexdigest().encode()))
+            return
         data = self.rfile.read(n)
         ct = self.headers.get("Content-Type", "-")
         self.send_body(b"echo:" + ct.encode() + b":" + data)

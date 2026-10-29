@@ -33,6 +33,9 @@ package struct CryptoApi
     // digests and MACs
     const(EVP_MD)* function() EVP_sha256;
     int function(const(void)*, size_t, ubyte*, uint*, const(EVP_MD)*, void*) EVP_Digest;
+    int function(EVP_MD_CTX*, const(EVP_MD)*, void*) EVP_DigestInit_ex;
+    int function(EVP_MD_CTX*, const(void)*, size_t) EVP_DigestUpdate;
+    int function(EVP_MD_CTX*, ubyte*, uint*) EVP_DigestFinal_ex;
     ubyte* function(const(EVP_MD)*, const(void)*, int, const(ubyte)*, size_t, ubyte*, uint*) HMAC;
     // AES-GCM
     EVP_CIPHER_CTX* function() EVP_CIPHER_CTX_new;

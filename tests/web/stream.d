@@ -71,6 +71,20 @@ WithStatus!Stream created() => withStatus(201, Stream("text/plain", (scope Strea
 
 string plain() => "plain";
 
+/// What the stream's `done` saw: whether the body had run (or failed) before it.
+string released;
+
+Stream withDone(bool fail)
+{
+    released = "";
+    return Stream("text/plain", (scope StreamWriter w) @system {
+        released = "body ";
+        w.write("x");
+        if (fail)
+            throw new Exception("upstream went away");
+    }, 1, () @system { released ~= "done"; });
+}
+
 // (module-level: the middleware delegates outlive build(), so they cannot capture a local)
 string[] trace;
 
@@ -93,6 +107,7 @@ App build()
     app.get!("/accepted", accepted);
     app.get!("/exported", exported);
     app.get!("/plain", plain);
+    app.get!("/with-done", withDone);
     app.serveOpenApi(OpenApiInfo("S", "1"));
     return app;
 }
@@ -120,6 +135,12 @@ unittest
     assert(r.status == 200 && r.body.length == 0 && r.chunks.length == 0);
     r = c.get("/empty");
     assert(r.status == 200 && r.body.length == 0, "an empty stream is a valid response");
+
+    // done runs after the body, also when it fails, and on HEAD, where the body does not run
+    assert(c.get("/with-done?fail=false").body == "x" && released == "body done", released);
+    c.get("/with-done?fail=true");
+    assert(released == "body done", released);
+    assert(c.head("/with-done?fail=false").status == 200 && released == "done", released);
 }
 
 unittest

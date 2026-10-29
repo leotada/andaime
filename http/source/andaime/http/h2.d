@@ -89,9 +89,15 @@ struct H2Config
 {
     uint maxConcurrentStreams = 100;  /// SETTINGS_MAX_CONCURRENT_STREAMS we announce
     /// Per-stream receive window we announce (SETTINGS_INITIAL_WINDOW_SIZE): how much of one request
-    /// body the client may send per round trip. Bodies are buffered whole anyway (`limits.maxBodyBytes`),
-    /// so this trades nothing but throughput. Clamped to [65,535, 2^31 - 1].
+    /// body the client may send per round trip. A buffered body (up to `bufferBodyBytes`) trades nothing
+    /// but throughput; for a streamed one it is also the most a stream holds that the handler has not
+    /// read. Clamped to [65,535, 2^31 - 1].
     uint initialWindowSize = 256 << 10;
+    /// A request body above this is handed out unread (`H2Stream.streamedBody`): at its HEADERS when
+    /// `content-length` says so, otherwise once that much has arrived without END_STREAM. The engine reads
+    /// it with `tunnelInput`/`tunnelConsume` as for a tunnel, so the stream window reopens only as the
+    /// handler reads (backpressure). 0 = every body is buffered whole.
+    size_t bufferBodyBytes;
     /// Connection receive window (raised with WINDOW_UPDATE at start): request body bytes in flight
     /// across all streams of a connection. Clamped to [65,535, 2^31 - 1].
     uint connectionWindowSize = 1 << 20;
@@ -130,6 +136,9 @@ final class H2Stream
     /// An extended CONNECT (RFC 8441): the request is handed out when its HEADERS arrive, and once the response is 2xx
     /// the stream carries bytes both ways (`tunnelInput`/`tunnelConsume` in, `sendData` out) until either side ends it.
     bool tunnel;
+    /// The request was handed out before its body ended (`H2Config.bufferBodyBytes`): `req.body` is empty and the body
+    /// comes through `tunnelInput`/`tunnelConsume`, `bodyUnread` and `bodyError`.
+    bool streamedBody;
 
 private:
     ByteBuffer fieldBytes;           // decoded names and values, back to back
@@ -156,6 +165,9 @@ private:
     bool inputQueued;                // in the session's `inputQ`
     size_t inPos;                    // tunnel: bytes of `body` the engine already consumed
     long lingerSinceMs;              // tunnel half-closed by us: first `tick` that saw it (0 = not yet)
+    ulong consumed;                  // streamed body: bytes the engine consumed
+    size_t precredited;              // streamed body: bytes of `body` whose window went back before it streamed
+    int bodyError;                   // streamed body: 413 once it passed maxBodyBytes (the rest is dropped)
 
     this(uint maxHeaders) nothrow
     {
@@ -190,9 +202,12 @@ private:
         authority[] = 0;
         scheme[] = 0;
         protocol[] = 0;
-        tunnel = sawProtocol = tunnelUp = inputQueued = false;
+        tunnel = sawProtocol = tunnelUp = inputQueued = streamedBody = false;
         inPos = 0;
         lingerSinceMs = 0;
+        consumed = 0;
+        precredited = 0;
+        bodyError = 0;
     }
 
     /// Element-wise on purpose: assigning an array literal may allocate it on the GC first.
@@ -466,7 +481,8 @@ final class H2Session
             auto c = readyQ[readyPos];
             readyQ[readyPos++] = null;
             c.queued = false;
-            if ((c.state == StreamState.halfClosedRemote || (c.tunnel && c.state == StreamState.open)) && !c.responding)
+            if ((c.state == StreamState.halfClosedRemote
+                || ((c.tunnel || c.streamedBody) && c.state == StreamState.open)) && !c.responding)
             {
                 s = c;
                 if (readyPos == readyQ.length)
@@ -602,6 +618,11 @@ final class H2Session
     {
         assert(s.inPos + n <= s.body.length, "andaime: consumed more than the tunnel received");
         s.inPos += n;
+        s.consumed += n;
+        // a streamed body's first bytes arrived while it was buffered, and their window already went back
+        immutable skip = n < s.precredited ? n : s.precredited;
+        s.precredited -= skip;
+        n -= skip;
         if (s.inPos == s.body.length)
         {
             s.body.clear();
@@ -613,9 +634,21 @@ final class H2Session
             s.body.dropFront(s.inPos); // what is left is at most half: the copy is amortized
             s.inPos = 0;
         }
-        if (s.state == StreamState.open)
+        if (s.state == StreamState.open && n)
             creditStream(s, n);
     }
+
+    /// A streamed body (`H2Stream.streamedBody`): bytes not consumed yet, or `unknownLength` while the peer is still
+    /// sending one without `content-length`.
+    ulong bodyUnread(const H2Stream s) const nothrow @nogc
+    {
+        if (s.contentLength >= 0)
+            return cast(ulong) s.contentLength - s.consumed;
+        return tunnelEnded(s) ? s.body.length - s.inPos : unknownLength;
+    }
+
+    /// A streamed body broke: 413 once it passed `maxBodyBytes` (what came after is dropped), else 0.
+    int bodyError(const H2Stream s) const nothrow @nogc => s.bodyError;
 
     /// The peer will send nothing more on the tunnel (END_STREAM, RST_STREAM, or the connection failed).
     bool tunnelEnded(const H2Stream s) const nothrow @nogc
@@ -783,11 +816,21 @@ final class H2Session
         s.received += data.length;
         if (s.contentLength >= 0 && s.received > s.contentLength)
             return resetStream(s, H2Error.protocol);
+        if (s.streamedBody)
+            return streamedData(s, flags, flowLen, data);
         if (!s.earlyStatus)
         {
             if (s.body.length + data.length > cfg.limits.maxBodyBytes)
                 return answerEarly(s, 413);
             s.body.put(cast(const(char)[]) data);
+            if (!(flags & flagEndStream) && !s.responding && cfg.bufferBodyBytes && s.body.length > cfg.bufferBodyBytes)
+            {
+                // too large to buffer: the request starts now and the handler reads the rest as it arrives. The window
+                // of what is buffered went back already (or is about to, `recvConsumed`): consuming it credits nothing.
+                s.precredited = s.body.length;
+                s.recvConsumed += cast(uint) flowLen;
+                return startStreamed(s);
+            }
         }
         if (flags & flagEndStream)
             return endOfRequest(s);
@@ -822,6 +865,38 @@ final class H2Session
             s.state = StreamState.halfClosedRemote;
         if (data.length || (flags & flagEndStream))
             queueInput(s);
+    }
+
+    /// DATA of a streamed body: kept for the engine, its window credited only as the engine consumes (`tunnelConsume`).
+    /// Past `maxBodyBytes` the body is marked (`bodyError`, the handler's next read fails with 413) and what follows is
+    /// dropped, credited so the peer is not stuck before it gets the answer (whose end resets the stream, see `endSent`).
+    private void streamedData(H2Stream s, ubyte flags, size_t flowLen, scope const(ubyte)[] data) nothrow
+    {
+        if (!s.bodyError && s.received > cfg.limits.maxBodyBytes)
+            s.bodyError = 413;
+        if (s.bodyError)
+            creditStream(s, flowLen);
+        else
+        {
+            s.body.put(cast(const(char)[]) data);
+            if (flowLen > data.length)
+                creditStream(s, flowLen - data.length); // padding never reaches the engine
+        }
+        if (flags & flagEndStream)
+        {
+            if (s.contentLength >= 0 && s.received != s.contentLength)
+                return resetStream(s, H2Error.protocol);
+            s.state = StreamState.halfClosedRemote;
+        }
+        if (data.length || (flags & flagEndStream) || s.bodyError)
+            queueInput(s);
+    }
+
+    /// The request runs before its body ended (`H2Config.bufferBodyBytes`).
+    private void startStreamed(H2Stream s) nothrow
+    {
+        s.streamedBody = true;
+        finishRequest(s);
     }
 
     private void queueInput(H2Stream s) nothrow
@@ -1103,6 +1178,8 @@ final class H2Session
             frameHeader(hpackOut.length, FrameType.headers, flagEndHeaders, s.id);
             outbox.put(hpackOut.data);
         }
+        if (cfg.bufferBodyBytes && s.contentLength > 0 && s.contentLength > cfg.bufferBodyBytes)
+            return startStreamed(s); // announced too large to buffer: the handler reads it as it arrives
     }
 
     /// Decodes a block whose stream is not processed. Returns false after a connection error.
@@ -1319,6 +1396,13 @@ final class H2Session
             return resetStream(s, H2Error.protocol);
         if (s.state == StreamState.open)
             s.state = StreamState.halfClosedRemote;
+        if (s.streamedBody)
+        {
+            // trailers ended a body the handler is reading: it sees the end (or the exchange is already over)
+            if (s.responding && s.endSent)
+                return closeStream(s, 1);
+            return queueInput(s);
+        }
         if (s.responding)
         {
             // an early answer went out before the client finished: the exchange is over
@@ -1363,7 +1447,7 @@ final class H2Session
         r.target = bytes[s.pseudo[2] .. s.pseudo[2] + s.pseudo[3]];
         splitTarget(r.target, r.path, r.query);
         r.headers = s.store[0 .. n];
-        r.body = cast(const(ubyte)[]) s.body.data;
+        r.body = s.streamedBody ? null : cast(const(ubyte)[]) s.body.data; // a streamed one goes through tunnelInput
         r.keepAlive = true;
         s.req = r;
         s.queued = true;

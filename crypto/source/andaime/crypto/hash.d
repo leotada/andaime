@@ -21,6 +21,66 @@ ubyte[32] sha256(scope const(ubyte)[] data)
 /// ditto, for text.
 ubyte[32] sha256(scope const(char)[] data) => sha256(cast(const(ubyte)[]) data);
 
+/// SHA-256 of data that arrives in pieces (a file read in blocks, a stream): `put` each piece, then `finish`.
+///
+///     auto h = Sha256.start();
+///     while ((n = r.read(buf)) > 0) h.put(buf[0 .. n]);
+///     ubyte[32] digest = h.finish();
+struct Sha256
+{
+    private EVP_MD_CTX* ctx;
+
+    @disable this(this);
+
+    /// A new hash, ready for `put`.
+    static Sha256 start()
+    {
+        needLibcrypto();
+        Sha256 h;
+        // @trusted: a fresh context, initialized for SHA-256; freed by `finish` or the destructor
+        h.ctx = (() @trusted => lc.EVP_MD_CTX_new())();
+        need(h.ctx !is null, "SHA-256: no context");
+        immutable ok = (() @trusted => lc.EVP_DigestInit_ex(h.ctx, lc.EVP_sha256(), null))();
+        need(ok == 1, "SHA-256 failed");
+        return h;
+    }
+
+    ~this() { release(); }
+
+    /// Adds `data` to the hash.
+    void put(scope const(ubyte)[] data)
+    {
+        need(ctx !is null, "SHA-256: put after finish");
+        // @trusted: EVP_DigestUpdate reads data.length bytes from data
+        immutable ok = (() @trusted => lc.EVP_DigestUpdate(ctx, data.ptr, data.length))();
+        need(ok == 1, "SHA-256 failed");
+    }
+
+    /// ditto, for text.
+    void put(scope const(char)[] data) => put(cast(const(ubyte)[]) data);
+
+    /// The digest of everything `put`; the hash is spent afterwards.
+    ubyte[32] finish()
+    {
+        need(ctx !is null, "SHA-256: finish twice");
+        ubyte[32] o;
+        uint n;
+        // @trusted: EVP_DigestFinal_ex writes at most 32 bytes (SHA-256) into o
+        immutable ok = (() @trusted => lc.EVP_DigestFinal_ex(ctx, o.ptr, &n))();
+        release();
+        need(ok == 1 && n == 32, "SHA-256 failed");
+        return o;
+    }
+
+    private void release() nothrow @nogc @trusted
+    {
+        // sound: ctx came from EVP_MD_CTX_new and is set to null right after, so it is freed once
+        if (ctx !is null)
+            lc.EVP_MD_CTX_free(ctx);
+        ctx = null;
+    }
+}
+
 /// HMAC-SHA256 of `data` with `key` (any length).
 ubyte[32] hmacSha256(scope const(ubyte)[] key, scope const(ubyte)[] data)
 {

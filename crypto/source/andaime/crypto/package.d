@@ -4,7 +4,7 @@
 ///
 /// - random bytes and constant-time comparison: `randomBytes`, `constantTimeEquals`
 /// - base64url without padding: `base64UrlEncode`, `base64UrlDecode` (from `andaime:http`)
-/// - hashing: `sha256`, `hmacSha256`, `hkdfSha256` (`hkdfExtract`, `hkdfExpand`)
+/// - hashing: `sha256` (and `Sha256` for data in pieces), `hmacSha256`, `hkdfSha256` (`hkdfExtract`, `hkdfExpand`)
 /// - AES-128-GCM: `aes128GcmSeal`, `aes128GcmOpen`
 /// - P-256: `EcKeyP256`, `es256Sign`/`es256Verify` (JWS ES256, raw `r||s`), `ecdhP256`
 /// - Web Push (RFC 8291): `webPushEncrypt`, `webPushDecrypt`

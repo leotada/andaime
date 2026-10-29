@@ -161,8 +161,19 @@ private final class Conn : Item
     bool sent100;          /// already answered 100 Continue to this request
     bool chunked;          /// the request body is `Transfer-Encoding: chunked` (decoded in place by `dec`)
     bool chunkDone;        /// the last chunk and the trailers were read
+    int chunkError;        /// a streamed chunked body broke (400, 413, 408): every later read throws `BodyError`
+    // `minBodyRate`: body bytes received (framing included) and the time spent waiting for them. Only waiting counts: a
+    // handler that reads slowly is not a slow client.
+    long bodySinceMs;      /// the head of the current request was parsed
+    long bodyWaitMs;       /// a streamed body: time its reader spent waiting for the client
+    ulong bodyBytes;
     ChunkedDecoder dec;
     size_t headLen, total; /// geometry of the current request (valid with haveHead)
+    /// The body is read by the handler as it arrives (`Request.bodyReader`, above `bufferBodyBytes`): `bodyOff` is the
+    /// first byte in `buf` not handed out yet (the body's first bytes came with the head), `bodyLeft` what is still due.
+    bool streaming;
+    size_t bodyOff;
+    ulong bodyLeft;
     uint headSerial;       /// counts the heads parsed on this connection (tells `parsedHead` whose head it holds)
     Worker worker;         /// while running/writing
     size_t sent;           /// bytes of worker.output already sent
@@ -217,7 +228,7 @@ private struct Timer
     uint gen;
 }
 
-private final class Worker : LocalFiber, ResponseSink
+private final class Worker : LocalFiber, ResponseSink, BodyReader
 {
     EpollLoop loop;
     RequestCallback cb;
@@ -242,6 +253,9 @@ private final class Worker : LocalFiber, ResponseSink
     bool h2done;           /// HTTP/2: endResponse gave the stream back to the session
     bool flushedAny;       /// some response bytes already reached the transport: a 500 is no longer possible
     bool waitingWrite;     /// suspended until the connection (or the stream's output) can take more
+    bool waitingRead;      /// suspended in `BodyReader.read` until more of the request body arrives
+    long bodyWaitMs;       /// HTTP/2 streamed body: time spent waiting for it (`minBodyRate`; HTTP/1.1 keeps it in Conn)
+    ulong bodyBytes;       /// ditto: bytes read
     bool poisoned;        /// an `Error` escaped the handler: cleanup code may not have run, so this fiber is never reused
     bool background;       /// `spawn`: no connection and no HTTP/2 stream
     void delegate() @safe bg; /// the background work, while `background`
@@ -270,11 +284,20 @@ private final class Worker : LocalFiber, ResponseSink
         return loop.sinkUpgrade(this, head, protocol);
     }
 
+    // BodyReader (a streamed request body): the same kind of small @trusted bodies
+    override size_t read(scope ubyte[] into) @trusted { return loop.bodyRead(this, into); }
+    override ulong unread() const @trusted
+    {
+        if (stream !is null)
+            return conn is null || conn.h2 is null || !stream.streamedBody ? 0 : conn.h2.bodyUnread(stream);
+        return conn is null || !conn.streaming ? 0 : conn.bodyLeft;
+    }
+
     void resetResponseState() nothrow @nogc
     {
         cancelled = timedOut = failed = closeAfter = upgraded = false;
         tunnel = null;
-        started = ended = chunked = noBody = committed = h2done = flushedAny = waitingWrite = false;
+        started = ended = chunked = noBody = committed = h2done = flushedAny = waitingWrite = waitingRead = false;
         remaining = -1;
         h2head = ResponseHead.init;
     }
@@ -435,6 +458,7 @@ final class EpollLoop : EventLoop, Scheduler
     private size_t failLogged, failSuppressed;
     private long quietSinceMs;      /// since when inFlight == 0 (0 = busy)
     private size_t createdAtTrim;  /// workersCreated at the last cleanup
+    private size_t heapAtTrim;     /// GC heap (used + free) after the last cleanup
     private size_t trims;
     private long maxStallMs, lastStallLogMs = -1_000_000;
     private bool stopping;
@@ -1028,6 +1052,9 @@ final class EpollLoop : EventLoop, Scheduler
             c.sent100 = false;
             c.chunked = c.chunkDone = false;
             c.headLen = c.total = c.sent = 0;
+            c.streaming = false;
+            c.bodyOff = 0;
+            c.bodyLeft = 0;
             c.worker = null;
             clearPending(c);
             c.closeWhenSent = false;
@@ -1091,6 +1118,19 @@ final class EpollLoop : EventLoop, Scheduler
     {
         if (c.fd < 0)
             return; // closed in this same batch
+        if (c.lingering)
+            return drainLingering(c, events);
+        if (c.phase == Phase.running && c.worker !is null && c.worker.waitingRead)
+        {
+            // the handler waits for more of a streamed body: it reads (or sees the end, or the error) itself
+            auto w = c.worker;
+            w.wakeEvents = events;
+            wake(w);
+            resume(w);
+            if (c.fd >= 0 && c.phase == Phase.reading)
+                drive(c);
+            return;
+        }
         if (c.phase == Phase.h2)
             return onH2Event(c, events);
         if (c.phase == Phase.handshake)
@@ -1195,7 +1235,7 @@ final class EpollLoop : EventLoop, Scheduler
                         break;
                     }
                     // (an upgrade behind held-back responses is served as HTTP/1.1: the 101 must not overtake them)
-                    if (cfg.http2 && !stopping && !c.hasPending && tryUpgrade(c))
+                    if (cfg.http2 && !stopping && !c.hasPending && !c.streaming && tryUpgrade(c))
                         return;
                     startRequest(c);
                     break; // back to the top: there may be another pipelined request
@@ -1224,7 +1264,11 @@ final class EpollLoop : EventLoop, Scheduler
                 size_t want = c.buf.mem.length * 2;
                 if (c.haveHead && c.chunked)
                 {
-                    immutable cap = c.headLen + cfg.limits.maxBodyBytes + cfg.limits.maxHeadBytes;
+                    // a body that will stream needs room only for the decoded bytes that start it (one past
+                    // bufferBodyBytes) and a framing line not decoded yet (see `tryParse`)
+                    immutable streams = !c.redirect && cfg.bufferBodyBytes && cfg.bufferBodyBytes < cfg.limits.maxBodyBytes;
+                    immutable room = streams ? cfg.bufferBodyBytes + 1 : cfg.limits.maxBodyBytes;
+                    immutable cap = c.headLen + room + cfg.limits.maxHeadBytes;
                     if (want > cap)
                         want = cap > c.buf.mem.length ? cap : c.buf.mem.length + 1;
                 }
@@ -1241,6 +1285,16 @@ final class EpollLoop : EventLoop, Scheduler
                 if (wasEmpty || (c.haveHead && c.chunked))
                     c.deadlineMs = nowMs + cfg.headerTimeoutMs; // not extended on every byte, except while a chunked body makes progress
                 c.buf.len += r;
+                if (c.haveHead && c.chunked)
+                {
+                    // ... which a trickle could keep up for hours: the average rate bounds it
+                    c.bodyBytes += r;
+                    if (belowBodyRate(nowMs - c.bodySinceMs, c.bodyBytes))
+                    {
+                        sendErrorAndClose(c, 408);
+                        return false;
+                    }
+                }
                 any = true;
                 // a full buffer goes to the parser first: once it knows the head, it sizes the
                 // buffer for the whole body (growing here would only fit a head)
@@ -1288,7 +1342,21 @@ final class EpollLoop : EventLoop, Scheduler
             c.total = h.headLength + h.contentLength;
             c.chunked = h.chunked;
             c.chunkDone = false;
+            c.chunkError = 0;
             c.dec = ChunkedDecoder.init;
+            c.bodySinceMs = nowMs;
+            c.bodyWaitMs = 0;
+            c.bodyBytes = c.buf.len - c.headLen;
+            if (!c.chunked && !c.redirect && cfg.bufferBodyBytes && h.contentLength > cfg.bufferBodyBytes)
+            {
+                // Too large to buffer: the request starts now and the handler reads the body as it arrives (the bytes
+                // that came with the head first). `Expect: 100-continue` is answered at its first read.
+                c.streaming = true;
+                c.bodyOff = c.headLen;
+                c.bodyLeft = h.contentLength;
+                c.total = c.headLen;
+                return Step.ready;
+            }
             if (!c.chunked && c.total > c.buf.mem.length && !pool.grow(c.buf, c.total))
             {
                 sendErrorAndClose(c, 413);
@@ -1304,6 +1372,17 @@ final class EpollLoop : EventLoop, Scheduler
             {
                 case ChunkResult.needMore:
                     c.buf.len = c.headLen + avail;
+                    if (!c.redirect && cfg.bufferBodyBytes && c.dec.decoded > cfg.bufferBodyBytes)
+                    {
+                        // As for a large Content-Length: the request starts with what is decoded and the handler
+                        // reads the rest as it arrives (`chunkRead`). Its length is not known until the last chunk.
+                        c.streaming = true;
+                        c.bodyOff = c.headLen;
+                        c.bodyLeft = unknownLength;
+                        c.total = c.headLen;
+                        c.bodyWaitMs = nowMs - c.bodySinceMs; // buffering it was all waiting for the client
+                        return Step.ready;
+                    }
                     break;
                 case ChunkResult.done:
                     c.buf.len = c.headLen + avail;
@@ -1380,6 +1459,7 @@ final class EpollLoop : EventLoop, Scheduler
         w.req = *r;
         w.req.headers = w.store[0 .. n];
         w.req.body = c.buf.mem[c.headLen .. c.total];
+        w.req.bodyReader = c.streaming ? w : null;
         w.req.peer = IpAddress.fromNetworkOrderV4(c.peerIp, c.peerPort);
         if (stopping)
             w.req.keepAlive = false; // draining: the response announces Connection: close
@@ -1561,7 +1641,8 @@ final class EpollLoop : EventLoop, Scheduler
             return;
         }
         w.conn.deadlineMs = limit;
-        bool keep = w.req.keepAlive && !stopping;
+        // a body the handler left unread cannot be skipped to reach the next request: the connection ends with this one
+        bool keep = w.req.keepAlive && !stopping && !(w.conn.streaming && w.conn.bodyLeft);
         if (head.contentLength < 0 && !w.noBody)
         {
             if (w.req.http11)
@@ -1714,6 +1795,244 @@ final class EpollLoop : EventLoop, Scheduler
         if (w.wakeEvents == 0)
         {
             w.cancelled = true; // the timer fired: the client does not read
+            throw cancelledEx;
+        }
+    }
+
+    // ---- a streamed request body (`BodyReader`)
+
+    /// Up to `into.length` bytes of the body: first what came with the head, then from the socket, suspending the fiber
+    /// while the client sends. 0 = the body ended. Each read that makes progress restarts `requestTimeoutMs` (it counts
+    /// from the end of the body, as for a buffered one); a client that sends nothing for `headerTimeoutMs` is cancelled.
+    private size_t bodyRead(Worker w, scope ubyte[] into)
+    {
+        Conn c = w.conn;
+        if (w.cancelled)
+            throw cancelledEx;
+        if (w.stream !is null)
+            return h2BodyRead(w, into);
+        if (c is null || !c.streaming || c.bodyLeft == 0 || into.length == 0)
+            return 0;
+        if (cast(Worker) Fiber.getThis() !is w)
+            throw new Exception("andaime: only the request's own fiber can read its body");
+        if (c.chunked)
+            return chunkRead(w, c, into);
+        immutable want = into.length < c.bodyLeft ? into.length : cast(size_t) c.bodyLeft;
+        if (c.bodyOff < c.buf.len)
+        {
+            immutable have = c.buf.len - c.bodyOff;
+            immutable n = have < want ? have : want;
+            into[0 .. n] = c.buf.mem[c.bodyOff .. c.bodyOff + n];
+            c.bodyOff += n;
+            c.bodyLeft -= n;
+            return n;
+        }
+        if (!c.sent100)
+        {
+            c.sent100 = true;
+            if (equalsIgnoreCase(w.req.header("expect"), "100-continue"))
+                sendRaw(c, "HTTP/1.1 100 Continue\r\n\r\n");
+        }
+        for (;;)
+        {
+            immutable r = ioRead(c, into.ptr, want);
+            if (r > 0)
+            {
+                c.bodyLeft -= r;
+                c.deadlineMs = nowMs + cfg.requestTimeoutMs;
+                c.bodyBytes += r;
+                if (belowBodyRate(c.bodyWaitMs, c.bodyBytes))
+                    throw new BodyError(408, "request body too slow");
+                return cast(size_t) r;
+            }
+            if (r < 0 && errno == EINTR)
+                continue;
+            if (r < 0 && errno == EAGAIN)
+            {
+                immutable t0 = nowMs;
+                waitReadable(w);
+                c.bodyWaitMs += nowMs - t0;
+                continue;
+            }
+            w.cancelled = true; // the client closed (or broke) the connection before the end of the body
+            throw cancelledEx;
+        }
+    }
+
+    /// `bodyRead` of a chunked body. The buffer holds, from `c.headLen`, the decoded bytes (handed out from
+    /// `c.bodyOff`) and then the raw bytes not decoded yet. Once every decoded byte is out, the raw ones move back to
+    /// `c.headLen` and more is read from the socket behind them, so the buffer never grows. After the last chunk the
+    /// decoded bytes are followed by the next pipelined request, and `bodyLeft` becomes what is left to hand out.
+    private size_t chunkRead(Worker w, Conn c, scope ubyte[] into)
+    {
+        if (c.chunkError)
+            throw new BodyError(c.chunkError, bodyErrorText(c.chunkError));
+        for (;;)
+        {
+            immutable end = c.headLen + c.dec.decoded;
+            if (c.bodyOff < end)
+            {
+                immutable have = end - c.bodyOff;
+                immutable n = have < into.length ? have : into.length;
+                into[0 .. n] = c.buf.mem[c.bodyOff .. c.bodyOff + n];
+                c.bodyOff += n;
+                if (c.chunkDone)
+                    c.bodyLeft = end - c.bodyOff;
+                return n;
+            }
+            if (c.chunkDone)
+            {
+                c.bodyLeft = 0;
+                return 0;
+            }
+            // everything decoded is out: the raw bytes go back to the start of the body, and the decoder with them
+            immutable raw = c.buf.len - end;
+            if (raw && end > c.headLen)
+            {
+                import core.stdc.string : memmove;
+
+                // sound: both ranges lie inside c.buf.mem (end + raw == c.buf.len); memmove allows the overlap
+                () @trusted { memmove(c.buf.mem.ptr + c.headLen, c.buf.mem.ptr + end, raw); }();
+            }
+            c.buf.len = c.headLen + raw;
+            c.bodyOff = c.headLen;
+            c.dec.restart();
+            if (raw && feedChunks(c))
+                continue;
+            if (!c.sent100)
+            {
+                c.sent100 = true;
+                if (equalsIgnoreCase(w.req.header("expect"), "100-continue"))
+                    sendRaw(c, "HTTP/1.1 100 Continue\r\n\r\n");
+            }
+            if (c.buf.free_.length == 0 && !pool.grow(c.buf, c.buf.mem.length * 2))
+                failChunks(c, 400); // the raw bytes of one framing line fill the buffer: no client sends that
+            for (;;)
+            {
+                immutable r = ioRead(c, c.buf.free_.ptr, c.buf.free_.length);
+                if (r > 0)
+                {
+                    c.buf.len += r;
+                    c.deadlineMs = nowMs + cfg.requestTimeoutMs;
+                    c.bodyBytes += r;
+                    if (belowBodyRate(c.bodyWaitMs, c.bodyBytes))
+                        failChunks(c, 408);
+                    break;
+                }
+                if (r < 0 && errno == EINTR)
+                    continue;
+                if (r < 0 && errno == EAGAIN)
+                {
+                    immutable t0 = nowMs;
+                    waitReadable(w);
+                    c.bodyWaitMs += nowMs - t0;
+                    continue;
+                }
+                w.cancelled = true; // the client closed (or broke) the connection before the last chunk
+                throw cancelledEx;
+            }
+            feedChunks(c);
+        }
+    }
+
+    /// Decodes the raw bytes behind the decoded ones (see `chunkRead`). True when there is something to hand out or the
+    /// body ended.
+    private bool feedChunks(Conn c)
+    {
+        size_t avail = c.buf.len - c.headLen;
+        immutable res = c.dec.feed(c.buf.mem[c.headLen .. $], avail, cfg.limits.maxBodyBytes, cfg.limits.maxHeadBytes);
+        c.buf.len = c.headLen + avail;
+        final switch (res)
+        {
+            case ChunkResult.needMore:
+                return c.dec.decoded > 0;
+            case ChunkResult.done:
+                c.chunkDone = true;
+                c.bodyLeft = c.dec.decoded;
+                return true;
+            case ChunkResult.badRequest:
+                return failChunks(c, 400);
+            case ChunkResult.tooLarge:
+                return failChunks(c, 413);
+        }
+    }
+
+    /// `bodyRead` of an HTTP/2 stream whose body was handed out unread (`H2Stream.streamedBody`): the DATA the session
+    /// kept, consumed as it is copied out. Consuming reopens the stream's window (a WINDOW_UPDATE, sent before the fiber
+    /// waits), so the client never has more than one window in flight that the handler has not read. RST_STREAM or the
+    /// connection going away cancels the request.
+    private size_t h2BodyRead(Worker w, scope ubyte[] into)
+    {
+        if (cast(Worker) Fiber.getThis() !is w)
+            throw new Exception("andaime: only the request's own fiber can read its body");
+        auto st = w.stream;
+        if (!st.streamedBody || into.length == 0)
+            return 0;
+        for (;;)
+        {
+            Conn c = w.conn;
+            if (w.cancelled)
+                throw cancelledEx;
+            if (c.fd < 0 || c.h2 is null || st.resetByPeer)
+            {
+                w.cancelled = true;
+                throw cancelledEx;
+            }
+            if (immutable status = c.h2.bodyError(st))
+                throw new BodyError(status, "request body too large");
+            const have = c.h2.tunnelInput(st);
+            if (have.length)
+            {
+                immutable n = have.length < into.length ? have.length : into.length;
+                into[0 .. n] = have[0 .. n];
+                c.h2.tunnelConsume(st, n);
+                st.deadlineMs = nowMs + cfg.requestTimeoutMs;
+                w.bodyBytes += n;
+                if (belowBodyRate(w.bodyWaitMs, w.bodyBytes))
+                    throw new BodyError(408, "request body too slow");
+                return n;
+            }
+            if (c.h2.tunnelEnded(st))
+                return 0;
+            flushH2(c); // the WINDOW_UPDATEs of what was consumed, before the client is expected to send more
+            if (w.cancelled || c.fd < 0)
+                continue;
+            immutable t0 = nowMs;
+            waitReadable(w);
+            w.bodyWaitMs += nowMs - t0;
+        }
+    }
+
+    /// The chunked body broke: this read and every later one throw `BodyError`, and the rest is never read (the
+    /// connection ends with this request, `bodyLeft` stays non-zero).
+    private noreturn failChunks(Conn c, int status)
+    {
+        c.chunkError = status;
+        throw new BodyError(status, bodyErrorText(status));
+    }
+
+    private static string bodyErrorText(int status) pure nothrow @nogc
+        => status == 413 ? "request body too large" : status == 408 ? "request body too slow" : "malformed chunked body";
+
+    /// `bytes` of body in `waitedMs` of waiting for the client: below `minBodyRate` once the grace period is over.
+    private bool belowBodyRate(long waitedMs, ulong bytes) const nothrow @nogc
+    {
+        return cfg.minBodyRate && waitedMs > cfg.minBodyRateGraceMs
+            && bytes * 1000 < cast(ulong) cfg.minBodyRate * cast(ulong) waitedMs;
+    }
+
+    /// Suspends the fiber until the connection has input (or an error, or the end), `headerTimeoutMs` at most.
+    private void waitReadable(Worker w) @trusted
+    {
+        w.waitingRead = true;
+        beginWait(w, cfg.headerTimeoutMs);
+        Fiber.yield();
+        w.waitingRead = false;
+        if (w.cancelled)
+            throw cancelledEx;
+        if (w.wakeEvents == 0)
+        {
+            w.cancelled = true; // the timer fired: the client stopped sending
             throw cancelledEx;
         }
     }
@@ -1929,6 +2248,12 @@ final class EpollLoop : EventLoop, Scheduler
         if (w.upgraded)
             return finishUpgraded(w);
         Conn c = w.conn;
+        if (c.streaming)
+        {
+            c.total = c.bodyOff; // the next request starts where the body ended (when it was all read)
+            if (c.bodyLeft)
+                w.closeAfter = true;
+        }
         if (w.cancelled)
         {
             if (w.timedOut && !w.started)
@@ -2106,12 +2431,22 @@ final class EpollLoop : EventLoop, Scheduler
         releaseWorker(w);
         if (!keep)
         {
+            // with part of a streamed body still coming, close(2) would answer RST and the client could lose the
+            // response it is about to read: send FIN and discard the rest for a moment first
+            if (c.streaming && c.bodyLeft)
+            {
+                c.phase = Phase.writing;
+                return lingerClose(c);
+            }
             closeConn(c);
             return;
         }
         c.buf.compact(c.total); // what is left over is the next request (pipelining)
         c.haveHead = false;
         c.sent100 = false;
+        c.streaming = false;
+        c.bodyOff = 0;
+        c.bodyLeft = 0;
         c.chunked = c.chunkDone = false;
         c.headLen = c.total = c.sent = 0;
         if (c.buf.len == 0)
@@ -3073,6 +3408,7 @@ final class EpollLoop : EventLoop, Scheduler
         hc.connectionWindowSize = cfg.http2ConnectionWindowBytes;
         hc.maxHeaders = maxHeaders;
         hc.limits = cfg.limits;
+        hc.bufferBodyBytes = cfg.bufferBodyBytes;
         hc.settingsTimeoutMs = cfg.headerTimeoutMs; // a client this slow to acknowledge is gone
         hc.enableConnectProtocol = cfg.http2WebSockets;
         return new H2Session(hc);
@@ -3224,6 +3560,8 @@ final class EpollLoop : EventLoop, Scheduler
         {
             auto w = cast(Worker) st.task;            if (w !is null && w.tunnel !is null && w.tunnel.reading)
                 wsDefer(w); // new bytes (or the end) for a WebSocket's reader
+            else if (w !is null && w.waitingRead && w.stream is st)
+                wsDefer(w); // ... or for a handler reading a streamed body (`h2BodyRead`)
         }
         while (c.fd >= 0 && s.popReady(st))
             startStream(c, st);
@@ -3242,6 +3580,9 @@ final class EpollLoop : EventLoop, Scheduler
         Worker w = acquireWorker();
         w.req = st.req;
         w.req.peer = IpAddress.fromNetworkOrderV4(c.peerIp, c.peerPort);
+        w.req.bodyReader = st.streamedBody ? w : null; // read through `h2BodyRead`
+        w.bodyWaitMs = nowMs - st.openedMs; // the session buffered its first bytes meanwhile
+        w.bodyBytes = 0;
         w.conn = c;
         w.stream = st;
         w.output.clear();
@@ -3874,11 +4215,14 @@ final class EpollLoop : EventLoop, Scheduler
             quietSinceMs = nowMs;
             return;
         }
-        if (nowMs - quietSinceMs < 1000 || workersCreated - createdAtTrim < trimBurst)
+        if (nowMs - quietSinceMs < 1000)
+            return;
+        import core.memory : GC;
+
+        if (workersCreated - createdAtTrim < trimBurst && !heapGrew())
             return;
         createdAtTrim = workersCreated;
         trims++;
-        import core.memory : GC;
 
         // The GC returns a pool to the OS only when it is entirely free. The idle workers (a Context is several KiB, a
         // page-sized block) and the cached buffers were allocated during the burst, between its big blocks, and would pin
@@ -3898,9 +4242,26 @@ final class EpollLoop : EventLoop, Scheduler
         {
             mallocTrim(0);
         }
+        heapAtTrim = heapSize();
     }
 
     private enum trimBurst = 128;
+
+    /// The GC heap grew `trimHeapGrowthBytes` since the last cleanup: large requests left memory behind (garbage still
+    /// counts as used until a collection). What a cleanup could not return (fragmented pools) is in `heapAtTrim`, so it
+    /// does not repeat until the heap grows again.
+    private bool heapGrew() nothrow
+    {
+        return cfg.trimHeapGrowthBytes && heapSize() >= heapAtTrim + cfg.trimHeapGrowthBytes;
+    }
+
+    private static size_t heapSize() nothrow
+    {
+        import core.memory : GC;
+
+        auto s = GC.stats();
+        return s.usedSize + s.freeSize;
+    }
 
     // ------------------------------------------------------------------ stop
 

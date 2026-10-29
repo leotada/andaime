@@ -19,13 +19,15 @@ module andaime.web.models 2025;
 
 @safe:
 
-import andaime.http.multipart : FormCoding, FormContentType, MultipartPart, classifyFormContentType, parseMultipart;
+import andaime.http.multipart : FormCoding, FormContentType, MultipartPart, classifyFormContentType, parseMultipart,
+    MultipartScanner, MultipartEvent;
 import andaime.http.types : QueryValues;
 import andaime.http.utf8 : validUtf8;
 import andaime.web.context : Context;
 import andaime.web.convert : percentDecode, parseScalarText, parseErrorType, parseErrorMsg, parseErrorParams;
 import andaime.web.dto;
 import andaime.web.params : Optional, HttpError, isScalar, isScalarList, isPatchField;
+import andaime.web.uploads : SpooledFile, Spooler;
 
 /// A struct bound from the query string.
 struct Query(T)
@@ -54,10 +56,26 @@ struct UploadedFile
 private enum string scalarFieldRule = "fields must be scalars (int, string, enum, bool...), "
     ~ "text types, Optional of those, or lists of scalars";
 private enum string formFieldRule = "fields must be scalars (int, string, enum, bool...), "
-    ~ "text types, Optional of those, lists of scalars, or UploadedFile";
+    ~ "text types, Optional of those, lists of scalars, UploadedFile or SpooledFile";
 
 enum isUploadedFile(T) = is(T == UploadedFile);
-enum isFileField(T) = isUploadedFile!T || is(T == UploadedFile[]) || is(T == Optional!UploadedFile);
+/// A file field: `UploadedFile` or `SpooledFile`, alone, in a list, or `Optional`.
+enum isFileField(T) = isOneFileField!(T, UploadedFile) || isOneFileField!(T, SpooledFile);
+private enum isOneFileField(T, F) = is(T == F) || is(T == F[]) || is(T == Optional!F);
+private enum isSpooledField(T) = isOneFileField!(T, SpooledFile);
+
+/// True when `Form!T` has a `SpooledFile` field: its route reads the body as it arrives.
+template formHasSpooled(T)
+{
+    enum formHasSpooled = () {
+        bool any;
+        static if (is(T == struct))
+            static foreach (i; 0 .. T.tupleof.length)
+                static if (!hasUda!(T, i, jsonIgnore) && isSpooledField!(typeof(T.tupleof[i])))
+                    any = true;
+        return any;
+    }();
+}
 
 /// True when `Form!T` has a file field, so the body must be multipart.
 template formHasFiles(T)
@@ -110,7 +128,7 @@ string modelError(T, bool asForm = false)()
                             static if (is(typeof(attr) == inRange))
                                 if (e.length == 0)
                                     e = "field '" ~ fname ~ "' of " ~ T.stringof
-                                        ~ ": @inRange does not apply to UploadedFile";
+                                        ~ ": @inRange does not apply to a file (" ~ F.stringof ~ ")";
                     }
                 }
                 else static if (!(isScalar!F || isScalarList!F || isOptionalScalar!F))
@@ -269,13 +287,112 @@ void bindFormBody(T)(Context ctx, ref T dest)
         throw new HttpError(415, urlOrMultipart);
 
     MultipartPart[] parts;
+    SpooledFile[] spooled;
+    static if (formHasSpooled!T)
+    {
+        if (ctx.request.bodyReader !is null)
+        {
+            readMultipartStream!T(ctx, ct.boundary, parts, spooled);
+            return bindMultipart(ctx, parts, spooled, dest);
+        }
+    }
     error = parseMultipart(ctx.request.body, ct.boundary, parts);
     if (error.length)
         throw new HttpError(400, error);
-    bindMultipart(ctx, parts, dest);
+    bindMultipart(ctx, parts, null, dest);
 }
 
-private void bindMultipart(T)(Context ctx, MultipartPart[] parts, ref T dest)
+/// What happens to the content of a part while a body streams: dropped (no field takes it), kept in memory, or spooled.
+private enum PartSink : ubyte { skip, keep, spool }
+
+private PartSink partSinkFor(T)(scope const(char)[] name)
+{
+    static foreach (i; 0 .. T.tupleof.length)
+        static if (!hasUda!(T, i, jsonIgnore))
+            if (name == jsonKeyOf!(T, i))
+                return isSpooledField!(typeof(T.tupleof[i])) ? PartSink.spool : PartSink.keep;
+    return PartSink.skip;
+}
+
+/// Decodes a multipart body as it arrives, through a 64 KiB window: the parts of `SpooledFile` fields go to a `Spooler`
+/// (memory, then a temporary file), the parts of `T`'s other fields are kept in memory, and the parts no field takes
+/// are skipped. `spooled[k]` is the file of `parts[k]` when that part was spooled.
+private void readMultipartStream(T)(Context ctx, string boundary, ref MultipartPart[] parts, ref SpooledFile[] spooled)
+{
+    auto scanner = MultipartScanner(boundary);
+    auto window = new ubyte[64 << 10];
+    size_t start, end;
+    bool eof;
+    PartSink sink;
+    Spooler spooler;
+    ubyte[] kept;
+    for (;;)
+    {
+        size_t used;
+        MultipartPart head;
+        const(ubyte)[] data;
+        immutable ev = scanner.next(window[start .. end], eof, used, head, data);
+        final switch (ev)
+        {
+            case MultipartEvent.needMore:
+                break;
+            case MultipartEvent.part:
+                sink = partSinkFor!T(head.name);
+                parts ~= head;
+                spooled ~= SpooledFile.init;
+                if (sink == PartSink.spool)
+                    spooler = Spooler(*ctx.bodyState.spool);
+                break;
+            case MultipartEvent.data:
+                if (sink == PartSink.keep)
+                    kept ~= data;
+                else if (sink == PartSink.spool)
+                    spooler.put(ctx, data);
+                break;
+            case MultipartEvent.partEnd:
+                if (sink == PartSink.keep)
+                    parts[$ - 1].data = kept;
+                else if (sink == PartSink.spool)
+                    spooled[$ - 1] = spooler.finish(head0(parts).filename, head0(parts).contentType);
+                kept = null;
+                sink = PartSink.skip;
+                break;
+            case MultipartEvent.done:
+                // the epilogue (usually nothing): read and dropped, so the connection can serve the next request
+                while (ctx.bodyUnread && ctx.readBodyInto(window) > 0)
+                {
+                }
+                return;
+            case MultipartEvent.error:
+                throw new HttpError(400, scanner.error);
+        }
+        start += used;
+        if (ev != MultipartEvent.needMore || used)
+            continue;
+        if (eof)
+            throw new HttpError(400, "malformed multipart body");
+        // move what is left to the front (a forward copy: the regions may overlap), then read more behind it
+        foreach (k; 0 .. end - start)
+            window[k] = window[start + k];
+        end -= start;
+        start = 0;
+        immutable n = ctx.readBodyInto(window[end .. $]);
+        if (n == 0)
+            eof = true;
+        end += n;
+    }
+}
+
+/// The last part's names, as a `SpooledFile` keeps them ("" when the part sent none).
+private MultipartPart head0(MultipartPart[] parts)
+{
+    auto p = parts[$ - 1];
+    p.filename = p.filename is null ? "" : p.filename;
+    p.contentType = p.contentType is null ? "" : p.contentType;
+    return p;
+}
+
+private void bindMultipart(T)(Context ctx, MultipartPart[] parts, SpooledFile[] spooled, ref T dest)
 {
     FieldPath path;
     path.location = "body";
@@ -287,44 +404,44 @@ private void bindMultipart(T)(Context ctx, MultipartPart[] parts, ref T dest)
             alias F = typeof(dest.tupleof[i]);
             enum name = jsonKeyOf!(T, i);
             immutable mark = path.pushKey(name);
-            static if (is(F == UploadedFile[]))
+            static if (isFileField!F && is(F == E[], E))
             {
                 size_t n;
                 bool any;
-                foreach (ref part; parts)
+                foreach (k, ref part; parts)
                 {
                     if (part.name != name)
                         continue;
                     any = true;
                     immutable m2 = path.pushIndex(n++);
-                    dest.tupleof[i] ~= uploadOf(part);
+                    dest.tupleof[i] ~= fileOf!E(part, spooled, k);
                     path.pop(m2);
                 }
                 if (any)
                     validateField!(T, i)(dest.tupleof[i], ctx.errors, path);
             }
-            else static if (is(F == Optional!UploadedFile))
+            else static if (isFileField!F && is(F == Optional!E, E))
             {
-                foreach (ref part; parts)
+                foreach (k, ref part; parts)
                 {
                     if (part.name != name)
                         continue;
-                    auto file = uploadOf(part);
-                    checkFileBounds!(T, i)(file.bytes, ctx, path);
+                    auto file = fileOf!E(part, spooled, k);
+                    checkFileBounds!(T, i)(sizeOf(file), ctx, path);
                     dest.tupleof[i] = F(file);
                     break;
                 }
             }
-            else static if (is(F == UploadedFile))
+            else static if (isFileField!F)
             {
                 bool seen;
-                foreach (ref part; parts)
+                foreach (k, ref part; parts)
                 {
                     if (part.name != name)
                         continue;
                     seen = true;
-                    auto file = uploadOf(part);
-                    checkFileBounds!(T, i)(file.bytes, ctx, path);
+                    auto file = fileOf!F(part, spooled, k);
+                    checkFileBounds!(T, i)(sizeOf(file), ctx, path);
                     dest.tupleof[i] = file;
                     break;
                 }
@@ -401,6 +518,23 @@ private UploadedFile uploadOf(ref MultipartPart part)
     return file;
 }
 
+/// The file of `parts[k]` as a field of type `E`: a part a streamed body spooled, or one in memory.
+private E fileOf(E)(ref MultipartPart part, SpooledFile[] spooled, size_t k)
+{
+    static if (is(E == UploadedFile))
+        return uploadOf(part);
+    else
+    {
+        if (k < spooled.length && spooled[k] !is SpooledFile.init)
+            return spooled[k];
+        auto u = uploadOf(part);
+        return SpooledFile(u.filename, u.contentType, u.bytes.length, u.bytes, null);
+    }
+}
+
+private ulong sizeOf(ref const UploadedFile f) => f.bytes.length;
+private ulong sizeOf(ref const SpooledFile f) => f.size;
+
 private void rejectCharset(ref MultipartPart part)
 {
     if (part.charset.length && part.charset != "utf-8" && part.charset != "us-ascii")
@@ -427,19 +561,19 @@ private bool readPartText(F)(ref const FieldPath path, Context ctx, ref Multipar
     return true;
 }
 
-private void checkFileBounds(T, size_t i)(scope const(ubyte)[] bytes, Context ctx, ref const FieldPath path)
+private void checkFileBounds(T, size_t i)(ulong size, Context ctx, ref const FieldPath path)
 {
     static foreach (attr; __traits(getAttributes, T.tupleof[i]))
     {
         static if (is(typeof(attr) == minLength))
         {
-            if (bytes.length < attr.value)
+            if (size < attr.value)
                 ctx.errors.addPath(path, "bytes_too_short", "expected at least " ~ ctNum(attr.value) ~ " bytes",
                     FieldParams.ofLimit(attr.value));
         }
         else static if (is(typeof(attr) == maxLength))
         {
-            if (bytes.length > attr.value)
+            if (size > attr.value)
                 ctx.errors.addPath(path, "bytes_too_long", "expected at most " ~ ctNum(attr.value) ~ " bytes",
                     FieldParams.ofLimit(attr.value));
         }

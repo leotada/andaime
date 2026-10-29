@@ -6,12 +6,13 @@ module andaime.web.application 2025;
 import andaime.http.types;
 import andaime.http.ip : Cidr, parseCidr;
 import andaime.web.context;
-import andaime.web.params : HttpError;
+import andaime.web.params : bodyLimit, HttpError;
 import andaime.web.dto : FieldError, ValidationErrors;
 import andaime.web.numtext : itoa, ctNum;
 import andaime.log : LogLevel, logEnabled, logAndaime, setLogSyncSource;
 import andaime.web.router;
-import andaime.web.handler_traits : handlerError, dispatch;
+import andaime.web.handler_traits : handlerError, dispatch, streamsBody;
+import andaime.web.uploads : SpoolConfig, removeSpooled;
 import andaime.web.json : writeJsonString, writeJson;
 import andaime.web.errors : ErrorInfo, errorBodyError, mapBodyError, validationMessage;
 import andaime.web.openapi;
@@ -183,6 +184,7 @@ final class Group
     private ValidationHook validation;
     private bool slashSet;
     private TrailingSlash slash;
+    private ulong limit; // bodyLimit; 0 = the parent's
 
     private this(App app, string prefix, Group parent)
     {
@@ -254,6 +256,23 @@ final class Group
                 ~ "(App.trailingSlash)");
         slash = policy;
         slashSet = true;
+    }
+
+    /// The largest request body of this group's routes (and its subgroups', unless they set their own), in bytes; a
+    /// route's `@bodyLimit` wins. Unset, the group follows `App.bodyLimit`.
+    void bodyLimit(ulong bytes)
+    {
+        app.mustBeOpen();
+        limit = checkLimit(bytes);
+    }
+
+    /// The nearest limit: this group's, a parent's, or the app's.
+    private ulong limitOf()
+    {
+        for (auto g = this; g !is null; g = g.parent)
+            if (g.limit)
+                return g.limit;
+        return app.defaultLimit;
     }
 
     /// The nearest policy: this group's, a parent's, or the app's.
@@ -339,9 +358,50 @@ string[] markersOf(alias fn)() @safe
         static if (is(attr))
             r ~= attr.mangleof;
         else
+        {
             r ~= typeof(attr).mangleof;
+            static if (is(typeof(attr) == bodyLimit))
+                r ~= bodyLimitMarker ~ ctNum(attr.bytes);
+        }
     }
+    static if (streamsBody!fn)
+        r ~= streamedBodyMarker;
     return r;
+}
+
+/// The marker of a route whose handler reads the body as it arrives (`streamsBody`): `App` does not buffer it first.
+/// Not a mangled name, so it never matches a marker UDA.
+enum string streamedBodyMarker = "andaime:streamed-body";
+
+/// The prefix of the marker that carries a handler's `@bodyLimit` (followed by the bytes in decimal).
+enum string bodyLimitMarker = "andaime:body-limit=";
+
+/// The `@bodyLimit` in `markers`, or 0.
+private ulong bodyLimitIn(const string[] markers) pure nothrow
+{
+    foreach (m; markers)
+        if (m.length > bodyLimitMarker.length && m[0 .. bodyLimitMarker.length] == bodyLimitMarker)
+        {
+            ulong v;
+            foreach (ch; m[bodyLimitMarker.length .. $])
+                v = v * 10 + (ch - '0');
+            return v;
+        }
+    return 0;
+}
+
+/// Wraps the handler of a route that has a body limit, inside its group middleware (so an authentication middleware
+/// answers first): a request `App.handle` flagged as too large gets a 413 instead of the handler.
+private final class BodyLimitGuard
+{
+    HandlerFn handler;
+
+    void entry(Context ctx)
+    {
+        if (ctx.bodyState.tooLarge)
+            throw new HttpError(413, "request body too large");
+        handler(ctx);
+    }
 }
 
 /// What a request whose path differs from a route only by a trailing slash (`/tasks/` for `/tasks`, or the reverse) gets.
@@ -377,6 +437,13 @@ unittest
     assert(otherSlashForm("/files/{*path}") is null);
 }
 
+private ulong checkLimit(ulong bytes) pure
+{
+    if (bytes == 0)
+        throw new RouteError("andaime: a body limit must be at least 1 byte");
+    return bytes;
+}
+
 private string checkPrefix(string prefix) pure
 {
     if (prefix.length && prefix[0] != '/')
@@ -396,6 +463,10 @@ final class App
     private HandlerFn[] handlers;
     private Group[] owners;          // owners[i] = group of handlers[i], or null
     private string[][] markersOfRoute; // markers on handlers[i] (see `markersOf`)
+    private bool[] streamedBody;       // handlers[i] reads the body as it arrives (`streamedBodyMarker`)
+    private ulong[] routeLimit;        // handlers[i]'s body limit (route, group or app), set by freeze; 0 = none
+    private ulong defaultLimit;        // `bodyLimit`; 0 = only the engine's maxBodyBytes
+    private SpoolConfig spoolConfig;
     private Middleware[] middlewares;
     private ErrorHandler errorHandler;
     private UserHandler notFoundHandler;
@@ -621,6 +692,10 @@ final class App
         handlers ~= h;
         owners ~= owner;
         markersOfRoute ~= markers;
+        bool streams;
+        foreach (m; markers)
+            streams |= m == streamedBodyMarker;
+        streamedBody ~= streams;
         router.add(method, path, cast(int)(handlers.length - 1));
         OpRecord op;
         op.method = method;
@@ -636,8 +711,17 @@ final class App
         if (frozen)
             return;
         validationFor = new void delegate(Context) @safe[handlers.length];
+        routeLimit = new ulong[handlers.length];
         foreach (i, g; owners)
         {
+            immutable own = bodyLimitIn(markersOfRoute[i]);
+            routeLimit[i] = own ? own : g is null ? defaultLimit : g.limitOf();
+            if (routeLimit[i])
+            {
+                auto guard = new BodyLimitGuard;
+                guard.handler = handlers[i];
+                handlers[i] = &guard.entry;
+            }
             auto hook = g is null ? null : g.findValidation();
             if (hook is null)
                 hook = validation;
@@ -757,15 +841,64 @@ final class App
         if (!frozen)
             freeze();
         ctx.proxies = &proxyTrust;
+        ctx.bodyState.spool = &spoolConfig;
         // without fibers (TestClient, the development server) andaime.log finds this request's id here
         auto prevLogSource = setLogSyncSource(&ctx.logRequestId);
         scope (exit)
             setLogSyncSource(prevLogSource);
+        scope (exit)
+            removeSpooled(ctx);
         try
+        {
+            prepareBody(ctx);
             runFrom(ctx, 0);
+        }
         catch (Exception e)
             fail(ctx, e);
         finishResponse(ctx);
+    }
+
+    /// Before the middleware: a body over the route's limit is flagged (`BodyLimitGuard` answers 413) and left unread;
+    /// a body the engine left unread is read whole, unless the route streams it.
+    private void prepareBody(Context ctx)
+    {
+        auto reader = ctx.request.bodyReader;
+        if (reader is null && ctx.request.body.length == 0)
+            return;
+        PathParams scratch;
+        auto r = router.match(ctx.request.method, ctx.request.path, scratch);
+        immutable found = r.status == MatchStatus.found;
+        auto st = ctx.bodyState;
+        st.limit = found ? routeLimit[r.handler] : 0;
+        if (st.limit)
+        {
+            // an unknown length (chunked) is counted as it is read instead (`BodyState.count`)
+            immutable size = reader !is null ? reader.unread : ctx.request.body.length;
+            if (size != unknownLength && size > st.limit)
+            {
+                st.tooLarge = true;
+                return;
+            }
+        }
+        if (reader !is null && !(found && streamedBody[r.handler]))
+            ctx.readBody();
+    }
+
+    /// The largest request body of every route, in bytes, unless its group (`Group.bodyLimit`) or its handler
+    /// (`@bodyLimit`) says otherwise: a request above it gets a 413 before its body is read. Keep it small (an API of JSON
+    /// bodies needs little) and raise it on the upload routes. Unset, only `ServerConfig.limits.maxBodyBytes` applies;
+    /// that engine limit comes first, so a route limit above it has no effect.
+    void bodyLimit(ulong bytes)
+    {
+        mustBeOpen();
+        defaultLimit = checkLimit(bytes);
+    }
+
+    /// Where `SpooledFile` keeps the file parts it does not hold in memory (see `SpoolConfig`).
+    void spoolUploads(SpoolConfig config)
+    {
+        mustBeOpen();
+        spoolConfig = config;
     }
 
     /// The one validation point, after the middleware has unwound (see `checkResponse`). A streamed response whose

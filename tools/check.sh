@@ -377,9 +377,25 @@ s_memory_tls() {
     return $rc
 }
 
+# Bytes the GC of a running serve_slow counts as used (its /gc route). Garbage counts as used until a collection, so
+# after the loop's trim this is what is really alive.
+gc_used() {
+    exec 3<>"/dev/tcp/127.0.0.1/$1"
+    printf 'GET /gc HTTP/1.1\r\nHost: t\r\nConnection: close\r\n\r\n' >&3
+    tail -n 1 <&3 | awk '{print $1}'
+    exec 3>&-
+}
+
+# Whether the RSS after a trim is enforced. The trim's own job, a collection that frees the bodies, is checked through
+# the GC (`gc_used`) with every compiler. What the OS gets back also depends on the druntime GC's pools: a large object
+# gets a pool of 150% of its size, small objects allocated later can land in the rest, and one of them alive pins the
+# whole pool (GC.minimize only returns free pools). The same GC lays them out differently under DMD and LDC (on LDC
+# 79 of 104 MB stayed in one test, 43 MB on DMD), so the RSS bound is a DMD-only regression guard.
+rss_enforced() { [[ "$(basename "$DC")" == dmd ]]; }
+
 # 200 uploads of 512 KiB at once go through the buffer pool's exact-size (above 64 KiB) path. Their buffers are GC
 # memory: the peak is what 200 bodies need (about 100 MB plus the runtime), and after the burst the loop's trim
-# (a collection once it has been quiet for a second) must give most of it back.
+# (a collection once it has been quiet for a second) must free them and give most of it back.
 s_memory_uploads() {
     ulimit -n 20000 2>/dev/null || true
     tmp=$(mktemp -d)
@@ -396,12 +412,80 @@ s_memory_uploads() {
     local peak; peak=$(sort -n "$tmp/rss" | tail -1)
     sleep 3.5
     local after; after=$(awk '/VmRSS/{print $2}' /proc/$srv/status)
+    local used; used=$(gc_used "$port")
     kill -INT $srv
     for _ in $(seq 1 30); do kill -0 $srv 2>/dev/null || break; sleep 0.1; done
     kill -9 $srv 2>/dev/null || true
-    echo "200 uploads of 512 KiB: peak RSS ${peak} KiB, 3.5 s after the burst ${after} KiB"
+    echo "200 uploads of 512 KiB: peak RSS ${peak} KiB, 3.5 s after the burst ${after} KiB, GC used $(( used / 1024 )) KiB"
     (( peak < 220 * 1024 )) || { echo "ABOVE 220 MB at the peak"; rc=1; }
-    (( after < peak * 6 / 10 )) || { echo "memory did not come back after the burst (${after} KiB of ${peak} KiB)"; rc=1; }
+    (( used < 16 << 20 )) || { echo "the trim did not free the bodies (GC used ${used} bytes)"; rc=1; }
+    if rss_enforced; then
+        (( after < peak * 6 / 10 )) || { echo "memory did not come back after the burst (${after} KiB of ${peak} KiB)"; rc=1; }
+    fi
+    return $rc
+}
+
+# 4 uploads of 24 MiB at once, buffered: far from the 128 new fibers of a burst, but the GC heap grew by ~100 MB, so
+# the quiet-second trim (ServerConfig.trimHeapGrowthBytes) must give it back anyway.
+s_memory_trim() {
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    $DC -O -release tests/net/upload_loadgen.d -of"$tmp/upload_loadgen" > /dev/null
+    $DC -O -release $I -i -of"$tmp/serve_slow" tests/net/serve_slow.d > /dev/null
+    local port=$(( 19100 + RANDOM % 200 ))
+    "$tmp/serve_slow" "$port" 500 > "$tmp/srv.log" 2>&1 &
+    local srv=$!
+    sleep 0.5
+    ( while kill -0 $srv 2>/dev/null; do awk '/VmRSS/{print $2}' /proc/$srv/status 2>/dev/null; sleep 0.05; done > "$tmp/rss" ) &
+    local rc=0
+    "$tmp/upload_loadgen" "$port" 4 24576 || rc=1
+    local peak; peak=$(sort -n "$tmp/rss" | tail -1)
+    sleep 3
+    local after; after=$(awk '/VmRSS/{print $2}' /proc/$srv/status)
+    local used; used=$(gc_used "$port")
+    kill -INT $srv
+    for _ in $(seq 1 30); do kill -0 $srv 2>/dev/null || break; sleep 0.1; done
+    kill -9 $srv 2>/dev/null || true
+    echo "4 uploads of 24 MiB: peak RSS ${peak} KiB, 3 s after ${after} KiB, GC used $(( used / 1024 )) KiB"
+    (( peak > 80 * 1024 )) || { echo "the uploads were not buffered (peak ${peak} KiB): the test measures nothing"; rc=1; }
+    # on a loaded machine one upload may land after the trim, and its 24 MiB is below the threshold: at most one body
+    # may still be counted
+    (( used < 30 << 20 )) || { echo "the trim did not free the bodies (GC used ${used} bytes)"; rc=1; }
+    if rss_enforced; then
+        # ~30% alone, for the same reason up to 60%
+        (( after < peak * 6 / 10 )) || { echo "memory did not come back (${after} KiB of ${peak} KiB)"; rc=1; }
+    fi
+    return $rc
+}
+
+# 16 uploads of 8 MiB at once to routes that read the body as it arrives: a SpooledFile form (the file goes to a
+# temporary file) and a BodyStream. Buffered, they would cost 128 MiB; streamed, a window per request.
+s_memory_streamed() {
+    ulimit -n 20000 2>/dev/null || true
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    $DC -O -release tests/net/upload_loadgen.d -of"$tmp/upload_loadgen" > /dev/null
+    $DC -O -release $I -i -of"$tmp/serve_slow" tests/net/serve_slow.d > /dev/null
+    mkdir -p "$tmp/spool"
+    local rc=0 route
+    # with Content-Length and chunked: past bufferBodyBytes both framings are read as they arrive
+    for route in /spooled /streamed "/spooled chunked" "/streamed chunked"; do
+        local port=$(( 18900 + RANDOM % 200 ))
+        TMPDIR="$tmp/spool" "$tmp/serve_slow" "$port" 1500 > "$tmp/srv.log" 2>&1 &
+        local srv=$!
+        sleep 0.5
+        ( while kill -0 $srv 2>/dev/null; do awk '/VmRSS/{print $2}' /proc/$srv/status 2>/dev/null; sleep 0.05; done > "$tmp/rss" ) &
+        # shellcheck disable=SC2086 # "<path> [chunked]": two arguments
+        "$tmp/upload_loadgen" "$port" 16 8192 $route || rc=1
+        local peak; peak=$(sort -n "$tmp/rss" | tail -1)
+        local left; left=$(find "$tmp/spool" -type f | wc -l)
+        kill -INT $srv
+        for _ in $(seq 1 30); do kill -0 $srv 2>/dev/null || break; sleep 0.1; done
+        kill -9 $srv 2>/dev/null || true
+        echo "16 uploads of 8 MiB to $route: peak RSS ${peak} KiB, temporary files left ${left}"
+        (( peak < 40 * 1024 )) || { echo "ABOVE 40 MB at the peak: the bodies were buffered"; rc=1; }
+        (( left == 0 )) || { echo "temporary files outlived their requests"; rc=1; }
+    done
     return $rc
 }
 
@@ -551,6 +635,8 @@ section "real API example end to end (Postgres + external API + auth + CORS + st
 section "memory: 1,000 in-flight requests over HTTP/1.1 and HTTP/2, 1,000 open WebSockets on each (peak RSS < 30 MB)" s_memory
 section "memory: 1,000 in-flight requests over HTTPS (peak RSS < 80 MB, depends on the OpenSSL version)" s_memory_tls
 section "memory: 200 uploads of 512 KiB at once (above the pool classes), memory comes back" s_memory_uploads
+section "memory: 4 buffered uploads of 24 MiB (no burst), memory comes back after a quiet second" s_memory_trim
+section "memory: 16 uploads of 8 MiB at once, read as they arrive (SpooledFile, BodyStream): peak RSS < 40 MB" s_memory_streamed
 section "compile-error tests (expected message + at most 2 error lines)" s_compile_fail
 section "DUB builds and layering" s_dub
 section "cross-platform compilation (macOS Darwin and Windows MSVC type-check)" s_cross_platform

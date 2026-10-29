@@ -26,7 +26,8 @@ import andaime.http.utf8 : validUtf8;
 import andaime.web.convert;
 import andaime.web.json;
 import andaime.web.cookies : cookie;
-import andaime.web.models : Query, Form, isQueryModel, isFormModel, bindModel, bindFormBody, modelError;
+import andaime.web.models : Query, Form, isQueryModel, isFormModel, bindModel, bindFormBody, modelError, formHasSpooled;
+import andaime.web.uploads : BodyStream;
 import andaime.web.stream : Stream, EventStream, isStreamReturn, runStream;
 import andaime.web.websocket : WebSocket, runWebSocket;
 
@@ -151,6 +152,16 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
             auto info = parseRoute(path);
             if (info.error.length)
                 return head ~ info.error;
+            static foreach (attr; __traits(getAttributes, fn))
+            {
+                static if (is(typeof(attr) == bodyLimit))
+                {
+                    if (attr.bytes == 0)
+                        return head ~ "@bodyLimit(0): a body limit must be at least 1 byte";
+                    if (method == Method.GET || method == Method.HEAD)
+                        return head ~ "@bodyLimit on " ~ methodName(method) ~ ", which has no body";
+                }
+            }
             auto used = new bool[info.params.length];
             size_t bodies = 0;
 
@@ -198,6 +209,15 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
                             return head ~ bad ~ "is JsonBody, but " ~ methodName(method)
                                 ~ " has no body; use POST, PUT or PATCH";
                     }
+                    else static if (is(T == BodyStream))
+                    {
+                        bodies++;
+                        if (method == Method.GET || method == Method.HEAD)
+                            return head ~ bad ~ "is BodyStream, but " ~ methodName(method)
+                                ~ " has no body; use POST, PUT or PATCH";
+                    }
+                    else static if (is(T == Optional!BodyStream))
+                        return head ~ bad ~ "is Optional!BodyStream; take BodyStream (an empty body reads as 0 bytes)";
                     else static if (isPatchField!T)
                         return head ~ bad ~ "is " ~ T.stringof ~ "; PatchField is for fields of a JSON body DTO. "
                             ~ "For an optional parameter use Optional!T";
@@ -220,7 +240,7 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
                     return head ~ "the route declares {" ~ info.params[k] ~ "}, but the function has no "
                         ~ "parameter named '" ~ info.params[k] ~ "'";
             if (bodies > 1)
-                return head ~ "more than one body parameter (JsonBody or Form); merge the fields into a single DTO";
+                return head ~ "more than one body parameter (JsonBody, Form or BodyStream); merge the fields into a single DTO";
 
             static if (is(typeof(fn) R == return))
             {
@@ -261,6 +281,24 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
         enum handlerError = head ~ "is not a function";
 }
 
+/// True when handler `fn` reads the request body as it arrives: it takes a `BodyStream`, or a `Form!T` with a
+/// `SpooledFile` field. `App` then does not read a large body whole before the middleware (see `streamedBodyMarker`).
+template streamsBody(alias fn)
+{
+    enum streamsBody = () {
+        bool r;
+        static if (is(typeof(fn) P == __parameters))
+            static foreach (T; P)
+            {
+                static if (is(T == BodyStream))
+                    r = true;
+                else static if (isFormModel!T)
+                    r |= formHasSpooled!(typeof(T.value));
+            }
+        return r;
+    }();
+}
+
 // =====================================================================
 // Generated dispatch
 // =====================================================================
@@ -292,6 +330,8 @@ void dispatch(Method method, string path, alias fn, Self...)(Context ctx, Self s
                 args[i] = ctx;
             else static if (is(T == ClientIp))
                 args[i].value = ctx.clientIp();
+            else static if (is(T == BodyStream))
+                args[i].ctx = ctx;
             else static if (isScalarList!T)
             {
                 // ?tag=a&tag=b -> ["a", "b"]; absent -> the declared default, or an empty list (not an error)

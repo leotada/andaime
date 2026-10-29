@@ -105,6 +105,57 @@ struct QueryValues
     }
 }
 
+/// The part of a request body that has not been received yet: the engine hands a large body to the handler this way
+/// instead of buffering it whole (`ServerConfig.bufferBodyBytes`), whatever its framing. Implemented by the engine's
+/// request fiber.
+interface BodyReader
+{
+    /// Copies up to `into.length` bytes of the body into `into` and returns how many; 0 means the body ended. Suspends
+    /// the fiber while the client is sending. The engine throws `RequestCancelled` when the client goes away or stops
+    /// sending for `headerTimeoutMs`, and `BodyError` when what arrives is not a valid body (broken chunked framing:
+    /// 400), is above `maxBodyBytes` (413) or arrives below `minBodyRate` (408).
+    size_t read(scope ubyte[] into);
+
+    /// Bytes of the body not read yet (the declared `Content-Length` minus what `read` returned), or `unknownLength`
+    /// while the client has not said where the body ends (a chunked body).
+    ulong unread() const;
+}
+
+/// `BodyReader.unread` of a body whose end is not known yet.
+enum ulong unknownLength = ulong.max;
+
+/// The body of a request broke while it was being read (`BodyReader.read`): `status` is the answer it deserves, 400
+/// for a malformed body, 413 for one above the engine's `maxBodyBytes`, 408 for one arriving below `minBodyRate`. The
+/// rest of the body is not read and the connection ends with this request.
+final class BodyError : Exception
+{
+    int status;
+
+    this(int status, string msg) pure nothrow @safe
+    {
+        super(msg);
+        this.status = status;
+    }
+}
+
+/// A body sent in pieces, for a body too large to hold (a file), by the HTTP client (`httpClient().put(url, source)`):
+/// `length` bytes, which `write` hands to its sink in pieces of any size. `write` may be called more than once (a
+/// pooled connection that turned out closed is retried on a new one), so each call starts from the beginning:
+///
+///     auto source = BodySource(size, (scope sink) {
+///         auto f = File(path, "rb");
+///         auto buf = new ubyte[64 << 10];
+///         for (auto got = f.rawRead(buf); got.length; got = f.rawRead(buf))
+///             sink(got);
+///     });
+///
+/// Writing more or fewer than `length` bytes fails the request (the connection is closed).
+struct BodySource
+{
+    ulong length;
+    void delegate(scope void delegate(scope const(ubyte)[]) @safe sink) @safe write;
+}
+
 /// View of an already-parsed request. Owns no memory.
 struct Request
 {
@@ -114,7 +165,12 @@ struct Request
     const(char)[] path;   /// without the query, still percent-encoded
     const(char)[] query;  /// without the '?', still percent-encoded
     HeaderField[] headers;
+    /// The whole body, when it was buffered. Empty while `bodyReader` is set.
     const(ubyte)[] body;
+    /// Set by the engine for an HTTP/1.1 body larger than `ServerConfig.bufferBodyBytes`: the body has not been
+    /// received yet and is read through it, once. The web layer reads it whole into `body` for every route except
+    /// those that take it as a stream (`BodyStream`, a form with `SpooledFile`). Null otherwise.
+    BodyReader bodyReader;
     bool keepAlive = true;
     /// HTTP/1.1 (or HTTP/2). False for an HTTP/1.0 client, which cannot be sent a chunked body.
     bool http11 = true;

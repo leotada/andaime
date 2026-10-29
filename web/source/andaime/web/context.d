@@ -9,6 +9,60 @@ import andaime.http.response : ResponseSink;
 import andaime.http.websocket : WsDeflateFactory;
 import andaime.http.ip : IpAddress, Cidr, parseIp;
 import andaime.web.dto : FieldError, FieldErrors;
+import andaime.web.uploads : SpoolConfig;
+
+/// Per-Context state of the request body (see `Context.bodyState`).
+package(andaime) final class BodyState
+{
+    size_t pos;                  /// bytes of a buffered `request.body` that `readBodyInto` already handed out
+    const(SpoolConfig)* spool;   /// set by `App.handle`: where `SpooledFile` parts go
+    string[] spooledFiles;       /// temporary files of this request, removed when `App.handle` ends
+    ulong limit;                 /// the route's body limit (`App.bodyLimit`), 0 = none; set by `App.handle`
+    ulong taken;                 /// bytes read from `request.bodyReader`, checked against `limit`
+    bool tooLarge;               /// the body is over `limit`: the route answers 413 and the body stays unread
+
+    void reset() nothrow @nogc
+    {
+        pos = 0;
+        limit = taken = 0;
+        tooLarge = false;
+    }
+
+    /// Counts `n` more bytes read from a body still arriving; over the limit is a 413 (the rest stays unread).
+    void count(size_t n)
+    {
+        taken += n;
+        if (limit && taken > limit)
+        {
+            import andaime.web.params : HttpError;
+
+            tooLarge = true;
+            throw new HttpError(413, "request body too large");
+        }
+    }
+}
+
+/// `reader.read`, with a body that broke on the way (`BodyError`: bad chunked framing, above the engine's limit, too
+/// slow) turned into the answer it deserves.
+private size_t pull(BodyReader reader, scope ubyte[] into)
+{
+    try
+        return reader.read(into);
+    catch (BodyError e)
+    {
+        import andaime.web.params : HttpError;
+
+        throw new HttpError(e.status, e.status == 413 ? "request body too large"
+            : e.status == 408 ? "request body too slow" : "malformed request body");
+    }
+}
+
+/// A request body's buffer: a `NO_SCAN` GC block like the engine's (see `andaime.http.buffer`).
+private ubyte[] bodyBlock(size_t n) nothrow @trusted
+{
+    // sound: allocBlock returns a fresh block of exactly n bytes that nothing else references
+    return n ? (cast(ubyte*) allocBlock(n))[0 .. n] : null;
+}
 
 /// Values of the route's `{params}`, in the order they appear in the pattern.
 /// The handler wrapper knows at compile time which index is which name.
@@ -287,9 +341,18 @@ final class Context
 
     /// `andaime.log`'s view of this request: its id (a method, so the logger takes it as a delegate without allocating).
     package(andaime) const(char)[] logRequestId() nothrow => requestIdForLog;
-    package char[64] allowBuf; // value of the 405 Allow header
+    package char[48] allowBuf; // value of the 405 Allow header: at most the 7 methods, 43 bytes
     private char[512] scratchBuf;
     private size_t scratchUsed;
+    // what reading the body needs, created once per Context (a separate object: Context must stay within 4096 bytes)
+    private BodyState bodyState_;
+
+    package(andaime) BodyState bodyState() nothrow
+    {
+        if (bodyState_ is null)
+            bodyState_ = new BodyState;
+        return bodyState_;
+    }
 
     /// Temporary memory valid until the end of the request (to build
     /// response header values without allocating). Past 512 bytes, it falls back to the GC.
@@ -319,6 +382,71 @@ final class Context
         errors.clear();
         locals.reset();
         scratchUsed = 0;
+        if (bodyState_ !is null)
+            bodyState_.reset();
+    }
+
+    // ---- the request body
+
+    /// Copies up to `into.length` bytes of the body into `into` and returns how many; 0 = the end. The same for a
+    /// buffered body and for one still arriving (`request.bodyReader`); `BodyStream` is the handler-facing view.
+    size_t readBodyInto(scope ubyte[] into)
+    {
+        if (request.bodyReader !is null)
+        {
+            immutable got = pull(request.bodyReader, into);
+            bodyState.count(got);
+            return got;
+        }
+        auto st = bodyState;
+        immutable left = request.body.length - st.pos;
+        immutable n = into.length < left ? into.length : left;
+        into[0 .. n] = request.body[st.pos .. st.pos + n];
+        st.pos += n;
+        return n;
+    }
+
+    /// Bytes of the body `readBodyInto` has not handed out yet.
+    ulong bodyUnread() const
+    {
+        if (request.bodyReader !is null)
+            return request.bodyReader.unread;
+        return request.body.length - (bodyState_ is null ? 0 : bodyState_.pos);
+    }
+
+    /// The body in memory: a body still arriving (`request.bodyReader`) is read, what is left of it, into one buffer of
+    /// its size, which becomes `request.body`. `App` does this before the middleware for every route that does not
+    /// stream its body, so a middleware or handler that reads `request.body` sees it whole.
+    const(ubyte)[] readBody()
+    {
+        auto reader = request.bodyReader;
+        if (reader is null)
+            return request.body[(bodyState_ is null ? 0 : bodyState_.pos) .. $];
+        // a chunked body does not say its size: the block starts at 1 MiB and doubles (the route's limit and the
+        // engine's `maxBodyBytes` bound it)
+        immutable known = reader.unread != unknownLength;
+        auto block = bodyBlock(known ? cast(size_t) reader.unread : 1 << 20);
+        size_t got;
+        for (;;)
+        {
+            if (got == block.length)
+            {
+                if (known)
+                    break;
+                auto bigger = bodyBlock(block.length * 2);
+                bigger[0 .. got] = block[];
+                block = bigger;
+            }
+            immutable n = pull(reader, block[got .. $]);
+            if (n == 0)
+                break;
+            bodyState.count(n);
+            got += n;
+        }
+        request.body = block[0 .. got];
+        request.bodyReader = null;
+        bodyState.pos = 0;
+        return request.body;
     }
 
     // ---- shortcuts for middlewares and handlers that receive `Context`

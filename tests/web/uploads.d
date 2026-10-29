@@ -219,3 +219,32 @@ unittest
     assert("application/x-www-form-urlencoded" in noteBody.object);
     assert("multipart/form-data" in noteBody.object);
 }
+
+struct Spooled
+{
+    @maxLength(1000) SpooledFile doc;
+    SpooledFile[] extra;
+}
+
+string spooled(Form!Spooled f) => f.doc.filename;
+
+string rawBody(BodyStream b) => "x";
+
+@system unittest
+{
+    // SpooledFile is documented like UploadedFile; a BodyStream is an octet-stream body
+    auto app = new App;
+    app.post!("/spooled", spooled);
+    app.post!("/raw", rawBody);
+    app.serveOpenApi();
+    auto doc = parseJSON(TestClient(app).get("/openapi.json").body);
+    assert("multipart/form-data" in doc["paths"]["/spooled"]["post"]["requestBody"]["content"].object);
+    auto sch = doc["components"]["schemas"]["Spooled"];
+    assert(sch["properties"]["doc"]["format"].str == "binary");
+    assert(sch["properties"]["doc"]["maxLength"].integer == 1000);
+    assert(sch["properties"]["extra"]["items"]["format"].str == "binary");
+    assert(sch["required"].array.length == 1 && sch["required"][0].str == "doc");
+    auto raw = doc["paths"]["/raw"]["post"]["requestBody"];
+    assert(raw["required"].boolean);
+    assert(raw["content"]["application/octet-stream"]["schema"]["format"].str == "binary");
+}

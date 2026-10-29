@@ -151,6 +151,276 @@ string parseMultipart(const(ubyte)[] body, scope const(char)[] boundary, out Mul
     }
 }
 
+/// What `MultipartScanner.next` found.
+enum MultipartEvent : ubyte
+{
+    needMore, /// nothing more can be decided without more bytes (or the body is over: see `eof`)
+    part,     /// a part starts: its head is in `part` (no data)
+    data,     /// bytes of the current part's content, in `data`
+    partEnd,  /// the current part ended
+    done,     /// the closing delimiter: there are no more parts (what follows it is the epilogue)
+    error,    /// the body is malformed or over a limit: `MultipartScanner.error`
+}
+
+/// `multipart/form-data` decoded incrementally, for a body that arrives in pieces: the same grammar and limits as
+/// `parseMultipart`, as a stream of events. The caller keeps a window of the bytes it received and has not consumed
+/// yet, and calls `next` with it; `next` reports how many bytes of the window it used, and the caller drops them
+/// before the next call. A part's head must fit in the window (it is at most `maxMultipartHeaderBytes`); its content
+/// comes out in slices of the window, so a window of a few KiB decodes a body of any size.
+///
+///     MultipartScanner s = MultipartScanner(boundary);
+///     for (;;) {
+///         auto ev = s.next(window, eof, used, part, data);
+///         window = window[used .. $];       // (the caller compacts and refills its buffer here)
+///         if (ev == MultipartEvent.needMore) { if (eof) break; read more; continue; }
+///         ...
+///     }
+struct MultipartScanner
+{
+    /// Set when `next` returned `MultipartEvent.error`.
+    string error;
+
+    private enum State : ubyte { preamble, tail, closing, tailSpace, headers, data, finished, failed }
+
+    private string boundary;
+    private State state;
+    private bool started;  /// some bytes were consumed (a dash-boundary at window position 0 is then not at a line start)
+    private size_t count;  /// parts seen
+
+    this(string boundary)
+    {
+        this.boundary = boundary;
+        if (!validBoundary(boundary))
+            fail(badBoundary);
+    }
+
+    /// The next event from `window` (the bytes not consumed yet; `eof`: no more will come). `consumed` is how much of
+    /// `window` it used. `data` is a slice of `window`, valid until the caller drops or overwrites those bytes.
+    MultipartEvent next(const(ubyte)[] window, bool eof, out size_t consumed, ref MultipartPart part,
+        out const(ubyte)[] data)
+    {
+        for (;;)
+        {
+            size_t used;
+            immutable ev = step(window[consumed .. $], eof, used, part, data);
+            consumed += used;
+            if (ev != again)
+                return ev;
+        }
+    }
+
+    /// Internal: the state changed; `next` goes on with the rest of the window.
+    private enum MultipartEvent again = cast(MultipartEvent) 0xFF;
+
+    private MultipartEvent step(const(ubyte)[] window, bool eof, out size_t consumed, ref MultipartPart part,
+        out const(ubyte)[] data)
+    {
+        final switch (state)
+        {
+            case State.preamble: return preamble(window, eof, consumed);
+            case State.tail: return tail(window, eof, consumed);
+            case State.closing: return closing(window, eof, consumed);
+            case State.tailSpace: return tailSpace(window, eof, consumed);
+            case State.headers: return headers(window, eof, consumed, part);
+            case State.data: return content(window, eof, consumed, data);
+            case State.finished: return MultipartEvent.done;
+            case State.failed: return MultipartEvent.error;
+        }
+    }
+
+    private MultipartEvent fail(string why)
+    {
+        error = why;
+        state = State.failed;
+        return MultipartEvent.error;
+    }
+
+    private MultipartEvent moreOr(bool eof) => eof ? fail(malformedBody) : MultipartEvent.needMore;
+
+    /// Skips everything before the first dash-boundary at a line start.
+    private MultipartEvent preamble(scope const(ubyte)[] w, bool eof, out size_t consumed)
+    {
+        for (size_t p = 0; p < w.length; p++)
+        {
+            immutable atLine = (p == 0 && !started) || (p >= 2 && w[p - 2] == '\r' && w[p - 1] == '\n');
+            if (!atLine)
+                continue;
+            final switch (boundaryMatch(w, p, boundary, eof))
+            {
+                case Match.no:
+                    break;
+                case Match.yes:
+                    consumed = p + 2 + boundary.length;
+                    started = true;
+                    state = State.tail;
+                    return again;
+                case Match.unknown:
+                    return keepPreamble(w, p, consumed);
+            }
+        }
+        if (eof)
+            return fail(malformedBody);
+        return keepPreamble(w, w.length, consumed);
+    }
+
+    /// Drops the preamble before `p`, keeping the two bytes that tell whether `p` starts a line.
+    private MultipartEvent keepPreamble(scope const(ubyte)[] w, size_t p, out size_t consumed)
+    {
+        consumed = p > 2 ? p - 2 : 0;
+        if (consumed)
+            started = true;
+        return MultipartEvent.needMore;
+    }
+
+    /// Right after a dash-boundary: `--` (the close delimiter) or optional whitespace and CRLF (another part).
+    private MultipartEvent tail(scope const(ubyte)[] w, bool eof, out size_t consumed)
+    {
+        if (w.length == 0)
+            return moreOr(eof);
+        if (w[0] == '-')
+        {
+            if (w.length < 2)
+                return moreOr(eof);
+            if (w[1] == '-')
+            {
+                consumed = 2;
+                state = State.closing;
+                return again;
+            }
+        }
+        state = State.tailSpace;
+        return again;
+    }
+
+    private MultipartEvent closing(scope const(ubyte)[] w, bool eof, out size_t consumed)
+    {
+        size_t p;
+        while (p < w.length && isLwsp(w[p]))
+            p++;
+        consumed = p;
+        if (p == w.length)
+        {
+            if (!eof)
+                return MultipartEvent.needMore;
+        }
+        else if (w[p] != '\r' || (p + 1 < w.length && w[p + 1] != '\n'))
+            return fail(malformedBody);
+        else if (p + 1 == w.length && !eof)
+            return MultipartEvent.needMore;
+        else if (p + 1 == w.length)
+            return fail(malformedBody);
+        state = State.finished;
+        return MultipartEvent.done;
+    }
+
+    private MultipartEvent tailSpace(scope const(ubyte)[] w, bool eof, out size_t consumed)
+    {
+        size_t p;
+        while (p < w.length && isLwsp(w[p]))
+            p++;
+        consumed = p;
+        if (w.length - p < 2)
+            return moreOr(eof);
+        if (w[p] != '\r' || w[p + 1] != '\n')
+            return fail(malformedBody);
+        if (count >= maxMultipartParts)
+            return fail(tooManyParts);
+        consumed = p + 2;
+        state = State.headers;
+        return again;
+    }
+
+    /// A part's head, once its blank line is in the window.
+    private MultipartEvent headers(const(ubyte)[] w, bool eof, out size_t consumed, ref MultipartPart part)
+    {
+        ptrdiff_t end = -1;
+        if (w.length >= 2 && w[0] == '\r' && w[1] == '\n')
+            end = 2;
+        else
+            foreach (p; 0 .. w.length < 4 ? 0 : w.length - 3)
+                if (w[p] == '\r' && w[p + 1] == '\n' && w[p + 2] == '\r' && w[p + 3] == '\n')
+                {
+                    end = p + 4;
+                    break;
+                }
+        if (end < 0)
+        {
+            if (w.length > maxMultipartHeaderBytes + 4)
+                return fail(malformedBody);
+            return moreOr(eof);
+        }
+        part = MultipartPart.init;
+        size_t p;
+        string why;
+        if (!readPartHeaders(w[0 .. end], p, part, why))
+            return fail(why);
+        consumed = p;
+        count++;
+        state = State.data;
+        return MultipartEvent.part;
+    }
+
+    /// The content up to the next delimiter (CRLF and a dash-boundary).
+    private MultipartEvent content(const(ubyte)[] w, bool eof, out size_t consumed, out const(ubyte)[] data)
+    {
+        for (size_t p = 0; p < w.length; p++)
+        {
+            if (w[p] != '\r')
+                continue;
+            if (p + 1 == w.length)
+                return eof ? fail(malformedBody) : giveData(w, p, consumed, data);
+            if (w[p + 1] != '\n')
+                continue;
+            final switch (boundaryMatch(w, p + 2, boundary, eof))
+            {
+                case Match.no:
+                    break;
+                case Match.yes:
+                    if (p > 0)
+                        return giveData(w, p, consumed, data);
+                    consumed = 2 + 2 + boundary.length;
+                    state = State.tail;
+                    return MultipartEvent.partEnd;
+                case Match.unknown:
+                    return giveData(w, p, consumed, data);
+            }
+        }
+        if (eof)
+            return fail(malformedBody);
+        return giveData(w, w.length, consumed, data);
+    }
+
+    private static MultipartEvent giveData(const(ubyte)[] w, size_t n, out size_t consumed,
+        out const(ubyte)[] data)
+    {
+        if (n == 0)
+            return MultipartEvent.needMore;
+        consumed = n;
+        data = w[0 .. n];
+        return MultipartEvent.data;
+    }
+}
+
+private enum Match : ubyte { no, yes, unknown }
+
+/// `boundaryAt` for a window that may end early: `unknown` when the bytes so far agree but the window ends before
+/// the character that decides (and more bytes may come).
+private Match boundaryMatch(scope const(ubyte)[] w, size_t p, scope const(char)[] boundary, bool eof) pure nothrow @nogc
+{
+    immutable need = 2 + boundary.length;
+    immutable avail = p <= w.length ? w.length - p : 0;
+    foreach (k; 0 .. avail < need ? avail : need)
+    {
+        immutable char want = k < 2 ? '-' : boundary[k - 2];
+        if (w[p + k] != cast(ubyte) want)
+            return Match.no;
+    }
+    if (avail <= need)
+        return avail == need && eof ? Match.yes : (eof ? Match.no : Match.unknown);
+    immutable ubyte n = w[p + need];
+    return n == ' ' || n == '\t' || n == '\r' || n == '-' ? Match.yes : Match.no;
+}
+
 private enum Tail : ubyte { part, close, bad }
 
 private bool isBoundaryChar(char c) pure nothrow @nogc
@@ -316,6 +586,31 @@ private const(char)[] asText(return scope const(ubyte)[] b) pure nothrow @nogc @
 private bool readPart(const(ubyte)[] body, scope const(char)[] boundary, ref size_t p,
     ref MultipartPart[] parts, out string error)
 {
+    MultipartPart part;
+    if (!readPartHeaders(body, p, part, error))
+        return false;
+    immutable dataStart = p;
+    immutable delim = findNext(body, dataStart, boundary);
+    if (delim < 0)
+    {
+        error = malformedBody;
+        return false;
+    }
+    part.data = body[dataStart .. cast(size_t) delim];
+    immutable next = cast(size_t) delim + 2 + 2 + boundary.length;
+    if (next <= p)
+    {
+        error = malformedBody;
+        return false;
+    }
+    p = next;
+    parts ~= part;
+    return true;
+}
+
+/// Reads the header lines of a part from `p` through the blank line that ends them, into `part` (no data).
+private bool readPartHeaders(const(ubyte)[] body, ref size_t p, ref MultipartPart part, out string error)
+{
     immutable headerStart = p;
     bool sawDisp, sawType, sawCte;
     const(char)[] disposition, typeValue, cte;
@@ -408,30 +703,12 @@ private bool readPart(const(ubyte)[] body, scope const(char)[] boundary, ref siz
         error = malformedBody;
         return false;
     }
-    MultipartPart part;
     if (!parseDisposition(disposition, part, error))
         return false;
     if (sawType && !parsePartType(typeValue, part, error))
         return false;
     if (sawCte && !parseCte(cte, error))
         return false;
-
-    immutable dataStart = p;
-    immutable delim = findNext(body, dataStart, boundary);
-    if (delim < 0)
-    {
-        error = malformedBody;
-        return false;
-    }
-    part.data = body[dataStart .. cast(size_t) delim];
-    immutable next = cast(size_t) delim + 2 + 2 + boundary.length;
-    if (next <= p)
-    {
-        error = malformedBody;
-        return false;
-    }
-    p = next;
-    parts ~= part;
     return true;
 }
 
@@ -790,4 +1067,114 @@ unittest
         huge ~= "a";
     huge ~= "\"\r\n\r\nx\r\n--z--\r\n";
     assert(parseMultipart(cast(const(ubyte)[]) huge, "z", parts) == malformedBody);
+}
+
+version (unittest)
+{
+    /// Decodes `body` with `MultipartScanner`, receiving it `step` bytes at a time into a window of `windowBytes`.
+    private string scanInSteps(const(ubyte)[] body, string boundary, size_t step, out MultipartPart[] parts,
+        size_t windowBytes = maxMultipartHeaderBytes + 64)
+    {
+        auto s = MultipartScanner(boundary);
+        ubyte[] window = new ubyte[windowBytes];
+        size_t have, fed;
+        for (;;)
+        {
+            immutable eof = fed == body.length;
+            size_t used;
+            MultipartPart head;
+            const(ubyte)[] data;
+            immutable ev = s.next(window[0 .. have], eof, used, head, data);
+            if (ev == MultipartEvent.part)
+                parts ~= head;
+            else if (ev == MultipartEvent.data)
+                parts[$ - 1].data ~= data;
+            else if (ev == MultipartEvent.done)
+                return null;
+            else if (ev == MultipartEvent.error)
+                return s.error;
+            window[0 .. have - used] = window[used .. have].dup;
+            have -= used;
+            if (ev == MultipartEvent.needMore && used == 0)
+            {
+                assert(!eof, "the scanner asked for more after the end");
+                assert(have < window.length, "the scanner filled the window without deciding");
+                immutable n = step < body.length - fed ? step : body.length - fed;
+                immutable room = window.length - have;
+                immutable take = n < room ? n : room;
+                window[have .. have + take] = body[fed .. fed + take];
+                have += take;
+                fed += take;
+            }
+        }
+    }
+}
+
+unittest // the scanner agrees with parseMultipart, whatever pieces the body arrives in
+{
+    static immutable string[2][] cases = [
+        ["z", "preamble\r\n--z\r\nContent-Disposition: form-data; name=\"title\"\r\n\r\nhola\r\n--z\r\n"
+            ~ "Content-Disposition: form-data; name=\"file\"; filename=\"a b.txt\"\r\nContent-Type: image/png\r\n"
+            ~ "Content-Transfer-Encoding: binary\r\n\r\nhi\r\n--z--\r\nepilogue"],
+        ["abc", "--abc\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nxx--abc\r\nzz\r\n--abcX\r\n--abc--\r\n"],
+        ["abc", "--abc  \r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n\r\r\n\r\n--ab\r\n--abc\t--  \r\n"],
+        ["z", "--z\r\nContent-Disposition: form-data; name=\"a\"\r\nContent-Type: text/plain; charset=\"UTF-8\"\r\n\r\n"
+            ~ "\r\n--z--"],
+        ["z", "--z--\r\n"],
+        ["z", "--z--"],
+        ["z", "--z-- x"],
+        ["z", "--z-"],
+        ["z", "--z\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nhi"],
+        ["z", "--z\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nhi\r"],
+        ["z", "--z\nContent-Disposition: form-data; name=\"a\"\n\nhi\n--z--\n"],
+        ["z", "--z\r\nContent-Disposition: form-data; name=\"a\"\r\nContent-Transfer-Encoding: base64\r\n\r\nx\r\n--z--\r\n"],
+        ["z", "--z\r\n\r\nx\r\n--z--\r\n"],
+        ["z", "--z\r\n Content-Disposition: form-data; name=\"a\"\r\n\r\nx\r\n--z--\r\n"],
+        ["z", "x--z\r\n--z\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\n\r\n--z\r\n"
+            ~ "Content-Disposition: form-data; name=\"b\"\r\n\r\n--z\r\n--z--\r\n"],
+        ["z", "no boundary at all"],
+        ["z", ""],
+        ["q", "--z\r\n"],
+        ["a b", "--a b\r\n"],
+    ];
+    string many, huge = "--z\r\nContent-Disposition: form-data; name=\"";
+    foreach (i; 0 .. maxMultipartParts + 1)
+        many ~= "--z\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nx\r\n";
+    foreach (_; 0 .. maxMultipartHeaderBytes)
+        huge ~= "a";
+    huge ~= "\"\r\n\r\nx\r\n--z--\r\n";
+    string[2][] all = cases.dup;
+    all ~= [cast(string) "z", many ~ "--z--\r\n"];
+    all ~= [cast(string) "z", huge];
+
+    foreach (ref c; all)
+    {
+        auto body = cast(const(ubyte)[]) c[1];
+        MultipartPart[] expected;
+        immutable expectedError = parseMultipart(body, c[0], expected);
+        foreach (step; [1, 2, 3, 5, 7, 64, 100_000])
+        {
+            MultipartPart[] got;
+            immutable error = scanInSteps(body, c[0], step, got);
+            assert(error == expectedError, c[1]);
+            if (error !is null)
+                continue;
+            assert(got.length == expected.length, c[1]);
+            foreach (k, ref part; got)
+            {
+                assert(part.name == expected[k].name && part.filename == expected[k].filename, c[1]);
+                assert(part.contentType == expected[k].contentType && part.charset == expected[k].charset, c[1]);
+                assert(part.data == expected[k].data, c[1]);
+            }
+        }
+    }
+
+    // A small window decodes a large part: the content comes out as it arrives.
+    string big = "--z\r\nContent-Disposition: form-data; name=\"f\"; filename=\"x\"\r\n\r\n";
+    foreach (i; 0 .. 100_000)
+        big ~= cast(char) ('a' + i % 26);
+    big ~= "\r\n--z--\r\n";
+    MultipartPart[] parts;
+    assert(scanInSteps(cast(const(ubyte)[]) big, "z", 4096, parts) is null);
+    assert(parts.length == 1 && parts[0].data.length == 100_000 && parts[0].data[$ - 1] == 'a' + 99_999 % 26);
 }

@@ -121,6 +121,46 @@ Response owned()
 
 Response splitting(string to) => Response.redirect(to);
 
+/// Reads 4 KiB every 100 ms (40 KB/s): a handler slower than a fast client.
+string slowReader(BodyStream body)
+{
+    import std.conv : to;
+
+    ubyte[4 << 10] buf;
+    ulong total;
+    size_t n;
+    while ((n = body.read(buf[])) > 0)
+    {
+        total += n;
+        sleep(msecs(100));
+    }
+    return total.to!string;
+}
+
+/// Reads a streamed body in 10 KiB pieces: "<bytes>:<sum of the bytes>".
+string streamSum(BodyStream body)
+{
+    import std.conv : to;
+
+    ubyte[10 << 10] buf;
+    ulong total, sum;
+    size_t n;
+    while ((n = body.read(buf[])) > 0)
+    {
+        total += n;
+        foreach (b; buf[0 .. n])
+            sum += b;
+    }
+    return total.to!string ~ ":" ~ sum.to!string;
+}
+
+/// Reads three bytes of the body and answers: the rest is never read.
+string firstThree(BodyStream body)
+{
+    ubyte[3] buf;
+    return (cast(const(char)[]) buf[0 .. body.read(buf[])]).idup;
+}
+
 App buildApp()
 {
     auto app = new App;
@@ -144,6 +184,9 @@ App buildApp()
     app.get!("/off/{ms}", off);
     app.post!("/len", bodyLen);
     app.post!("/echo", echoBody);
+    app.post!("/stream", streamSum);
+    app.post!("/slowreader", slowReader);
+    app.post!("/first3", firstThree);
     return app;
 }
 
@@ -1172,6 +1215,239 @@ void testLargeBodies()
     ok("request bodies from 60 KB to the 1 MiB limit (above the buffer classes), 413 above it");
 }
 
+void testStreamedBodies()
+{
+    import std.algorithm : canFind;
+    import std.conv : to;
+
+    ServerConfig cfg;
+    cfg.limits.maxBodyBytes = 8 << 20;
+    cfg.headerTimeoutMs = 400;
+    cfg.bufferBodyBytes = 64 << 10;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+
+    auto big = new char[3 << 20];
+    ulong sum;
+    foreach (i, ref x; big)
+    {
+        x = cast(char)('a' + i % 23);
+        sum += x;
+    }
+    immutable expect = big.length.to!string ~ ":" ~ sum.to!string;
+    string headFor(string path, size_t n, string extra = "")
+        => "POST " ~ path ~ " HTTP/1.1\r\nHost: t\r\nContent-Length: " ~ n.to!string ~ "\r\n" ~ extra ~ "\r\n";
+
+    // 3 MiB read as it arrives (in pieces, with pauses), then the same connection serves the next request
+    auto c = dial(s.port);
+    c.tx(headFor("/stream", big.length) ~ big[0 .. 1000].idup);
+    foreach (k; 0 .. 6)
+    {
+        Thread.sleep(30.msecs);
+        immutable from = 1000 + k * (big.length - 1000) / 6;
+        immutable to_ = k == 5 ? big.length : 1000 + (k + 1) * (big.length - 1000) / 6;
+        c.tx(big[from .. to_].idup);
+    }
+    auto r = c.rx();
+    assert(r.status == 200 && r.body == expect && !r.closed, r.head ~ r.body);
+    c.tx("GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
+    assert(c.rx().body == "ok");
+
+    // a pipelined request right behind a streamed body, in one write, is served next
+    auto small = big[0 .. 100_000].idup;
+    ulong smallSum;
+    foreach (ch; small)
+        smallSum += ch;
+    c.tx(headFor("/stream", small.length) ~ small ~ "GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 200 && r.body == "100000:" ~ smallSum.to!string, r.head ~ r.body);
+    r = c.rx();
+    assert(r.status == 200 && r.body == "ok", "the request after a streamed body must be served: " ~ r.head);
+
+    // a route that does not stream gets the body whole (the web layer reads it before the handler)
+    c.tx(headFor("/len", small.length) ~ small);
+    r = c.rx();
+    assert(r.status == 200 && r.body == "100000", r.head ~ r.body);
+    c.hang();
+
+    // Expect: 100-continue is answered when the handler first reads, not before
+    c = dial(s.port);
+    c.tx(headFor("/stream", small.length, "Expect: 100-continue\r\n"));
+    r = c.rx();
+    assert(r.status == 100, r.head);
+    c.tx(small);
+    r = c.rx();
+    assert(r.status == 200 && r.body == "100000:" ~ smallSum.to!string, r.head);
+    c.hang();
+
+    // a handler that answers without reading the whole body: the response says Connection: close and reaches the
+    // client even while it is still sending (no reset), then the connection ends
+    c = dial(s.port);
+    c.tx(headFor("/first3", big.length) ~ big[0 .. 200_000].idup);
+    r = c.rx();
+    assert(r.status == 200 && r.body == big[0 .. 3] && r.closed, r.head ~ r.body);
+    char[64] tmp;
+    assert(waitFor(() => rd(c.fd, tmp.ptr, tmp.length) <= 0, 3000), "the connection should end");
+    c.hang();
+
+    // a client that stops sending in the middle of the body: the request is cancelled after headerTimeoutMs
+    c = dial(s.port);
+    c.tx(headFor("/stream", big.length) ~ big[0 .. 100_000].idup);
+    immutable t0 = MonoTime.currTime;
+    r = c.rx();
+    assert(r.status == 0 && r.closed, r.head);
+    assert(MonoTime.currTime - t0 < 2.seconds, "a stalled body must not hold the request");
+    c.hang();
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 1000));
+
+    // a client that goes away in the middle of the body: the fiber is released
+    c = dial(s.port);
+    c.tx(headFor("/stream", big.length) ~ big[0 .. 100_000].idup);
+    assert(waitFor(() => s.loop.stats().inFlight == 1, 1000));
+    c.hang();
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 1000), "the fiber waiting for the body must be cancelled");
+
+    // the body limit still applies before anything is read
+    c = dial(s.port);
+    c.tx(headFor("/stream", (8 << 20) + 1));
+    assert(c.rx().status == 413);
+    c.hang();
+    ok("streamed request bodies: read as they arrive, keep-alive and pipelining after them, 100-continue at the first "
+        ~ "read, early response, stalled and departed clients, limit");
+}
+
+void testStreamedChunkedBodies()
+{
+    import std.conv : to;
+
+    ServerConfig cfg;
+    cfg.limits.maxBodyBytes = 8 << 20;
+    cfg.headerTimeoutMs = 400;
+    cfg.bufferBodyBytes = 64 << 10;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+    enum head = "POST /stream HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n\r\n";
+
+    auto big = new char[3 << 20];
+    ulong sum;
+    foreach (i, ref x; big)
+    {
+        x = cast(char)('a' + i % 23);
+        sum += x;
+    }
+    // 3 MiB in 16 KiB chunks, sent in six writes with pauses: read as they arrive, the buffer does not grow to the
+    // body, and the connection serves the next request
+    immutable framed = chunkify(big.idup, 16 << 10);
+    auto c = dial(s.port);
+    c.tx(head);
+    foreach (k; 0 .. 6)
+    {
+        c.tx(framed[k * framed.length / 6 .. (k + 1) * framed.length / 6]);
+        Thread.sleep(30.msecs);
+    }
+    auto r = c.rx();
+    assert(r.status == 200 && r.body == big.length.to!string ~ ":" ~ sum.to!string && !r.closed, r.head ~ r.body);
+    c.tx("GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
+    assert(c.rx().body == "ok");
+
+    // a pipelined request right behind the last chunk, in the same write, is served next
+    auto small = big[0 .. 100_000].idup;
+    ulong smallSum;
+    foreach (ch; small)
+        smallSum += ch;
+    c.tx(head ~ chunkify(small, 7_000) ~ "GET /fast HTTP/1.1\r\nHost: t\r\n\r\n");
+    r = c.rx();
+    assert(r.status == 200 && r.body == "100000:" ~ smallSum.to!string, r.head ~ r.body);
+    r = c.rx();
+    assert(r.status == 200 && r.body == "ok", "the request after a streamed chunked body must be served: " ~ r.head);
+
+    // a route that does not stream gets it whole (read by the web layer without knowing its size up front)
+    c.tx("POST /len HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n\r\n" ~ framed);
+    r = c.rx();
+    assert(r.status == 200 && r.body == big.length.to!string, r.head ~ r.body);
+    c.hang();
+
+    // framing that breaks after the request started: 400, and the connection ends
+    immutable open = chunkify(small, 7_000)[0 .. $ - 5]; // without the last chunk
+    c = dial(s.port);
+    c.tx(head ~ open ~ "zz\r\n");
+    r = c.rx();
+    assert(r.status == 400 && r.closed, r.head ~ r.body);
+    c.hang();
+
+    // a chunk that would take the body above maxBodyBytes: 413 when it is announced, before its bytes
+    c = dial(s.port);
+    c.tx(head ~ open ~ "800000\r\n");
+    r = c.rx();
+    assert(r.status == 413 && r.closed, r.head ~ r.body);
+    c.hang();
+
+    // a client that stops in the middle: cancelled after headerTimeoutMs, the fiber released
+    c = dial(s.port);
+    c.tx(head ~ open);
+    immutable t0 = MonoTime.currTime;
+    r = c.rx();
+    assert(r.status == 0 && r.closed, r.head);
+    assert(MonoTime.currTime - t0 < 2.seconds, "a stalled chunked body must not hold the request");
+    c.hang();
+    assert(waitFor(() => s.loop.stats().inFlight == 0, 1000));
+    ok("streamed chunked bodies: past bufferBodyBytes read as they arrive, pipelining after the last chunk, buffered "
+        ~ "for a route that does not stream, bad framing 400 and the limit 413 mid-body, stalled clients cancelled");
+}
+
+void testMinBodyRate()
+{
+    import std.array : replicate;
+    import std.conv : to;
+
+    ServerConfig cfg;
+    cfg.bufferBodyBytes = 1 << 10;
+    cfg.minBodyRate = 100_000; // 100 KB/s, so a test trickle is far below it
+    cfg.minBodyRateGraceMs = 300;
+    cfg.headerTimeoutMs = 3000;
+    auto s = start(cfg);
+    scope (exit) stop(s);
+    string trickle(ref Client c, int pieces, string piece)
+    {
+        foreach (_; 0 .. pieces)
+        {
+            Thread.sleep(100.msecs);
+            if (sd(c.fd, piece.ptr, piece.length) <= 0)
+                return "closed";
+        }
+        return "open";
+    }
+
+    // a streamed body arriving at 100 B/s: 408 once the grace period is over, and the connection ends
+    auto c = dial(s.port);
+    c.tx("POST /stream HTTP/1.1\r\nHost: t\r\nContent-Length: 100000\r\n\r\n" ~ "x".replicate(10));
+    immutable t0 = MonoTime.currTime;
+    trickle(c, 8, "xxxxxxxxxx");
+    auto r = c.rx();
+    assert(r.status == 408 && r.closed, r.head ~ r.body);
+    assert(MonoTime.currTime - t0 < 2.seconds);
+    c.hang();
+
+    // a chunked body trickling while it is still buffered: the same
+    c = dial(s.port);
+    c.tx("POST /len HTTP/1.1\r\nHost: t\r\nTransfer-Encoding: chunked\r\n\r\n");
+    immutable t1 = MonoTime.currTime;
+    trickle(c, 8, "1\r\nx\r\n");
+    r = c.rx();
+    assert(r.status == 408 && r.closed, r.head ~ r.body);
+    assert(MonoTime.currTime - t1 < 2.seconds, "the rate, not headerTimeoutMs (3 s), must end it");
+    c.hang();
+
+    // a fast client and a handler slower than the rate: only time spent waiting for the client counts, so it passes
+    auto body_ = "y".replicate(64 << 10);
+    c = dial(s.port);
+    c.tx("POST /slowreader HTTP/1.1\r\nHost: t\r\nContent-Length: " ~ body_.length.to!string ~ "\r\n\r\n" ~ body_);
+    r = c.rx();
+    assert(r.status == 200 && r.body == body_.length.to!string, r.head ~ r.body);
+    c.hang();
+    ok("minimum body rate: a trickle gets 408 (streamed, and chunked while buffered); a slow handler does not");
+}
+
 void testOffload()
 {
     // pool configured in main: 2 threads, queue of 2
@@ -1246,5 +1522,8 @@ void main()
     testOffload();
     testExpectContinue();
     testLargeBodies();
+    testStreamedBodies();
+    testStreamedChunkedBodies();
+    testMinBodyRate();
     printf("all network tests passed\n");
 }

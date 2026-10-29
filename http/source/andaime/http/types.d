@@ -118,6 +118,24 @@ interface BodyReader
     ulong unread() const;
 }
 
+/// A body sent in pieces, for a body too large to hold (a file), by the HTTP client (`httpClient().put(url, source)`):
+/// `length` bytes, which `write` hands to its sink in pieces of any size. `write` may be called more than once (a
+/// pooled connection that turned out closed is retried on a new one), so each call starts from the beginning:
+///
+///     auto source = BodySource(size, (scope sink) {
+///         auto f = File(path, "rb");
+///         auto buf = new ubyte[64 << 10];
+///         for (auto got = f.rawRead(buf); got.length; got = f.rawRead(buf))
+///             sink(got);
+///     });
+///
+/// Writing more or fewer than `length` bytes fails the request (the connection is closed).
+struct BodySource
+{
+    ulong length;
+    void delegate(scope void delegate(scope const(ubyte)[]) @safe sink) @safe write;
+}
+
 /// View of an already-parsed request. Owns no memory.
 struct Request
 {

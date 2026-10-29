@@ -9,7 +9,7 @@
 /// - HTTP and HTTPS (OpenSSL loaded at run time, certificate and
 ///   host name verification on by default);
 /// - keep-alive connections reused per host (one pool per worker);
-/// - Content-Length, chunked and until-close bodies; size limit;
+/// - Content-Length, chunked and until-close bodies; size limit, or read in pieces (`open`, `BodySource`);
 /// - total deadline per request (`timeout`); cancelling the incoming request
 ///   closes the outgoing connection;
 /// - does not follow redirects (3xx comes back as a response; read `Location`).
@@ -82,6 +82,165 @@ struct ClientResponse
             if (eqFold(h.name, name))
                 return h.value;
         return null;
+    }
+}
+
+public import andaime.http.types : BodySource; // defined with the HTTP types, so andaime:web can make one too
+
+private enum BodyMode : ubyte { none, length, chunked, eof, memory }
+
+/// A response whose body is read as it arrives (see `HttpClient.open`). `close` it when done: the connection goes back
+/// to the pool if the body was read to the end, and is closed otherwise.
+final class ClientStream
+{
+    int status;
+    HeaderPair[] headers;
+    /// The body's size from `Content-Length`, or -1 when the server did not announce it (chunked, until close).
+    long contentLength = -1;
+
+    private HttpClient client;
+    private Conn c;
+    private BodyMode mode;
+    private ulong left;          // bytes left of the body (length) or of the current chunk (chunked)
+    private bool done, keepAlive, chunkEnd;
+    private Duration step;       // each wait gets this much (zero: all share `deadline`)
+    private MonoTime deadline;
+    private string mem;          // the body, from a test transport
+    private size_t memPos;
+
+    private this() pure nothrow @safe {}
+
+    bool ok() const pure nothrow @safe @nogc => status >= 200 && status < 300;
+
+    /// Value of the first header `name` (case-insensitive), or null.
+    string header(const(char)[] name) const pure nothrow @safe
+    {
+        foreach (h; headers)
+            if (eqFold(h.name, name))
+                return h.value;
+        return null;
+    }
+
+    /// Reads the next piece of the body into `into` and returns its size: 0 at the end (or when `into` is empty). A
+    /// server that closes before the end throws `HttpClientError`; a wait past the timeout, `HttpClientTimeout`.
+    size_t read(scope ubyte[] into) @trusted
+    {
+        if (done || into.length == 0)
+            return 0;
+        final switch (mode)
+        {
+        case BodyMode.none:
+            done = true;
+            return 0;
+        case BodyMode.memory:
+            immutable n = into.length < mem.length - memPos ? into.length : mem.length - memPos;
+            into[0 .. n] = cast(const(ubyte)[]) mem[memPos .. memPos + n];
+            memPos += n;
+            done = memPos == mem.length;
+            return n;
+        case BodyMode.length:
+            immutable n = take(into[0 .. left < into.length ? cast(size_t) left : $]);
+            if (n == 0)
+                throw new HttpClientError("andaime.http: server closed in the middle of the body");
+            left -= n;
+            done = left == 0;
+            return n;
+        case BodyMode.eof:
+            immutable n = take(into);
+            done = n == 0;
+            return n;
+        case BodyMode.chunked:
+            if (left == 0 && !nextChunk())
+                return 0;
+            immutable n = take(into[0 .. left < into.length ? cast(size_t) left : $]);
+            if (n == 0)
+                throw new HttpClientError("andaime.http: server closed in the middle of the body");
+            left -= n;
+            return n;
+        }
+    }
+
+    /// The rest of the body, at most `max` bytes (more is an error).
+    package string readAll(size_t max) @trusted
+    {
+        if (mode == BodyMode.memory)
+        {
+            done = true;
+            return mem;
+        }
+        if (mode == BodyMode.length)
+        {
+            if (left > max)
+                throw new HttpClientError("andaime.http: response body larger than maxBody");
+            auto out_ = new ubyte[cast(size_t) left];
+            size_t got;
+            while (got < out_.length)
+                got += read(out_[got .. $]);
+            return cast(string) out_;
+        }
+        ubyte[] out_;
+        ubyte[8192] tmp;
+        for (;;)
+        {
+            immutable n = read(tmp[]);
+            if (n == 0)
+                break;
+            if (out_.length + n > max)
+                throw new HttpClientError("andaime.http: response body larger than maxBody");
+            out_ ~= tmp[0 .. n];
+        }
+        return cast(string) out_;
+    }
+
+    /// Ends the response: the connection goes back to the pool when the body was read to the end, else it is closed.
+    /// Calling it again does nothing.
+    void close() @trusted
+    {
+        if (c is null)
+            return;
+        auto conn = c;
+        c = null;
+        if (done && keepAlive && conn.rpos == conn.rend)
+            client.giveBack(conn);
+        else
+            conn.closeNow();
+    }
+
+    /// Bytes already buffered, else what the socket has (waiting for it).
+    private size_t take(scope ubyte[] into)
+    {
+        immutable have = c.rend - c.rpos;
+        if (have == 0)
+            return client.recvSome(c, into, HttpClient.nextWait(deadline, step));
+        immutable n = have < into.length ? have : into.length;
+        memcpy(into.ptr, c.rbuf.ptr + c.rpos, n);
+        c.rpos += n;
+        return n;
+    }
+
+    /// Reads the next chunk's size line (after the CRLF that ends the previous chunk); false at the last chunk, with
+    /// its trailers skipped.
+    private bool nextChunk()
+    {
+        if (chunkEnd && client.readLine(c, HttpClient.nextWait(deadline, step)).length != 0)
+            throw new HttpClientError("andaime.http: malformed chunk");
+        chunkEnd = true;
+        auto line = client.readLine(c, HttpClient.nextWait(deadline, step));
+        size_t semi = line.length;
+        foreach (i, ch; line)
+            if (ch == ';')
+            {
+                semi = i;
+                break;
+            }
+        left = parseHex(line[0 .. semi]);
+        if (left)
+            return true;
+        while (client.readLine(c, HttpClient.nextWait(deadline, step)).length)
+        {
+        }
+        done = true;
+        return false;
     }
 }
 
@@ -305,7 +464,7 @@ final class HttpClient
     }
 
     /// Closes the idle connections.
-    void closeIdle() nothrow
+    void closeIdle() nothrow @trusted // sound: closes connections this pool owns and forgets them
     {
         // byValue instead of foreach over the AA: older druntime's _aaApply is not nothrow
         foreach (list; idle.byValue)
@@ -314,7 +473,7 @@ final class HttpClient
         idle = null;
     }
 
-    size_t idleCount() const nothrow
+    size_t idleCount() const nothrow @trusted // sound: only counts
     {
         size_t n;
         foreach (list; idle.byValue)
@@ -379,10 +538,75 @@ final class HttpClient
     ClientResponse request(string method, string url, scope const(HeaderPair)[] headers, const(char)[] body_,
         Duration timeout = Duration.zero) @trusted
     {
-        auto u = parseUrl(url);
+        parseUrl(url);
         if (transportOverride !is null)
             return transportOverride.send(method, url, headers, cast(const(ubyte)[]) body_, timeout);
-        immutable deadline = MonoTime.currTime + (timeout > Duration.zero ? timeout : cfg.timeout);
+        auto s = start(method, url, headers, body_, BodySource.init, timeout, false);
+        scope (exit)
+            s.close();
+        ClientResponse r;
+        r.status = s.status;
+        r.headers = s.headers;
+        r.body = s.readAll(cfg.maxBody);
+        return r;
+    }
+
+    /// Any method, with a body sent in pieces (a file): see `BodySource`. The connection gets `timeout` as in the other
+    /// calls; after it, each wait (a piece sent, the head, a piece of the response) gets `timeout` of its own, so a
+    /// large body is not cut by a deadline sized for a small one.
+    ClientResponse request(string method, string url, scope const(HeaderPair)[] headers, BodySource body_,
+        Duration timeout = Duration.zero) @trusted
+    {
+        auto s = open(method, url, headers, body_, timeout);
+        scope (exit)
+            s.close();
+        ClientResponse r;
+        r.status = s.status;
+        r.headers = s.headers;
+        r.body = s.readAll(cfg.maxBody);
+        return r;
+    }
+
+    /// ditto, `PUT`.
+    ClientResponse put(string url, BodySource body_, scope const(HeaderPair)[] headers = null,
+        Duration timeout = Duration.zero) @trusted
+        => request("PUT", url, headers, body_, timeout);
+
+    /// ditto, `POST`.
+    ClientResponse post(string url, BodySource body_, scope const(HeaderPair)[] headers = null,
+        Duration timeout = Duration.zero) @trusted
+        => request("POST", url, headers, body_, timeout);
+
+    /// A request whose response body is read in pieces, as it arrives (a download passed on to a browser, a file
+    /// written to disk): the status and headers are ready when this returns; `read` hands the body over. `maxBody`
+    /// does not apply. `timeout` bounds the connection, the request and the wait for the head; then each wait (for a
+    /// piece of the body to send or to arrive) has a `timeout` of its own, since the pace may be a slow reader's.
+    /// Always `close` it:
+    ///
+    ///     auto s = httpClient().open("GET", url);
+    ///     scope (exit) s.close();
+    ///     ubyte[64 << 10] buf;
+    ///     size_t n;
+    ///     while ((n = s.read(buf[])) > 0)
+    ///         out_.write(buf[0 .. n]);
+    ClientStream open(string method, string url, scope const(HeaderPair)[] headers = null,
+        BodySource body_ = BodySource.init, Duration timeout = Duration.zero) @trusted
+    {
+        parseUrl(url);
+        if (transportOverride !is null)
+            return fakeStream(method, url, headers, body_, timeout);
+        return start(method, url, headers, null, body_, timeout, true);
+    }
+
+    /// Connects (or reuses a connection), sends the request and reads the response head; the body is left to the
+    /// stream. `stepped`: each wait after the head is sent gets `timeout` of its own instead of sharing one deadline.
+    private ClientStream start(string method, string url, scope const(HeaderPair)[] headers, const(char)[] inline,
+        BodySource source, Duration timeout, bool stepped)
+    {
+        auto u = parseUrl(url);
+        immutable wait = timeout > Duration.zero ? timeout : cfg.timeout;
+        immutable deadline = MonoTime.currTime + wait;
+        immutable step = stepped ? wait : Duration.zero;
         immutable idempotent = method == "GET" || method == "HEAD" || method == "PUT" || method == "DELETE"
             || method == "OPTIONS";
 
@@ -391,27 +615,46 @@ final class HttpClient
             auto c = takeIdle(u);
             if (c is null)
                 c = openConn(u, deadline);
-            bool good;
+            bool handedOver;
             scope (exit)
             {
-                if (!good)
+                if (!handedOver)
                     c.closeNow();
             }
             try
             {
-                auto r = exchange(c, u, method, headers, body_, deadline, good);
-                if (good)
-                    giveBack(c);
-                return r;
+                sendRequest(c, u, method, headers, inline, source, deadline, step);
+                auto s = readHead(c, method, step > Duration.zero ? MonoTime.currTime + step : deadline);
+                s.step = step;
+                s.deadline = deadline;
+                handedOver = true;
+                return s;
             }
             catch (StaleConn e)
             {
                 if (attempt == 0 && c.reused && idempotent)
                     continue; // a stale pooled connection: try again, on a new one
-                throw new HttpClientError("andaime.http: " ~ e.msg);
+                throw new HttpClientError(e.msg); // StaleConn's message has the prefix already
             }
         }
         assert(0);
+    }
+
+    /// `open` through a test transport: the body source is drained into one buffer and the reply is read from memory.
+    private ClientStream fakeStream(string method, string url, scope const(HeaderPair)[] headers, BodySource source,
+        Duration timeout)
+    {
+        ubyte[] sent;
+        if (source.write !is null)
+            source.write((scope const(ubyte)[] piece) { sent ~= piece; });
+        auto r = transportOverride.send(method, url, headers, sent, timeout);
+        auto s = new ClientStream;
+        s.status = r.status;
+        s.headers = r.headers;
+        s.mode = BodyMode.memory;
+        s.mem = r.body;
+        s.contentLength = cast(long) r.body.length;
+        return s;
     }
 
     // ------------------------------------------------------------ pool
@@ -723,12 +966,15 @@ final class HttpClient
 
     // ------------------------------------------------------------ request/response
 
-    private ClientResponse exchange(Conn c, ref const ParsedUrl u, string method, const(HeaderPair)[] headers,
-        const(char)[] body_, MonoTime deadline, ref bool reusable)
+    /// Sends the request: the head, then the body (`inline`, or the pieces of `source`, each with `step` to be sent
+    /// when it is set).
+    private void sendRequest(Conn c, ref const ParsedUrl u, string method, scope const(HeaderPair)[] headers,
+        const(char)[] inline, BodySource source, MonoTime deadline, Duration step)
     {
-        // ---- build and send
+        immutable streamed = source.write !is null;
+        immutable size = streamed ? cast(size_t) source.length : inline.length;
         char[] req;
-        req.reserve(256 + body_.length);
+        req.reserve(256 + (streamed ? 0 : inline.length));
         req ~= method;
         req ~= ' ';
         req ~= u.target;
@@ -756,20 +1002,41 @@ final class HttpClient
             req ~= h.value;
             req ~= "\r\n";
         }
-        if (body_.length || method == "POST" || method == "PUT" || method == "PATCH")
+        if (size || streamed || method == "POST" || method == "PUT" || method == "PATCH")
         {
             if (!hasCL)
             {
                 req ~= "Content-Length: ";
-                req ~= utoa(body_.length);
+                req ~= utoa(size);
                 req ~= "\r\n";
             }
         }
         req ~= "\r\n";
-        req ~= body_;
-        sendAll(c, req, deadline);
+        if (!streamed)
+        {
+            req ~= inline;
+            sendAll(c, req, deadline);
+            return;
+        }
+        sendAll(c, req, nextWait(deadline, step));
+        ulong sent;
+        source.write((scope const(ubyte)[] piece) @trusted {
+            if (piece.length > source.length - sent)
+                throw new HttpClientError("andaime.http: the body source wrote more than its length");
+            sendAll(c, cast(const(char)[]) piece, nextWait(deadline, step));
+            sent += piece.length;
+        });
+        if (sent != source.length)
+            throw new HttpClientError("andaime.http: the body source wrote less than its length");
+    }
 
-        // ---- head
+    /// The deadline of the next wait: its own `step` from now when set, else the request's.
+    private static MonoTime nextWait(MonoTime deadline, Duration step)
+        => step > Duration.zero ? MonoTime.currTime + step : deadline;
+
+    /// Reads the response head; the body is left to the returned stream.
+    private ClientStream readHead(Conn c, string method, MonoTime deadline)
+    {
         size_t headEnd;
         for (;;)
         {
@@ -791,10 +1058,14 @@ final class HttpClient
         ClientResponse r;
         parseHead(head, r);
 
-        // ---- body
-        bool chunked, hasLen, closeDelim;
+        auto s = new ClientStream;
+        s.client = this;
+        s.c = c;
+        s.status = r.status;
+        s.headers = r.headers;
+        bool chunked, hasLen;
         size_t length;
-        bool keepAlive = true;
+        s.keepAlive = true;
         foreach (h; r.headers)
         {
             if (eqFold(h.name, "transfer-encoding") && containsFold(h.value, "chunked"))
@@ -805,96 +1076,29 @@ final class HttpClient
                 length = parseSize(h.value);
             }
             else if (eqFold(h.name, "connection") && containsFold(h.value, "close"))
-                keepAlive = false;
+                s.keepAlive = false;
         }
+        s.contentLength = hasLen && !chunked ? cast(long) length : -1;
         immutable noBody = method == "HEAD" || r.status == 204 || r.status == 304 || (r.status >= 100 && r.status < 200);
-
         if (noBody)
         {
+            s.mode = BodyMode.none;
+            s.done = true;
         }
         else if (chunked)
-            r.body = readChunked(c, deadline);
+            s.mode = BodyMode.chunked;
         else if (hasLen)
         {
-            if (length > cfg.maxBody)
-                throw new HttpClientError("andaime.http: response body larger than maxBody");
-            r.body = readExact(c, length, deadline);
+            s.mode = BodyMode.length;
+            s.left = length;
+            s.done = length == 0;
         }
         else
         {
-            closeDelim = true;
-            r.body = readToEof(c, deadline);
+            s.mode = BodyMode.eof;
+            s.keepAlive = false;
         }
-        reusable = keepAlive && !closeDelim && c.rpos == c.rend;
-        return r;
-    }
-
-    private string readExact(Conn c, size_t n, MonoTime deadline)
-    {
-        auto out_ = new char[n];
-        size_t got;
-        immutable have = c.rend - c.rpos;
-        immutable take = have < n ? have : n;
-        memcpy(out_.ptr, c.rbuf.ptr + c.rpos, take);
-        c.rpos += take;
-        got = take;
-        while (got < n)
-        {
-            immutable m = recvSome(c, out_[got .. $], deadline);
-            if (m == 0)
-                throw new HttpClientError("andaime.http: server closed in the middle of the body");
-            got += m;
-        }
-        return cast(string) out_;
-    }
-
-    private string readToEof(Conn c, MonoTime deadline)
-    {
-        char[] out_;
-        out_ ~= c.rbuf[c.rpos .. c.rend];
-        c.rpos = c.rend = 0;
-        char[8192] tmp;
-        for (;;)
-        {
-            immutable m = recvSome(c, tmp[], deadline);
-            if (m == 0)
-                break;
-            if (out_.length + m > cfg.maxBody)
-                throw new HttpClientError("andaime.http: response body larger than maxBody");
-            out_ ~= tmp[0 .. m];
-        }
-        return cast(string) out_;
-    }
-
-    private string readChunked(Conn c, MonoTime deadline)
-    {
-        char[] out_;
-        for (;;)
-        {
-            auto line = readLine(c, deadline);
-            size_t semi = line.length;
-            foreach (i, ch; line)
-                if (ch == ';')
-                {
-                    semi = i;
-                    break;
-                }
-            immutable size = parseHex(line[0 .. semi]);
-            if (size == 0)
-            {
-                // trailers up to the empty line
-                for (;;)
-                    if (readLine(c, deadline).length == 0)
-                        break;
-                return cast(string) out_;
-            }
-            if (out_.length + size > cfg.maxBody)
-                throw new HttpClientError("andaime.http: response body larger than maxBody");
-            auto chunk = readExact(c, size, deadline);
-            out_ ~= chunk;
-            if (readLine(c, deadline).length != 0)
-                throw new HttpClientError("andaime.http: malformed chunk");
-        }
+        return s;
     }
 
     private const(char)[] readLine(Conn c, MonoTime deadline)

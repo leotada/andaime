@@ -17,6 +17,7 @@ module andaime.web.uploads 2025;
 
 @safe:
 
+import andaime.http.types : BodySource;
 import andaime.web.context : Context;
 import andaime.web.params : HttpError;
 
@@ -94,6 +95,20 @@ struct SpooledFile
         else
             r.mem = memory;
         return r;
+    }
+
+    /// The content as a request body for the HTTP client, read from the start each time it is sent, in 64 KiB pieces:
+    /// `httpClient().put(url, upload.bodySource())`. Use it within the request (the temporary file goes away after).
+    BodySource bodySource() const
+    {
+        const self = this; // the delegate outlives `this`, which may be on the caller's stack
+        return BodySource(size, (scope sink) {
+            auto r = self.open();
+            auto buf = new ubyte[64 << 10];
+            size_t n;
+            while ((n = r.read(buf)) > 0)
+                sink(buf[0 .. n]);
+        });
     }
 
     /// Puts the content in the file `dest` (replacing it): a rename when the temporary file is on the same file system,

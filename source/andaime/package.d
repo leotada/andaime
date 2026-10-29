@@ -15,7 +15,7 @@ public import andaime.engine.random : uuid4, uuid7;
 // Blocking work (DNS, CPU, C libs) and outgoing HTTP calls, both cooperative
 public import andaime.engine.offload : offload, configureOffload, PoolSaturated;
 public import andaime.engine.httpclient : httpClient, HttpClient, HttpClientConfig, HttpClientError,
-    HttpClientTimeout, ClientResponse, HeaderPair, HttpTransport, setHttpTransport;
+    HttpClientTimeout, ClientResponse, ClientStream, BodySource, HeaderPair, HttpTransport, setHttpTransport;
 public import andaime.engine.httpfake : FakeHttpClient, Expectation, RecordedRequest;
 public import andaime.engine.wsclient : wsConnect, WsClientOptions;
 // Is a native library installed? (startup and image checks)

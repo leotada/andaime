@@ -115,6 +115,19 @@ string readInPieces(Form!One form)
     return all.length.to!string ~ ":" ~ checksum(all).to!string;
 }
 
+/// Forwards the upload with the HTTP client (to a FakeHttpClient), from the spooled file, and checks what arrived.
+string forward(Form!One form)
+{
+    auto fake = new FakeHttpClient;
+    fake.expect("PUT", "https://bucket.example.com/f").respond(200);
+    fake.install();
+    scope (exit)
+        fake.uninstall();
+    httpClient().put("https://bucket.example.com/f", form.file.bodySource());
+    auto sent = fake.requests[0].body_;
+    return (form.file.onDisk ? "disk:" : "memory:") ~ sent.length.to!string ~ ":" ~ checksum(sent).to!string;
+}
+
 final class Files
 {
     @Post("/files") string send(Form!Upload form) => upload(form);
@@ -133,6 +146,7 @@ App build(string spoolDir)
     app.post!("/keep", keepPath);
     app.post!("/move", move);
     app.post!("/pieces", readInPieces);
+    app.post!("/forward", forward);
     app.post!("/capped", capped);
     app.group("/c").mount(new Files);
     return app;
@@ -221,6 +235,10 @@ private HeaderField[] mp() => [hdr("Content-Type", "multipart/form-data; boundar
     assert(cast(string) read(moveTo) == small);
 
     assert(c.post("/pieces", form(field("file", big, "p.bin"), field("note", "x")), mp()).body == "600000:" ~ sum);
+    auto fwd = c.post("/forward", form(field("note", "n"), field("file", big, "f.bin")), mp());
+    assert(fwd.body == "disk:600000:" ~ sum, fwd.status.to!string ~ " " ~ fwd.body);
+    assert(c.post("/forward", form(field("note", "n"), field("file", "tiny", "f.bin")), mp()).body
+        == "memory:4:" ~ checksum(cast(const(ubyte)[]) "tiny").to!string);
 
     // limits and errors go through the same rules as a buffered form
     r = c.post("/capped", form(field("file", big, "huge.bin")), mp());

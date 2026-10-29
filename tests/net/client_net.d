@@ -129,6 +129,167 @@ string itoa(int v)
 
 string fast() => "ok";
 
+// ------------------------------------------------------------ streamed bodies (open, BodySource)
+
+/// The byte at `offset` of the upstream's /stream body.
+ubyte patternAt(ulong offset) => cast(ubyte)(offset % 251);
+
+ulong allocated() @trusted
+{
+    import core.memory : GC;
+
+    return GC.allocatedInCurrentThread;
+}
+
+/// Reads /stream/<n><query> with `open`, checking every byte, in pieces that straddle the upstream's 64 KiB blocks.
+string download(string query, size_t n, Duration timeout = Duration.zero)
+{
+    import std.conv : to;
+
+    immutable before = allocated();
+    auto s = cli().open("GET", plainBase_ ~ "/stream/" ~ itoa(cast(int) n) ~ query, null, BodySource.init, timeout);
+    scope (exit)
+        s.close();
+    auto buf = new ubyte[10_007];
+    ulong got;
+    size_t k;
+    while ((k = s.read(buf)) > 0)
+    {
+        foreach (i, b; buf[0 .. k])
+            if (b != patternAt(got + i))
+                return "wrong byte at " ~ (got + i).to!string;
+        got += k;
+    }
+    if (got != n)
+        return "got " ~ got.to!string ~ " bytes";
+    immutable spent = allocated() - before;
+    if (spent > 1 << 20)
+        return "allocated " ~ spent.to!string ~ " bytes";
+    return s.contentLength == n ? "length" : s.contentLength == -1 ? "chunked" : "contentLength?";
+}
+
+/// 64 MiB with Content-Length, 10 MiB chunked; read to the end, the connection goes back to the pool.
+string downStreams()
+{
+    cli().closeIdle();
+    auto r = download("", 64 << 20) ~ " " ~ download("?chunked", 10 << 20);
+    return cli().idleCount == 1 ? r ~ " pooled" : r ~ " not pooled";
+}
+
+/// Closed before the end: the connection is closed, not pooled, and the next request works.
+string downEarly()
+{
+    cli().closeIdle();
+    auto s = cli().open("GET", plainBase_ ~ "/stream/" ~ itoa(8 << 20));
+    auto buf = new ubyte[100_000];
+    s.read(buf);
+    s.close();
+    s.close();
+    if (cli().idleCount != 0)
+        return "pooled a connection with a body left";
+    return cli().get(plainBase_ ~ "/hello").body;
+}
+
+/// 8 blocks 250 ms apart: ~2 s in all, more than the 1 s timeout, which `open` applies to each wait and `get` to all.
+string downPaced()
+{
+    enum query = "?pause=250";
+    auto r = download(query, 8 << 16, 1.seconds);
+    try
+        r ~= " get:" ~ itoa(cast(int) cli().get(plainBase_ ~ "/stream/" ~ itoa(8 << 16) ~ query, null, 1.seconds)
+            .body.length);
+    catch (HttpClientTimeout)
+        r ~= " get:timeout";
+    return r;
+}
+
+/// A BodySource of `n` pattern bytes in 64 KiB pieces; counts how many times it was written.
+BodySource patternSource(ulong n, ref int writes)
+{
+    auto counter = &writes;
+    return BodySource(n, (scope sink) {
+        (*counter)++;
+        auto piece = new ubyte[64 << 10];
+        for (ulong off = 0; off < n; off += piece.length)
+        {
+            immutable m = n - off < piece.length ? cast(size_t)(n - off) : piece.length;
+            foreach (i, ref b; piece[0 .. m])
+                b = patternAt(off + i);
+            sink(piece[0 .. m]);
+        }
+    });
+}
+
+string sha256Hex(ulong n)
+{
+    import std.digest : toHexString, LetterCase;
+    import std.digest.sha : SHA256;
+
+    SHA256 h;
+    auto piece = new ubyte[64 << 10];
+    for (ulong off = 0; off < n; off += piece.length)
+    {
+        immutable m = n - off < piece.length ? cast(size_t)(n - off) : piece.length;
+        foreach (i, ref b; piece[0 .. m])
+            b = patternAt(off + i);
+        h.put(piece[0 .. m]);
+    }
+    return toHexString!(LetterCase.lower)(h.finish()).idup;
+}
+
+/// 64 MiB PUT in pieces: the upstream's SHA-256 matches, and the client buffered none of it.
+string upStream()
+{
+    import std.conv : to;
+
+    enum ulong n = 64 << 20;
+    int writes;
+    immutable before = allocated();
+    auto r = cli().put(plainBase_ ~ "/sink", patternSource(n, writes));
+    immutable spent = allocated() - before;
+    if (r.body != n.to!string ~ ":" ~ sha256Hex(n))
+        return "wrong body: " ~ r.body;
+    return spent < 1 << 20 ? "sha ok" : "allocated " ~ spent.to!string;
+}
+
+/// A pooled connection the upstream closed: a PUT is retried on a new one, the source written again from the start;
+/// a POST is not retried (not idempotent), as with a body in memory.
+string upStale()
+{
+    cli().closeIdle();
+    cli().get(plainBase_ ~ "/stale");
+    int writes;
+    auto r = cli().put(plainBase_ ~ "/sink", patternSource(300_000, writes));
+    if (r.body != "300000:" ~ sha256Hex(300_000))
+        return "wrong body: " ~ r.body;
+    cli().get(plainBase_ ~ "/stale");
+    try
+        cli().post(plainBase_ ~ "/sink", patternSource(300_000, writes));
+    catch (HttpClientError e)
+        return e.msg == "andaime.http: reused connection was already closed" ? "retried ok" : e.msg;
+    return "the POST was retried";
+}
+
+/// A source that writes fewer bytes than it announced, or more: the request fails.
+string upWrongLength()
+{
+    string r;
+    foreach (written; [500, 1500])
+    {
+        try
+        {
+            cli().put(plainBase_ ~ "/sink", BodySource(1000, (scope sink) {
+                auto b = new ubyte[written];
+                sink(b);
+            }));
+            r ~= " accepted";
+        }
+        catch (HttpClientError e)
+            r ~= " refused";
+    }
+    return r[1 .. $];
+}
+
 App buildApp()
 {
     auto app = new App;
@@ -145,6 +306,12 @@ App buildApp()
     app.get!("/refused", refused);
     app.get!("/binary", binary);
     app.get!("/per-request-timeout", perRequestTimeout);
+    app.get!("/down/streams", downStreams);
+    app.get!("/down/early", downEarly);
+    app.get!("/down/paced", downPaced);
+    app.get!("/up/stream", upStream);
+    app.get!("/up/stale", upStale);
+    app.get!("/up/wrong-length", upWrongLength);
     return app;
 }
 
@@ -380,6 +547,29 @@ void testCancellation()
     ok("client goes away during the outgoing call: fiber cancelled, worker carries on normally");
 }
 
+void testStreamedBodies()
+{
+    auto s = start();
+    scope (exit) stop(s);
+    Resp r;
+    r = fetch(s.port, "/down/streams");
+    assert(r.body == "length chunked pooled", r.body);
+    r = fetch(s.port, "/down/early");
+    assert(r.body == "hello", r.body);
+    r = fetch(s.port, "/down/paced");
+    assert(r.body == "length get:timeout", r.body);
+    ok("open: 64 MiB (Content-Length) and 10 MiB (chunked) read in pieces, under 1 MiB allocated, the connection "
+        ~ "pooled; closed early it is not; each wait has its own timeout");
+    r = fetch(s.port, "/up/stream");
+    assert(r.body == "sha ok", r.body);
+    r = fetch(s.port, "/up/stale");
+    assert(r.body == "retried ok", r.body);
+    r = fetch(s.port, "/up/wrong-length");
+    assert(r.body == "refused refused", r.body);
+    ok("BodySource: a 64 MiB PUT in pieces (the upstream's SHA-256 matches, under 1 MiB allocated), retried on a "
+        ~ "stale pooled connection; a source shorter or longer than its length is refused");
+}
+
 string replicate(string s, size_t n)
 {
     string r;
@@ -410,5 +600,6 @@ void main()
     testDeadlineAndLimit();
     testBinaryAndPerRequestTimeout();
     testCancellation();
+    testStreamedBodies();
     printf("all HTTP client tests passed\n");
 }

@@ -90,9 +90,58 @@ void main()
 
 - HTTP and HTTPS. Certificates and host names are verified against the system CAs (OpenSSL 3, loaded at run time).
 - Keep-alive connections are reused per host, one pool per worker; a stale reused connection is retried once.
-- Bodies are read whole, up to `maxBody` (8 MiB); streaming an upstream response is not supported yet.
+- Bodies are read whole, up to `maxBody` (8 MiB); for larger ones, see [large bodies](#large-bodies-open-and-bodysource).
 - Redirects are not followed: a 3xx comes back as a response (read `r.header("Location")`).
 - If the incoming request is cancelled (the client left, the deadline passed), the outgoing connection is closed.
+- A stale pooled connection is retried only for idempotent methods (GET, HEAD, PUT, DELETE, OPTIONS), never a POST.
+
+## Large bodies: `open` and `BodySource`
+
+A file to download or upload does not need to fit in memory. `open` returns the response once its head arrived and
+hands the body over as it comes (`maxBody` does not apply); a `BodySource` sends a body in pieces:
+
+```d
+// check
+@safe:
+
+import andaime;
+import std.stdio : File;
+
+void download(string url, string dest)
+{
+    auto s = httpClient().open("GET", url);
+    scope (exit) s.close();              // the connection goes back to the pool only if the body was read to the end
+    if (!s.ok)
+        throw new Exception("download failed");
+    auto f = File(dest, "wb");
+    ubyte[64 << 10] buf;
+    size_t n;
+    while ((n = s.read(buf[])) > 0)
+        f.rawWrite(buf[0 .. n]);
+}
+
+void upload(string url, string path, ulong size)
+{
+    auto body = BodySource(size, (scope sink) {
+        auto f = File(path, "rb");
+        auto buf = new ubyte[64 << 10];
+        for (auto got = f.rawRead(buf); got.length; got = f.rawRead(buf))
+            sink(got);
+    });
+    auto r = httpClient().put(url, body, [HeaderPair("Content-Type", "application/octet-stream")]);
+}
+```
+
+- `s.status`, `s.headers`, `s.header(name)` and `s.contentLength` (-1 when the server did not announce it) are ready
+  when `open` returns; `read` returns 0 at the end. Content-Length, chunked and until-close bodies.
+- `timeout` bounds the connection and the request head; after it, **each** wait (a piece sent, the response head, a
+  piece of the body) has a `timeout` of its own, since the pace may be the client's you pass the body on to. The same
+  holds for `request`/`put`/`post` with a `BodySource`.
+- A `BodySource` announces its `length` (sent as `Content-Length`); writing more or fewer bytes fails the request.
+  `write` may be called again when a stale pooled connection is retried, so it starts from the beginning each time.
+- An upload received as `SpooledFile` is passed on with `file.bodySource()`, within the request.
+- `FakeHttpClient` serves both: a `BodySource` is recorded whole in `requests[i].body_`, and `open` reads the
+  scripted reply in pieces.
 
 ## Errors
 

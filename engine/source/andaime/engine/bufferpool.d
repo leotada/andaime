@@ -1,8 +1,9 @@
 /// Per-worker buffer pool on the GC heap (blocks the collector never scans: `NO_SCAN`).
 ///
-/// Slices of these buffers reach user code (the request body, header values, `const(char)[]` parameters). The memory is
-/// the GC's, not malloc's, so a slice a handler keeps after the request is memory-safe: it keeps its block alive. It may
-/// show bytes of a later request that reused the buffer; that is a bug in the user's code, not memory corruption.
+/// Slices of these buffers reach user code through `ctx.request` (the request body, raw header values, path). The
+/// memory is the GC's, not malloc's, so a slice a handler keeps after the request is memory-safe: it keeps its block alive.
+/// It may show bytes of a later request that reused the buffer; that is a bug in user code, not memory corruption. Handlers
+/// that take parameters and DTOs receive owned copies, so they are not affected.
 ///
 /// Fixed size classes (4, 16, 64 KiB). Idle connections return their buffer to the pool: 10 thousand idle keep-alive
 /// connections do not hold 160 MiB. The pool keeps at most `maxCachedBytes`; the excess is simply dropped (nothing is

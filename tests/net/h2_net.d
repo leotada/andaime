@@ -655,10 +655,11 @@ void testKeptSlicesOverH2()
         foreach (ch; keptBody[k]) sum += ch;
         foreach (ch; keptResponse[k]) sum += ch;
         assert(keptBody[k].length == sentLen[k]);
+        assert(keptPath[k] == "t" ~ k.to!string, "a const(char)[] parameter is a copy: it must still equal what was sent");
         assert(keptHeaderB[k] == sentB[k]);
     }
     assert(sum > 0);
-    ok("HTTP/2: kept views are memory-safe (400 streams, 200 KiB bodies included); Header!\"X\" keeps its content");
+    ok("HTTP/2: kept views are memory-safe (400 streams, 200 KiB bodies included); parameters, Header!\"X\" keep their content");
 }
 
 /// Streamed responses over HTTP/2.

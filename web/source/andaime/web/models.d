@@ -26,7 +26,7 @@ import andaime.http.utf8 : validUtf8;
 import andaime.web.context : Context;
 import andaime.web.convert : percentDecode, parseScalarText, parseErrorType, parseErrorMsg, parseErrorParams;
 import andaime.web.dto;
-import andaime.web.params : Optional, HttpError, isScalar, isScalarList, isPatchField;
+import andaime.web.params : Optional, HttpError, isScalar, isScalarList, isPatchField, hasUnscopedText, unscopedTextError;
 import andaime.web.uploads : SpooledFile, Spooler;
 
 /// A struct bound from the query string.
@@ -43,9 +43,8 @@ struct Form(T)
     alias value this;
 }
 
-/// One file part of a multipart body. `filename` and `contentType` are copies (`contentType` is empty when the part
-/// sent none). `bytes` is a view into the request buffer: copy it (`.idup`) to keep it past the request. `filename` is
-/// the client's name, not a path.
+/// One file part of a multipart body. `filename`, `contentType` and `bytes` are copies on the GC heap that you may keep
+/// past the request (`contentType` is empty when the part sent none). `filename` is the client's name, not a path.
 struct UploadedFile
 {
     string filename;
@@ -130,6 +129,11 @@ string modelError(T, bool asForm = false)()
                                     e = "field '" ~ fname ~ "' of " ~ T.stringof
                                         ~ ": @inRange does not apply to a file (" ~ F.stringof ~ ")";
                     }
+                }
+                else static if (hasUnscopedText!F)
+                {
+                    if (e.length == 0)
+                        e = "field '" ~ fname ~ "' of " ~ T.stringof ~ " has type " ~ unscopedTextError!F;
                 }
                 else static if (!(isScalar!F || isScalarList!F || isOptionalScalar!F))
                 {
@@ -514,7 +518,7 @@ private UploadedFile uploadOf(ref MultipartPart part)
     UploadedFile file;
     file.filename = part.filename is null ? "" : part.filename;
     file.contentType = part.contentType is null ? "" : part.contentType;
-    file.bytes = part.data;
+    file.bytes = part.data.idup; // a copy: `part.data` is a view of the request buffer, which the next request reuses
     return file;
 }
 

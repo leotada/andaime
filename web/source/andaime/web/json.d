@@ -6,11 +6,11 @@ module andaime.web.json 2025;
 
 import andaime.http.buffer;
 import andaime.web.dto;
-import andaime.web.params : Optional, isOptional, isCharType, PatchField, isPatchField;
+import andaime.web.params : Optional, isOptional, isCharType, PatchField, isPatchField, unscopedTextError;
 import andaime.web.convert : parseInteger, parseFloat, parseErrorType, parseErrorMsg, parseErrorParams;
 import andaime.web.numtext : itoa;
 import andaime.http.utf8 : validUtf8;
-import andaime.http.texttype : isTextType, textFromString, textToString;
+import andaime.http.texttype : isTextType, textFromString, textToString, hasUnscopedFromString;
 import andaime.http.naming : enumWireNames, parseEnumWire;
 import andaime.web.jsonvalue : Json, JsonValue, readJsonValue, writeJsonValue;
 // The text layer (string escaping, the pull reader) lives in andaime:http; this module keeps its old names.
@@ -90,6 +90,8 @@ void writeJson(T)(ref ByteBuffer o, ref const T v)
         textToString(v, (scope const(char)[] piece) { writeJsonEscaped(o, piece); });
         o.put('"');
     }
+    else static if (hasUnscopedFromString!T)
+        static assert(0, "andaime: type " ~ unscopedTextError!T);
     else static if (is(T == struct))
     {
         o.put('{');
@@ -318,6 +320,8 @@ bool readJson(T)(ref JsonReader r, ref T v, ref FieldErrors errs, ref FieldPath 
         if (!r.eat(']'))
             return r.syntax();
     }
+    else static if (hasUnscopedFromString!T)
+        static assert(0, "andaime: type " ~ unscopedTextError!T);
     else static if (is(T == struct))
     {
         if (!r.eat('{'))
@@ -416,6 +420,58 @@ bool decodeJson(T)(const(char)[] text, ref T v, ref FieldErrors errs)
         return false;
     }
     return errs.count == before;
+}
+
+version (unittest)
+{
+    // text types for the test below (module level: a static method of a local struct cannot name the struct)
+    private struct BadId
+    {
+        const(char)[] raw;
+
+        static bool fromString(const(char)[] s, out BadId v)
+        {
+            v.raw = s;
+            return true;
+        }
+
+        void toString(scope void delegate(scope const(char)[]) @safe sink) const { sink(raw); }
+    }
+
+    private struct GoodId
+    {
+        string text;
+
+        static bool fromString(scope const(char)[] s, out GoodId v)
+        {
+            v.text = s.idup;
+            return true;
+        }
+
+        void toString(scope void delegate(scope const(char)[]) @safe sink) const { sink(text); }
+    }
+
+    private struct WithBad { BadId id; }
+    private struct WithGood { GoodId id; }
+}
+
+unittest
+{
+    // a text type whose fromString does not take its text as `scope` is refused, not read as a plain object
+    FieldErrors errs;
+    FieldPath path;
+    JsonReader rd;
+    WithBad wb;
+    WithGood wg;
+    static assert(!__traits(compiles, readJson(rd, wb, errs, path)));
+    static assert(!__traits(compiles, writeJson(*new ByteBuffer, wb)));
+    static assert(__traits(compiles, readJson(rd, wg, errs, path)));
+
+    // and a good one keeps nothing of the input
+    char[] buf = `{"id":"abc-1"}`.dup;
+    assert(decodeJson(buf, wg, errs));
+    buf[] = 'X';
+    assert(wg.id.text == "abc-1");
 }
 
 unittest

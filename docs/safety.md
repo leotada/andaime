@@ -53,11 +53,31 @@ not of the one that instantiates it.
 
 | Value | Lifetime |
 |-------|----------|
-| `string` parameters, `Header!"X"`, `Cookie!"x"`, JSON bodies decoded into `string` fields, `UploadedFile.filename`, `UploadedFile.contentType` | yours: copies on the GC heap |
-| `ctx.request.path`, `.query`, `.body`, `.header(...)`, `ctx.cookie(...)`, `const(char)[]` parameters, `UploadedFile.bytes` | views into the connection's buffer, valid during the request |
+| Handler parameters (`string`, `const(char)[]`, text types, lists of them), `Header!"X"`, `Cookie!"x"`, `JsonBody!T`, `Query!T` and `Form!T` fields, `UploadedFile` (`filename`, `contentType`, `bytes`) | yours: copies on the GC heap |
+| `ctx.request.path`, `.query`, `.target`, `.body`, `.header(...)`, `ctx.cookie(...)` | views into the connection's buffer, valid during the request |
 
-Keeping a view after the request is **memory-safe**: the buffer lives on the GC heap and stays allocated while you hold it. But
-the buffer is reused, so the view may later show bytes of another request. Copy what you keep (`.idup`).
+**Everything a handler receives through its signature or a DTO is a copy.** Network buffers are pooled and reused, so a value
+that pointed into one could change under you when the next request, from another user, lands in the same buffer. andaime
+never hands you such a value through a parameter: a `string` or a `const(char)[]` is copied, a JSON string is decoded into
+a new one, an uploaded file's bytes are copied, and the text a [text type](requests.md#your-own-types-dates-money) parses
+is copied too when the type holds a slice or a pointer. You can put any of them in a cache, an audit record or an
+in-memory queue.
+
+The only views are the raw accessors on `ctx.request` and `ctx.cookie(...)`, which exist for code that wants to read
+without allocating. Keeping one after the request is **memory-safe**: the buffer lives on the GC heap and stays allocated
+while you hold it. But the buffer is reused, so the view may later show bytes of another request. Copy what you keep
+(`.idup`).
+
+### Text types and `scope`
+
+`fromString` of a text type must take its text as `scope` (`static bool fromString(scope const(char)[] text, out T v)`): the
+promise that it does not keep the text. A type that leaves out `scope` is refused with a one-line compile error, where
+it is used as a parameter, a `Query!T` or `Form!T` field, or a JSON field, that says how to fix it. A type that holds no
+slice and no pointer (`Uuid`, `Timestamp`, `CalendarDate`) reads the text in place and allocates nothing; one that does gets
+a copy of the text, so it keeps nothing of the buffer even if its own code is compiled without `-preview=dip1000`.
+
+The cost is the copy: a few bytes per `string` parameter or text, and the size of an uploaded file. A handler whose
+parameters are numbers, enums, `bool` or `Uuid`-like values allocates nothing (`tests/alloc` checks it).
 
 ## Errors that are not exceptions
 

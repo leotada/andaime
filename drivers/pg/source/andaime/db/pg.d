@@ -29,7 +29,7 @@ import core.time : Duration, MonoTime, msecs, seconds, minutes;
 
 import andaime.engine.os : NotifyFd;
 
-import andaime.http.texttype : isTextType, textFromString, textToString;
+import andaime.http.texttype : isTextType, textFromString, textToString, hasIndirections;
 import andaime.http.naming : applyNaming, namingOf, parseEnumWire, enumToWire, Naming;
 import andaime.engine.fiberio : awaitFd, currentScheduler, IoEvent, RequestCancelled, fiberLocal, setFiberLocal,
     offloadSenderLocal;
@@ -431,9 +431,14 @@ private T parseCell(T)(const(char)[] s, const(char)[] col)
         return s.idup;
     else static if (isTextType!T)
     {
-        // your own type (a Uuid, a timestamp...): `fromString` reads the column's text
+        // your own type (a Uuid, a timestamp...): `fromString` reads the column's text. A type that holds a slice or a
+        // pointer gets a copy: `s` points into the PGresult, which the next query frees and reuses.
         T v;
-        if (!textFromString(s, v))
+        static if (hasIndirections!T)
+            immutable ok = textFromString(s.idup, v);
+        else
+            immutable ok = textFromString(s, v);
+        if (!ok)
             throw badCell(col, T.stringof, s);
         return v;
     }

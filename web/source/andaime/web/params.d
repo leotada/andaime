@@ -5,7 +5,7 @@ module andaime.web.params 2025;
 
 import andaime.http.types : HeaderField;
 import andaime.http.ip : IpAddress;
-import andaime.http.texttype : isTextType;
+import andaime.http.texttype : isTextType, hasUnscopedFromString;
 
 /// JSON body decoded into `T`. Access the fields directly: `body.name`.
 struct JsonBody(T)
@@ -138,8 +138,30 @@ enum isCharType(T) = is(immutable T == immutable char) || is(immutable T == immu
     || is(immutable T == immutable dchar);
 
 /// Scalars extractable from path, query or header: numbers, bool, enums, text, and your own text types
-/// (`static bool fromString(text, out T)` plus `toString(sink)`; see `andaime.http.texttype`).
+/// (`static bool fromString(scope text, out T)` plus `toString(sink)`; see `andaime.http.texttype`).
 enum isScalar(T) = is(T == bool) || is(T == enum)
     || (__traits(isIntegral, T) && !isCharType!T)
     || __traits(isFloating, T)
     || is(T == string) || is(T == const(char)[]) || isTextType!T;
+
+/// The type inside `F`, `Optional!F` or `F[]` that looks like a text type but whose `fromString` does not take its text as
+/// `scope` (`void` when there is none). Such a type is refused with one line: see `unscopedTextError`.
+template unscopedTextOf(F)
+{
+    static if (hasUnscopedFromString!F)
+        alias unscopedTextOf = F;
+    else static if (is(F == Optional!U, U))
+        alias unscopedTextOf = unscopedTextOf!U;
+    else static if (is(F == U[], U))
+        alias unscopedTextOf = unscopedTextOf!U;
+    else
+        alias unscopedTextOf = void;
+}
+
+enum hasUnscopedText(F) = !is(unscopedTextOf!F == void);
+
+/// The line that says how to fix a text type whose `fromString` does not promise to leave the buffer's text alone. It
+/// reads after "has type": `has type 'BadId', whose fromString does not take its text as `scope`; ...`.
+enum unscopedTextError(F) = "'" ~ unscopedTextOf!F.stringof ~ "', whose fromString does not take its text as `scope`; "
+    ~ "write `static bool fromString(scope const(char)[] text, out " ~ unscopedTextOf!F.stringof ~ " v)` and copy "
+    ~ "(`.idup`) what you keep, because the request buffer is reused";

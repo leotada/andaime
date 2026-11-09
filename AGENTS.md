@@ -73,7 +73,14 @@ one fiber per request on an epoll loop, readable one-line compile errors.
 - **Memory model of request data**: every slice andaime hands to user code points into GC memory (`NO_SCAN` blocks from
   `BufferPool` and `ByteBuffer`; never `NO_INTERIOR`, never freed or `realloc`'d by hand; `GC.malloc` is `extern (C)`, so a
   function-pointer cast must say so). A slice kept past the request is memory-safe -- it keeps its block alive -- but it may show
-  bytes of a later request that reused the buffer. `Header!"X"` and `Cookie!"x"` hold copies. Never reintroduce `free`/`realloc`
+  bytes of a later request that reused the buffer. **That is why nothing a handler gets through its signature or a DTO is a view**:
+  parameters (`string` and `const(char)[]` alike), `Header!"X"`, `Cookie!"x"`, `JsonBody!T`, `Query!T`, `Form!T`, `UploadedFile`
+  (its `bytes` too) hold copies, and so does the text a text type parses when the type has indirections (`hasIndirections`:
+  `convert.d` and the Postgres driver pass `s.idup`; `Uuid`, `Timestamp` and `CalendarDate` have none and read in place, so
+  they allocate nothing). `fromString` of a text type must take its text as `scope` (`isTextType` is false otherwise, and
+  `handlerError`, `modelError` and the JSON codec say so in one line). The views are `ctx.request.*` and `ctx.cookie(...)`
+  only. A new extractor must copy; `tests/web/no_bleeding.d` overwrites the request buffers and checks what the handler kept,
+  so add the new kind of parameter there. Never reintroduce `free`/`realloc`
   on a buffer user code can reach. Buffers are still pooled, so the hot path allocates nothing after warm-up (`tests/alloc`).
   A pooled worker must not pin a big buffer: `releaseWorker` clears `req` and the header table, `server.d` clears `ctx.request`.
 - `__gshared` data is `@system`: read it through a small `@trusted` accessor and say why it is sound (usually "written once before

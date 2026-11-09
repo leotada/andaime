@@ -91,7 +91,7 @@ __gshared string[] keptHeaderB;
 
 void keep(const(char)[] path, const(char)[] a, string b, const(char)[] body_) @trusted
 {
-    keptPath ~= path;      // a const(char)[] path parameter: a zero-copy view
+    keptPath ~= path;      // a const(char)[] path parameter: a copy, like string
     keptHeaderA ~= a;      // ctx.request.header(...): a zero-copy view
     keptHeaderB ~= b;      // Header!"X-B": a copy
     keptBody ~= body_;     // the raw body: a zero-copy view (the 200 KiB ones are above the pool's classes)
@@ -558,10 +558,11 @@ void testKeptSlices()
         foreach (ch; keptBody[k]) sum += ch;
         foreach (ch; keptResponse[k]) sum += ch;
         assert(keptBody[k].length == sentBodyLen[k], "a kept body slice must keep its length");
+        assert(keptPath[k] == "t" ~ k.to!string, "a const(char)[] parameter is a copy: it must still equal what was sent");
         assert(keptHeaderB[k] == sentB[k], "Header!\"X-B\" is a copy: it must still equal what was sent");
     }
     assert(sum > 0);
-    ok("kept views are memory-safe (2,000 keep-alive requests, 200 KiB bodies included); Header!\"X\" keeps its content");
+    ok("kept views are memory-safe (2,000 keep-alive requests, 200 KiB bodies included); parameters, Header!\"X\" keep their content");
 }
 
 /// Runs `work` with stderr redirected to a file and returns what was written.

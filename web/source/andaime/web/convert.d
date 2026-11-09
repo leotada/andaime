@@ -4,7 +4,7 @@ module andaime.web.convert 2025;
 import andaime.web.params : isCharType;
 import andaime.web.numtext : ctNum, itoa;
 import andaime.http.fielderrors : FieldParams;
-import andaime.http.texttype : isTextType, textTypeInvalidMessage, textFromString;
+import andaime.http.texttype : isTextType, textTypeInvalidMessage, textFromString, hasIndirections;
 import andaime.http.naming : enumWireNames, parseEnumWire;
 public import andaime.http.numparse : parseInteger, parseFloat;
 
@@ -66,8 +66,9 @@ bool percentDecode(const(char)[] raw, bool plusIsSpace, out const(char)[] result
     return true;
 }
 
-/// Already-decoded text -> T. `string` is copied (the network buffer will be
-/// reused); `const(char)[]` is returned as a slice (zero-copy).
+/// Already-decoded text -> T. Nothing the result holds points into the network buffer (the next request reuses it):
+/// `string` and `const(char)[]` are copied, and so is the text a text type with indirections parses (a type without any,
+/// like `Uuid` or `Timestamp`, cannot keep a view, so it reads the text in place, with no allocation).
 bool parseScalarText(T)(const(char)[] s, out T v)
 {
     static if (is(T == bool))
@@ -78,18 +79,18 @@ bool parseScalarText(T)(const(char)[] s, out T v)
         return parseInteger(s, v);
     else static if (__traits(isFloating, T))
         return parseFloat(s, v);
-    else static if (is(T == string))
+    else static if (is(T == string) || is(T == const(char)[]))
     {
         v = s.idup;
         return true;
     }
-    else static if (is(T == const(char)[]))
-    {
-        v = s;
-        return true;
-    }
     else static if (isTextType!T)
-        return textFromString(s, v);
+    {
+        static if (hasIndirections!T)
+            return textFromString(s.idup, v);
+        else
+            return textFromString(s, v);
+    }
     else
         static assert(0, "andaime: '" ~ T.stringof ~ "' is not a supported scalar");
 }
@@ -179,4 +180,12 @@ unittest
     enum Color { red, green }
     Color c;
     assert(parseScalarText("green", c) && c == Color.green);
+
+    // nothing parsed keeps a view of the input: the buffer is reused by the next request
+    char[] buf = "patient-1".dup;
+    string owned;
+    const(char)[] slice;
+    assert(parseScalarText(buf, owned) && parseScalarText(buf, slice));
+    buf[] = 'X';
+    assert(owned == "patient-1" && slice == "patient-1", "a parsed string must not change with its source");
 }

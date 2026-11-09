@@ -179,6 +179,9 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
                 if (ri >= 0)
                 {
                     used[ri] = true;
+                    enum unscopedText = hasUnscopedText!T;
+                    if (unscopedText)
+                        return head ~ bad ~ "comes from the route ({" ~ pname ~ "}) and has type " ~ unscopedTextError!T;
                     if (!isScalar!T)
                         return head ~ bad ~ "comes from the route ({" ~ pname ~ "}) and must be a scalar "
                             ~ "(int, long, string, bool, enum...), but it is '" ~ T.stringof ~ "'";
@@ -221,6 +224,8 @@ template handlerError(Method method, string path, alias fn, string file, size_t 
                     else static if (isPatchField!T)
                         return head ~ bad ~ "is " ~ T.stringof ~ "; PatchField is for fields of a JSON body DTO. "
                             ~ "For an optional parameter use Optional!T";
+                    else static if (hasUnscopedText!T)
+                        return head ~ bad ~ "has type " ~ unscopedTextError!T;
                     else static if (is(T == Optional!U, U))
                     {
                         static if (!(isScalar!U || isHeader!U || isCookie!U))

@@ -1,0 +1,12 @@
+// EXPECT: whose fromString does not take its text as `scope`
+import andaime;
+@safe:
+struct BadId
+{
+    const(char)[] raw;
+    static bool fromString(const(char)[] s, out BadId v) { v.raw = s; return true; }
+    void toString(scope void delegate(scope const(char)[]) @safe sink) const { sink(raw); }
+}
+struct Filters { BadId id; }
+string f(Query!Filters q) => "x";
+void main() { auto app = new App; app.get!("/f", f); }

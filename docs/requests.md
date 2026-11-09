@@ -190,8 +190,10 @@ void main()
 }
 ```
 
-- `filename` and `contentType` are copies. `contentType` is empty when the part sent none. `bytes` is a view into the
-  request buffer, like `ctx.request.body`: copy it (`.idup`) to keep it ([safety.md](safety.md)). `filename` is the name
+- `filename`, `contentType` and `bytes` are copies on the GC heap: you may keep them after the request, in a cache or a
+  queue, and the next request cannot change them ([safety.md](safety.md)). The copy of a large file costs a `memcpy` of its
+  size, a few microseconds for a megabyte, and the body is already limited by `limits.maxBodyBytes`. `contentType` is empty
+  when the part sent none. `filename` is the name
   the client sent (`filename*` in UTF-8 wins over `filename`), not a filesystem path.
 - The part name is the field's `@jsonKey`, or the field name. Unknown parts are ignored. A scalar takes the first part; a
   list takes every part, in order. A part with no filename still fills an `UploadedFile` (`filename` is empty).
@@ -544,6 +546,13 @@ struct Order { Uuid id; Day placed; }                     // JSON strings with "
 
 Inside `fromString`/`toString` use any library you like (`std.datetime`). For instants and calendar days you do not need
 to write one: see `Timestamp` and `CalendarDate` above.
+
+`fromString` must take its text as `scope`, as above: it promises not to keep the text, which comes from a buffer the next
+request reuses. Leave `scope` out and the type is not a text type any more: using it as a parameter, a `Query!T`/`Form!T`
+field or a JSON field is a compile error that says to add it. If the type holds a slice or a pointer (a `string text`, as
+in the validation example), the text it receives is already a copy, so even a `fromString` that stores it as it is cannot
+expose the buffer; `.idup` in your own code is still the clearer way to say it. A type of plain numbers or bytes (`Day`,
+`Uuid`) reads the text in place and nothing is allocated ([safety.md](safety.md)).
 
 ## Values a domain may import: `andaime.values`
 

@@ -7,6 +7,7 @@ things up.
 
 | Page | What it covers |
 |------|----------------|
+| [Overview](overview.md) | Complete architectural guide: philosophy, request lifecycle, fiber concurrency, validation, database, jobs, and safety |
 | [Getting started](getting-started.md) | Install, the first route, a CRUD with JSON, a first test |
 | [Routing](routing.md) | Methods, path parameters, groups, controllers, 404/405, trailing slashes, the route table (`ANDAIME_ROUTES`) |
 | [Reading the request](requests.md) | Path, query, JSON body, query/form models, file uploads, headers, cookies, `Optional`, partial updates (`PatchField`), any JSON value (`JsonValue`), client IP, your own types |
